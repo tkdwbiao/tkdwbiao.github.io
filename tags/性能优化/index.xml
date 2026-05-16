@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>性能优化 on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/%E6%80%A7%E8%83%BD%E4%BC%98%E5%8C%96/</link><description>Recent content in 性能优化 on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Thu, 17 Jul 2025 09:00:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/%E6%80%A7%E8%83%BD%E4%BC%98%E5%8C%96/index.xml" rel="self" type="application/rss+xml"/><item><title>【Docker 系列 07】镜像太大了怎么办？多阶段构建 (Multi-stage Build) 瘦身术</title><link>https://tkdwbiao.github.io/p/docker-series-07-multistage/</link><pubDate>Thu, 17 Jul 2025 09:00:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/docker-series-07-multistage/</guid><description>&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;“我就写了一个打印 &lt;code&gt;Hello World&lt;/code&gt; 的简单后端接口，用 Dockerfile 打包完一看，好家伙，镜像体积 1.2 GB？！每次往服务器推送镜像都要花五六分钟，这谁受得了？”&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;在&lt;a class="link" href="https://tkdwbiao.github.io/p/docker-series-03-dockerfile/" &gt;第 3 篇文章&lt;/a&gt;中，我们学会了如何自己编写 &lt;code&gt;Dockerfile&lt;/code&gt; 来打包项目。很多新手在刚学会时，往往会得到一个极其庞大的“巨无霸”镜像。&lt;/p&gt;
+&lt;p&gt;为什么会这么大？
+因为在写代码、编译代码的时候，你需要各种“生产工具”：比如 GCC 编译器、Make 工具链、各种庞大的源码包（比如 Node.js 的 &lt;code&gt;node_modules&lt;/code&gt;）。
+但是，&lt;strong&gt;当程序真正跑到服务器上时，它只需要最后编译出来的那个“可执行文件”即可！&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;把整个编译环境一起打包进生产镜像，就好比 &lt;strong&gt;“为了给客户送一盘回锅肉，你把整个厨房、铁锅、煤气灶连同厨师一起打包寄了过去”&lt;/strong&gt; 。这不仅浪费带宽、占用磁盘，而且厨房里的工具越多，被黑客利用的漏洞（安全攻击面）也就越多。&lt;/p&gt;
+&lt;p&gt;今天，我们就来学习 Docker 世界的高阶魔法：&lt;strong&gt;多阶段构建（Multi-stage Build）&lt;/strong&gt;，给你的镜像来一场疯狂的抽脂手术！&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="一没有多阶段构建前老前辈们是怎么受苦的"&gt;一、没有多阶段构建前，老前辈们是怎么受苦的？
+&lt;/h2&gt;&lt;p&gt;在以前，为了得到一个小体积的镜像，老一代运维工程师通常要写 &lt;strong&gt;两个 Dockerfile&lt;/strong&gt; 外加一个 &lt;strong&gt;Bash 脚本&lt;/strong&gt;：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;先用 &lt;code&gt;Dockerfile.build&lt;/code&gt; 启动一个巨大的包含所有编译工具的容器。&lt;/li&gt;
+&lt;li&gt;在里面把代码编译成二进制文件。&lt;/li&gt;
+&lt;li&gt;退出容器，用 &lt;code&gt;docker cp&lt;/code&gt; 命令把编译好的二进制文件“抠”到宿主机上。&lt;/li&gt;
+&lt;li&gt;再用一个 &lt;code&gt;Dockerfile.prod&lt;/code&gt;，基于一个极简的基础系统（比如 Alpine），把刚才抠出来的文件塞进去，打成最终镜像。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;这种方法极其割裂，项目代码里乱糟糟的，极难维护。直到 Docker 17.05 版本，官方推出了&lt;strong&gt;多阶段构建&lt;/strong&gt;，彻底终结了这场噩梦。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二多阶段构建的核心语法一个剧本多个舞台"&gt;二、多阶段构建的核心语法：一个剧本，多个舞台
+&lt;/h2&gt;&lt;p&gt;多阶段构建的原理非常简单：&lt;strong&gt;在一个 &lt;code&gt;Dockerfile&lt;/code&gt; 里面，写多个 &lt;code&gt;FROM&lt;/code&gt; 指令。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;每个 &lt;code&gt;FROM&lt;/code&gt; 都代表一个全新的“舞台”（Stage）。
+你可以把前一个舞台当成 &lt;strong&gt;“加工厂”&lt;/strong&gt;，在里面肆意安装几 GB 的编译工具；然后在最后一个舞台（&lt;strong&gt;“最终产物”&lt;/strong&gt;）里，只把加工厂里编译好的那一个小小的成果文件 &lt;code&gt;COPY&lt;/code&gt; 过来。&lt;/p&gt;
+&lt;p&gt;加工厂在构建完成后会被自动丢弃，最终生成的镜像里&lt;strong&gt;只有最后一个舞台的内容&lt;/strong&gt;！&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="三震撼对比go-语言项目的-1gb-变-10mb"&gt;三、震撼对比：Go 语言项目的 1GB 变 10MB
+&lt;/h2&gt;&lt;p&gt;Go 语言是演示多阶段构建的完美案例。因为 Go 可以被编译成一个独立运行的二进制文件，完全不需要任何系统依赖。&lt;/p&gt;
+&lt;h3 id="错误示范传统单阶段构建"&gt;错误示范（传统单阶段构建）：
+&lt;/h3&gt;&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-dockerfile" data-lang="dockerfile"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 使用官方 Go 镜像（体积约 800MB）&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;FROM&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;golang:1.20&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;WORKDIR&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;/app&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;COPY&lt;/span&gt; . .&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 编译代码&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;RUN&lt;/span&gt; go build -o myapp main.go&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 启动程序&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;CMD&lt;/span&gt; &lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;./myapp&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;结果&lt;/strong&gt;：你得到一个高达 &lt;strong&gt;~850MB&lt;/strong&gt; 的镜像。里面包含了 Go 语言完整的 SDK、编译器、源码，而真正有用的那个 &lt;code&gt;myapp&lt;/code&gt; 文件其实只有 &lt;strong&gt;10MB&lt;/strong&gt;。&lt;/p&gt;
+&lt;h3 id="正确姿势多阶段构建魔法"&gt;正确姿势（多阶段构建魔法）：
+&lt;/h3&gt;&lt;p&gt;我们用两个 &lt;code&gt;FROM&lt;/code&gt; 来改造它：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-dockerfile" data-lang="dockerfile"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# ===== 第一阶段：编译加工厂 (命名为 builder) =====&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;FROM&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;golang:1.20&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="k"&gt;AS&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;builder&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;WORKDIR&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;/app&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;COPY&lt;/span&gt; . .&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 禁用 CGO，静态编译出一个极其纯净的二进制文件&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;RUN&lt;/span&gt; &lt;span class="nv"&gt;CGO_ENABLED&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="m"&gt;0&lt;/span&gt; &lt;span class="nv"&gt;GOOS&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;linux go build -o myapp main.go&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# ===== 第二阶段：最终生产环境 =====&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 使用 scratch（Docker 宇宙中最原始、真正的“空无一物”镜像，0 MB）&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;FROM&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;scratch&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 核心魔法：只从 builder 阶段，把那个编译好的 myapp 复制过来！&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;COPY&lt;/span&gt; --from&lt;span class="o"&gt;=&lt;/span&gt;builder /app/myapp /myapp&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 启动程序&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;CMD&lt;/span&gt; &lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;/myapp&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;见证奇迹的时刻&lt;/strong&gt;：执行 &lt;code&gt;docker build&lt;/code&gt; 后，你最终得到的镜像体积竟然只有区区 &lt;strong&gt;10MB&lt;/strong&gt;！
+从 850MB 到 10MB，整整缩小了 85 倍！部署时的上传、拉取几乎是秒级的。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="四pythonnodejs-等解释型语言怎么瘦身"&gt;四、Python/Node.js 等解释型语言怎么瘦身？
+&lt;/h2&gt;&lt;p&gt;你会问：&lt;em&gt;“阿彪，我做的是 AI 项目，用的是 Python。Python 代码不用编译成二进制文件，多阶段构建对我有用吗？”&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;非常有用！&lt;/strong&gt;
+虽然 Python 是解释型语言，但我们经常会使用 &lt;code&gt;pip install&lt;/code&gt; 安装大量依赖包（比如 NumPy、Pandas）。在安装过程中，&lt;code&gt;pip&lt;/code&gt; 往往需要底层的 C++ 编译器（如 &lt;code&gt;gcc&lt;/code&gt;）来构建一些 C 扩展库。&lt;/p&gt;
+&lt;p&gt;如果用单阶段构建，你的生产镜像里就会残留着庞大的 &lt;code&gt;gcc&lt;/code&gt; 编译器和几十 MB 的缓存垃圾。&lt;/p&gt;
+&lt;h3 id="python-的多阶段构建实战"&gt;Python 的多阶段构建实战
+&lt;/h3&gt;&lt;p&gt;我们的思路是：在第一阶段使用完整的 Python 镜像来编译依赖（打包成 &lt;code&gt;wheels&lt;/code&gt;），然后在第二阶段使用极简的 Python 镜像（&lt;code&gt;slim&lt;/code&gt;版）只复制运行所需的文件。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;span class="lnt"&gt;24
+&lt;/span&gt;&lt;span class="lnt"&gt;25
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-dockerfile" data-lang="dockerfile"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# ===== 第一阶段：构建依赖 (Builder) =====&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;FROM&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;python:3.11&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="k"&gt;AS&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;builder&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;WORKDIR&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;/build&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;COPY&lt;/span&gt; requirements.txt .&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 告诉 pip 把依赖全部打包成 wheel 文件，放到 /build/wheels 目录下&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;RUN&lt;/span&gt; pip wheel --no-cache-dir --no-deps --wheel-dir /build/wheels -r requirements.txt&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# ===== 第二阶段：生产运行 (Production) =====&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 使用 -slim 精简版基础镜像（体积小很多）&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;FROM&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;python:3.11-slim&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;WORKDIR&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;/app&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 从 builder 阶段把刚才打包好的轮子复制过来&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;COPY&lt;/span&gt; --from&lt;span class="o"&gt;=&lt;/span&gt;builder /build/wheels /wheels&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;COPY&lt;/span&gt; requirements.txt .&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 直接从本地安装轮子，不需要再下载，也不需要 C 编译器了&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;RUN&lt;/span&gt; pip install --no-cache /wheels/*&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 复制业务代码&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;COPY&lt;/span&gt; . .&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;CMD&lt;/span&gt; &lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;python&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;app.py&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;通过这种方式，你的最终镜像里将干净得连 &lt;code&gt;gcc&lt;/code&gt; 都没有，极大降低了被黑客利用系统工具进行攻击的风险（提高了安全性），同时镜像体积通常能减小 40% ~ 60%。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="五阿彪的日常微胖克星其他瘦身小技巧"&gt;五、阿彪的日常“微胖”克星：其他瘦身小技巧
+&lt;/h2&gt;&lt;p&gt;如果你觉得多阶段构建写起来稍显复杂，在日常单阶段构建时，只要记住以下 3 点，也能避免镜像变得太臃肿：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;1. 选好基础镜像（Base Image）&lt;/strong&gt;
+永远优先选择带有 &lt;code&gt;-alpine&lt;/code&gt;（基于极简 Linux 系统 Alpine，仅 5MB 左右）或 &lt;code&gt;-slim&lt;/code&gt;（精简版 Debian）后缀的镜像。坚决对体积庞大的基础 &lt;code&gt;ubuntu&lt;/code&gt; 或 &lt;code&gt;centos&lt;/code&gt; 说不。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;2. 善用 &lt;code&gt;&amp;amp;&amp;amp;&lt;/code&gt; 合并 RUN 指令&lt;/strong&gt;
+Docker 镜像是由“层 (Layer)”组成的。你每写一个 &lt;code&gt;RUN&lt;/code&gt;，就会叠加一层。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;span class="lnt"&gt;6
+&lt;/span&gt;&lt;span class="lnt"&gt;7
+&lt;/span&gt;&lt;span class="lnt"&gt;8
+&lt;/span&gt;&lt;span class="lnt"&gt;9
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-dockerfile" data-lang="dockerfile"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# ❌ 错误示范：产生了三个层，即使你最后执行了 rm，前面的层体积依然存在！&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;RUN&lt;/span&gt; apt-get update&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;RUN&lt;/span&gt; apt-get install -y wget&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;RUN&lt;/span&gt; rm -rf /var/lib/apt/lists/*&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# ✅ 正确做法：合并为一层，清理垃圾的操作在同一层完成&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;RUN&lt;/span&gt; apt-get update &lt;span class="o"&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; apt-get install -y wget &lt;span class="o"&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; rm -rf /var/lib/apt/lists/*&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;3. 牢记 &lt;code&gt;.dockerignore&lt;/code&gt;&lt;/strong&gt;
+在前几篇中我们反复强调过，一定要用 &lt;code&gt;.dockerignore&lt;/code&gt; 排除掉 &lt;code&gt;.git&lt;/code&gt;、本地的 &lt;code&gt;.venv&lt;/code&gt;、本地的 &lt;code&gt;logs&lt;/code&gt; 和大型数据文件。不要把测试数据和开发依赖一股脑塞进生产镜像。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="结语"&gt;结语
+&lt;/h2&gt;&lt;p&gt;从巨大的“单体杂货铺”，到精致纯粹的“多阶段构建”，这标志着你从“能用 Docker”跨越到了“用好 Docker”的企业级标准。瘦身后的镜像能让你的 CI/CD 流水线（自动打包部署）跑得飞快。&lt;/p&gt;
+&lt;p&gt;现在，你的架构已经非常完美了：不仅有 Docker Compose 管理多服务，而且每一个微服务的镜像都极其轻量和安全。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;但是，现实总是充满“惊喜”。&lt;/strong&gt;
+你把这些完美的代码推送到服务器，满怀信心地敲下 &lt;code&gt;docker compose up -d&lt;/code&gt;，却发现：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;容器一直处于 &lt;code&gt;Restarting (3)&lt;/code&gt; 的无限死循环状态&amp;hellip;&lt;/li&gt;
+&lt;li&gt;日志里报了一堆乱码&amp;hellip;&lt;/li&gt;
+&lt;li&gt;服务器的端口莫名其妙冲突了&amp;hellip;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;遇到各种诡异报错时，除了手足无措地重启，你还能干什么？
+请锁定下期排障终极宝典：&lt;strong&gt;【Docker 实战】排障指南：Docker 常见报错大赏与终极解决套路&lt;/strong&gt;。我将把我从业以来的“踩坑与爬坑”秘籍，毫无保留地传授给你。我们下期见！&lt;/p&gt;</description></item></channel></rss>

@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>连续批处理 on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/%E8%BF%9E%E7%BB%AD%E6%89%B9%E5%A4%84%E7%90%86/</link><description>Recent content in 连续批处理 on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Mon, 06 Apr 2026 18:15:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/%E8%BF%9E%E7%BB%AD%E6%89%B9%E5%A4%84%E7%90%86/index.xml" rel="self" type="application/rss+xml"/><item><title>vLLM 系列(三)：流水线上的旋转寿司 —— 连续批处理 (Continuous Batching)</title><link>https://tkdwbiao.github.io/p/vllm-continuous-batching-scheduling/</link><pubDate>Mon, 06 Apr 2026 18:15:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/vllm-continuous-batching-scheduling/</guid><description>&lt;p&gt;如果说 PagedAttention 解决了显存的“空间”浪费，那么 &lt;strong&gt;Continuous Batching（连续批处理）&lt;/strong&gt; 解决的就是 GPU 的“时间”空转。
+在传统的推理框架里，GPU 就像一辆非要等所有人到齐才出发的大巴车；但在 vLLM 里，它变成了流动的旋转寿司，谁吃完谁走，空位立刻补上。今天阿彪就带你拆解这个让吞吐量翻倍的调度奥秘。&lt;/p&gt;
+&lt;h2 id="一-知识点详解从静态到动态的降维打击"&gt;一、 知识点详解：从静态到动态的降维打击
+&lt;/h2&gt;&lt;h3 id="1-静态批处理static-batching的平庸"&gt;1. 静态批处理（Static Batching）的平庸
+&lt;/h3&gt;&lt;p&gt;在传统的推理（如 HuggingFace）中，批处理是以“请求”为单位的。
+假设 Batch Size = 4，其中 3 个请求只要生成 5 个词，而 1 个请求要生成 500 个词。
+那 3 个短请求在 1 秒钟内就结束了，但它们&lt;strong&gt;必须在显存里占着坑“陪跑”&lt;/strong&gt;，直到那个 500 词的长请求跑完，四个人才能一起收工。这种“一人迟到，全家等死”的机制，是吞吐量的头号杀手。&lt;/p&gt;
+&lt;h3 id="2-连续批处理continuous-batching的优雅"&gt;2. 连续批处理（Continuous Batching）的优雅
+&lt;/h3&gt;&lt;p&gt;vLLM 引入了 &lt;strong&gt;Iteration-level Scheduling（迭代级调度）&lt;/strong&gt;。
+它不再以整个请求的结束为边界，而是以 &lt;strong&gt;“每一个 Token 的生成”&lt;/strong&gt; 为边界。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;mark&gt;核心逻辑：每当 GPU 完成一次迭代（生成一个词），调度器就会检查：有没有请求已经输出了结束符（STOP）？如果有，立刻释放它的显存，并从等待队列中拉入新请求补充空位。&lt;/mark&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;这种机制保证了 GPU 的每一个 Slot（槽位）都在马不停蹄地干活，极大压榨了计算资源的利用率。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二-进阶拓展显存爆了怎么办抢占与交换机制"&gt;二、 进阶拓展：显存爆了怎么办？（抢占与交换机制）
+&lt;/h2&gt;&lt;p&gt;在高并发场景下，即使有 PagedAttention，显存也可能被填满。当新请求的 Prefill（预填充）需要显存，而正在运行的请求又不能中断时，vLLM 会启动 &lt;strong&gt;抢占（Preemption）&lt;/strong&gt; 机制。&lt;/p&gt;
+&lt;p&gt;调度器有两条路可以选：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Recompute（重算）&lt;/strong&gt;：直接把那个倒霉请求的 KV Cache 删掉，把它踢回等待队列。等以后显存空了，再从头算一遍。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Swap（交换）&lt;/strong&gt;：利用 PCIe 带宽，把请求的 KV Cache 搬到 &lt;strong&gt;CPU 内存&lt;/strong&gt;里。等显存宽裕了，再搬回来。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;mark&gt;阿彪面试小贴士：Swap 还是 Recompute？这是一个算力与带宽的博弈。如果 KV Cache 很大且 PCIe 够快，Swap 更划算；如果重算代价极小（Prompt 短），则 Recompute 更直接。&lt;/mark&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;hr&gt;
+&lt;h2 id="三-代码模拟简易版调度状态机"&gt;三、 代码模拟：简易版调度状态机
+&lt;/h2&gt;&lt;p&gt;为了让你看清“动态插队”的过程，阿彪写了一个微型模拟器：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;span class="lnt"&gt;24
+&lt;/span&gt;&lt;span class="lnt"&gt;25
+&lt;/span&gt;&lt;span class="lnt"&gt;26
+&lt;/span&gt;&lt;span class="lnt"&gt;27
+&lt;/span&gt;&lt;span class="lnt"&gt;28
+&lt;/span&gt;&lt;span class="lnt"&gt;29
+&lt;/span&gt;&lt;span class="lnt"&gt;30
+&lt;/span&gt;&lt;span class="lnt"&gt;31
+&lt;/span&gt;&lt;span class="lnt"&gt;32
+&lt;/span&gt;&lt;span class="lnt"&gt;33
+&lt;/span&gt;&lt;span class="lnt"&gt;34
+&lt;/span&gt;&lt;span class="lnt"&gt;35
+&lt;/span&gt;&lt;span class="lnt"&gt;36
+&lt;/span&gt;&lt;span class="lnt"&gt;37
+&lt;/span&gt;&lt;span class="lnt"&gt;38
+&lt;/span&gt;&lt;span class="lnt"&gt;39
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kn"&gt;import&lt;/span&gt; &lt;span class="nn"&gt;collections&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;class&lt;/span&gt; &lt;span class="nc"&gt;Request&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="fm"&gt;__init__&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;req_id&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;steps&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;req_id&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;req_id&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;remaining_steps&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;steps&lt;/span&gt; &lt;span class="c1"&gt;# 模拟需要生成的 token 数&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;vllm_scheduler_sim&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;waiting_list&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;batch_size&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="mi"&gt;2&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;running&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="p"&gt;[]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;finished&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="p"&gt;[]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;iteration&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="mi"&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;while&lt;/span&gt; &lt;span class="n"&gt;waiting_list&lt;/span&gt; &lt;span class="ow"&gt;or&lt;/span&gt; &lt;span class="n"&gt;running&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;iteration&lt;/span&gt; &lt;span class="o"&gt;+=&lt;/span&gt; &lt;span class="mi"&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 1. 尝试从等待队列补充空位&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;while&lt;/span&gt; &lt;span class="nb"&gt;len&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;running&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;&amp;lt;&lt;/span&gt; &lt;span class="n"&gt;batch_size&lt;/span&gt; &lt;span class="ow"&gt;and&lt;/span&gt; &lt;span class="n"&gt;waiting_list&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;new_req&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;waiting_list&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;popleft&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;Iter &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;iteration&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;: 请求 &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;new_req&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;req_id&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt; 加入战斗！&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;running&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;append&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;new_req&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 2. 模拟 GPU 生成一个 token&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;for&lt;/span&gt; &lt;span class="n"&gt;req&lt;/span&gt; &lt;span class="ow"&gt;in&lt;/span&gt; &lt;span class="n"&gt;running&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;req&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;remaining_steps&lt;/span&gt; &lt;span class="o"&gt;-=&lt;/span&gt; &lt;span class="mi"&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 3. 检查谁跑完了（Iteration-level！）&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;for&lt;/span&gt; &lt;span class="n"&gt;req&lt;/span&gt; &lt;span class="ow"&gt;in&lt;/span&gt; &lt;span class="nb"&gt;list&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;running&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="n"&gt;req&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;remaining_steps&lt;/span&gt; &lt;span class="o"&gt;&amp;lt;=&lt;/span&gt; &lt;span class="mi"&gt;0&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;Iter &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;iteration&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;: 请求 &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;req&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;req_id&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt; 搞定，光速下班！&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;running&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;remove&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;req&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;finished&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;append&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;req&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# --- 阿彪的模拟测试 ---&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;queue&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;collections&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;deque&lt;/span&gt;&lt;span class="p"&gt;([&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;Request&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;A&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;3&lt;/span&gt;&lt;span class="p"&gt;),&lt;/span&gt; &lt;span class="c1"&gt;# 短请求&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;Request&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;B&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;10&lt;/span&gt;&lt;span class="p"&gt;),&lt;/span&gt;&lt;span class="c1"&gt;# 长请求&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;Request&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;C&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;2&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="c1"&gt;# 正在排队的短请求&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="p"&gt;])&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;vllm_scheduler_sim&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;queue&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;batch_size&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="mi"&gt;2&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;阿彪点评&lt;/strong&gt;：看到没有？请求 A 在第 3 次迭代结束后，请求 C &lt;strong&gt;立刻&lt;/strong&gt;在第 4 次迭代就插进去了，根本不需要等请求 B 跑完那 10 步。这就是 Throughput 起飞的原因！&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="四--面试官会问到的问题及详细答案"&gt;四 : 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;h3 id="-q1continuous-batching-既然这么牛它有缺点吗"&gt;❓ Q1：Continuous Batching 既然这么牛，它有缺点吗？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+有的，它会对 &lt;strong&gt;TTFT（首字延迟）&lt;/strong&gt; 造成一定的波动。
+因为当调度器在 Decode 阶段强行插入一个新的 Prefill 请求（新用户进来）时，由于 Prefill 阶段的计算量远大于 Decode 阶段，会导致那一瞬间正在生成的旧用户感到明显的“卡顿（Jitter）”。
+&lt;em&gt;（加分点：目前的优化方案是 Chunked Prefill，将长 Prompt 切片，分批插入迭代中，平滑延迟波动。）&lt;/em&gt;&lt;/p&gt;
+&lt;h3 id="-q2vllm-是如何避免长请求被饿死starvation的"&gt;❓ Q2：vLLM 是如何避免长请求被“饿死（Starvation）”的？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+vLLM 内部维护了一个 FCFS（先来后到）的等待队列。
+调度器在分配显存块（Blocks）时，会优先保证队列最前面的请求。如果显存不足以容纳新请求，调度器会宁可让 GPU 暂时不满载，也要保护老请求的顺利运行，或者通过抢占机制公平地调度资源。&lt;/p&gt;
+&lt;h3 id="-q3在抢占发生时vllm-为什么优先抢占最后进入的请求"&gt;❓ Q3：在抢占发生时，vLLM 为什么优先抢占最后进入的请求？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+因为最后进入的请求通常生成的 Token 数最少，积累的 KV Cache 也最少。
+抢占它意味着：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;重算代价最小&lt;/strong&gt;：如果需要 Recompute，重算几个词比重算几百个词快得多。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;迁移开销最小&lt;/strong&gt;：如果需要 Swap，搬运少量的 KV Cache 对 PCIe 带宽的压力也最小。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h2 id="五-阿彪碎碎念-抱拳"&gt;五、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;学到这里，你有没有发现，vLLM 的本质其实是一场&lt;strong&gt;关于“公平”与“效率”的权衡游戏&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;静态批处理追求的是“整齐划一”，结果输给了效率；而连续批处理追求的是“各尽其能”，却带来了调度的复杂性。
+在大模型开发的面试中，面试官最想听到的不是你背出了多少个名词，而是你能不能像阿彪这样，&lt;strong&gt;把冷冰冰的代码逻辑，转化为对业务场景（长短请求交替、显存挤占、延迟波动）的深度思考。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;拒绝死记硬背，从理解每一个 Iteration 开始。&lt;/strong&gt; 下一篇，我们将聊聊分布式推理，看 vLLM 是如何让几十台机器像一个人一样协同工作的，冲就完事了！&lt;/p&gt;</description></item></channel></rss>

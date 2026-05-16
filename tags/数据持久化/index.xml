@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>数据持久化 on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/%E6%95%B0%E6%8D%AE%E6%8C%81%E4%B9%85%E5%8C%96/</link><description>Recent content in 数据持久化 on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Thu, 26 Jun 2025 10:00:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/%E6%95%B0%E6%8D%AE%E6%8C%81%E4%B9%85%E5%8C%96/index.xml" rel="self" type="application/rss+xml"/><item><title>【Docker 系列 04】给容器加块硬盘：Docker 数据持久化 (Volumes) 完全指南</title><link>https://tkdwbiao.github.io/p/docker-series-04-volumes/</link><pubDate>Thu, 26 Jun 2025 10:00:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/docker-series-04-volumes/</guid><description>&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;“老板，我不小心敲了 &lt;code&gt;docker rm&lt;/code&gt;，昨天用户的注册数据全没了，我现在买站票跑路还来得及吗？”&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;在&lt;a class="link" href="https://tkdwbiao.github.io/p/docker-series-03-dockerfile/" &gt;上一篇文章&lt;/a&gt;中，我们学会了用 Dockerfile 把代码打包成镜像。容器跑起来了，应用很完美。&lt;/p&gt;
+&lt;p&gt;但这引出了 Docker 世界里最致命的一个概念：&lt;strong&gt;容器是短暂的（Ephemeral）&lt;/strong&gt;。
+Docker 的文件系统是由一层层“只读镜像层”加上最上面一层“可读写容器层”组成的。当容器在运行时，你的程序产生的所有日志、新上传的图片、存入数据库的每一条记录，都写在这个最上层。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;一旦你执行了 &lt;code&gt;docker rm&lt;/code&gt; 删除了容器，这个可读写层就会伴随着里面的数据灰飞烟灭！&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;如果你用 Docker 部署了一个 MySQL 数据库，更新容器版本时随手一个删除，恭喜你，直接喜提“删库跑路”成就。&lt;/p&gt;
+&lt;p&gt;为了打破这种“人在塔在，人亡塔亡”的魔咒，Docker 提供了&lt;strong&gt;数据持久化&lt;/strong&gt;技术。今天，我们就来学习如何给容器插上一块“外接硬盘”。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="一拯救数据的两种终极方案"&gt;一、拯救数据的两种终极方案
+&lt;/h2&gt;&lt;p&gt;在 Docker 中，要把数据保存到容器外部（宿主机的硬盘上），主要有两种玩法。很多人把它们搞混，但它们的适用场景完全不同。&lt;/p&gt;
+&lt;h3 id="1-bind-mounts绑定挂载简单粗暴的随意门"&gt;1. Bind Mounts（绑定挂载）：简单粗暴的“随意门”
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;原理&lt;/strong&gt;：直接把你电脑（宿主机）上的某个绝对路径，强行映射到容器内部的某个路径上。
+在容器里往这个目录写文件，其实就是写在你电脑上；在你电脑上修改这个文件，容器里立刻就能看到变化。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;优点&lt;/strong&gt;：非常适合&lt;strong&gt;本地开发&lt;/strong&gt;。比如你可以把代码目录挂载进去，本地修改代码保存，容器里的 Web 服务器（如 Uvicorn/Nodemon）立刻热重载生效，不需要重新 build 镜像。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;缺点&lt;/strong&gt;：极度依赖宿主机的目录结构，在 Windows、Mac、Linux 上路径写法不同，容易出幺蛾子。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="2-docker-volumes数据卷官方正统的专属u盘"&gt;2. Docker Volumes（数据卷）：官方正统的“专属U盘”
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;原理&lt;/strong&gt;：这是由 Docker &lt;strong&gt;全权管理&lt;/strong&gt;的宿主机硬盘空间。你不需要知道它具体存在你电脑的哪个深层目录（通常在 &lt;code&gt;/var/lib/docker/volumes/&lt;/code&gt;），你只需要给这块“U盘”起个名字。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;优点&lt;/strong&gt;：跨平台兼容性极佳，安全性高，哪怕所有容器都删了，Volume 依然存活，非常适合&lt;strong&gt;生产环境的数据库存储&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;缺点&lt;/strong&gt;：你想用宿主机的编辑器直接修改 Volume 里的文件比较麻烦，因为它们被 Docker 藏得比较深。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="二实战演练不丢失数据的-mysql-数据库"&gt;二、实战演练：不丢失数据的 MySQL 数据库
+&lt;/h2&gt;&lt;p&gt;百闻不如一练，让我们用 &lt;strong&gt;Volumes（数据卷）&lt;/strong&gt; 跑一个 MySQL 容器，看看数据是如何“永生”的。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;第一步：创建一个数据卷（买一块U盘）&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker volume create my-db-data
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;em&gt;(你可以用 &lt;code&gt;docker volume ls&lt;/code&gt; 查看到它)&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;第二步：启动 MySQL 容器，并把数据卷插上去&lt;/strong&gt;
+注意这里的 &lt;code&gt;-v&lt;/code&gt; (volume) 参数，冒号前面是数据卷名字，冒号后面是 MySQL 在容器里存数据的固定路径。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker run -d &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --name my-mysql &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; -e &lt;span class="nv"&gt;MYSQL_ROOT_PASSWORD&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;mysecret &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; -v my-db-data:/var/lib/mysql &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; mysql:8.0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;第三步：搞点破坏（删库跑路测试）&lt;/strong&gt;
+现在数据库跑起来了。假设你在里面建了表，存了数据。然后你手抖了，删除了容器：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker rm -f my-mysql
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;完了，容器没了！但是别慌，因为我们用了 Volume，数据还在。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;第四步：浴火重生&lt;/strong&gt;
+你重新启动一个新的 MySQL 容器，只需再次挂载那个名叫 &lt;code&gt;my-db-data&lt;/code&gt; 的数据卷：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker run -d &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --name new-mysql &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; -e &lt;span class="nv"&gt;MYSQL_ROOT_PASSWORD&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;mysecret &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; -v my-db-data:/var/lib/mysql &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; mysql:8.0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;连上数据库一看，刚才建的表和数据&lt;strong&gt;完好无损&lt;/strong&gt;！这就是 Volume 的魔力。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="三阿彪的血泪避坑指南恐怖的-permission-denied-权限陷阱"&gt;三、阿彪的血泪避坑指南：恐怖的 Permission Denied 权限陷阱
+&lt;/h2&gt;&lt;p&gt;很多小伙伴在学完挂载后，在实际项目中会采用 &lt;strong&gt;Bind Mounts（绑定挂载）&lt;/strong&gt; 把项目里的数据库文件挂载到本地（比如 &lt;code&gt;./volumes/etcd:/etcd&lt;/code&gt;）。&lt;/p&gt;
+&lt;p&gt;结果在本地用 Python 或者 Node.js 运行主程序代码时，突然程序崩溃，抛出如下惨不忍睹的报错：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;PermissionError: Permission denied (os error 13) about [&amp;#34;/home/user/my-project/volumes/etcd/member&amp;#34;]
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;如果你开启了框架的“热重载”（Reload）功能，这个报错会像幽灵一样疯狂刷屏。&lt;/p&gt;
+&lt;h3 id="为什么会这样硬核原理解密"&gt;为什么会这样？（硬核原理解密）
+&lt;/h3&gt;&lt;p&gt;这是无数开发者在 Docker 上踩过的最大的坑，没有之一。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Docker 内部默认是上帝（Root）&lt;/strong&gt;：Docker 容器内部的进程默认是以 &lt;code&gt;root&lt;/code&gt; 用户运行的。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;上帝创建了文件&lt;/strong&gt;：当容器（比如 etcd、MySQL、Milvus）启动并向挂载的目录 &lt;code&gt;./volumes&lt;/code&gt; 写入数据时，这些&lt;strong&gt;在宿主机上生成的文件，其所有者（Owner）都是 root&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;凡人试图访问&lt;/strong&gt;：你在宿主机上是以普通用户（比如 &lt;code&gt;jf234&lt;/code&gt;）的身份在写代码。你的 Web 框架（如 Uvicorn）为了实现热重载，会去扫描项目下的所有文件。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;悲剧发生&lt;/strong&gt;：当你的普通用户扫描到被 Docker root 锁定的 &lt;code&gt;volumes&lt;/code&gt; 文件夹时，Linux 系统的权限管理机制无情地伸出手——&lt;strong&gt;Permission Denied（不准看）！&lt;/strong&gt; 程序当场暴毙。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id="如何破解这个权限诅咒"&gt;如何破解这个权限诅咒？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;解法一：夺回主权（最简单直接）&lt;/strong&gt;
+如果容器已经跑起来并且生成了数据，你可以直接在宿主机上用 &lt;code&gt;sudo&lt;/code&gt; 把文件夹的所有权抢回来，改回你自己的用户。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 将 volumes 文件夹的所有权改回当前用户和当前用户组&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo chown -R &lt;span class="nv"&gt;$USER&lt;/span&gt;:&lt;span class="nv"&gt;$USER&lt;/span&gt; ./volumes
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;em&gt;（每次 Docker 容器产生新级别的深层文件时，可能都需要再敲一次，适合开发阶段临时救急）&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;解法二：惹不起躲得起（最优雅）&lt;/strong&gt;
+修改你本地代码的热重载配置，明确告诉监控器（Watcher）&lt;strong&gt;不要去扫描 Docker 的数据文件夹&lt;/strong&gt;。
+以 Python FastAPI 为例，启动时加上 &lt;code&gt;reload_dirs&lt;/code&gt; 或排除项：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;span class="lnt"&gt;6
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;uvicorn&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;run&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="s2"&gt;&amp;#34;app.main:app&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;reload&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="kc"&gt;True&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 明确告诉框架，只监听 app 代码目录，不要去碰 volumes&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;reload_dirs&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;app&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;解法三：让 Docker 以凡人的身份运行&lt;/strong&gt;
+在启动容器时，强制 Docker 使用你当前宿主机的用户身份运行，这样它生成的文件你天生就有权限访问：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 使用 $(id -u):$(id -g) 获取当前用户的 UID 和 GID&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker run -d -u &lt;span class="k"&gt;$(&lt;/span&gt;id -u&lt;span class="k"&gt;)&lt;/span&gt;:&lt;span class="k"&gt;$(&lt;/span&gt;id -g&lt;span class="k"&gt;)&lt;/span&gt; -v &lt;span class="k"&gt;$(&lt;/span&gt;&lt;span class="nb"&gt;pwd&lt;/span&gt;&lt;span class="k"&gt;)&lt;/span&gt;/data:/app/data my-image
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;hr&gt;
+&lt;h2 id="结语"&gt;结语
+&lt;/h2&gt;&lt;p&gt;掌握了 Volume 和 Bind Mounts，你的 Docker 技能树就点亮了“数据不朽”的成就。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;回顾最佳实践：&lt;/strong&gt;&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;代码和配置文件&lt;/strong&gt;：用 &lt;code&gt;Bind Mounts&lt;/code&gt; 映射，方便你在本地用 VS Code 随时修改看效果。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;数据库和大型中间件的存储&lt;/strong&gt;：用 &lt;code&gt;Docker Volumes&lt;/code&gt; 交给引擎托管，安全省心。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;遇到权限报错&lt;/strong&gt;：别慌，想想是不是 Docker 这个“上帝”在你的地盘创建了普通人无权访问的文件。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;现在，我们解决了单个容器的打包和数据存储。但是，在真实的“智能 OnCall 项目”或微服务架构中，你往往需要同时运行 &lt;strong&gt;Web后端 + 日志服务 + 向量数据库 (Milvus) + MinIO&lt;/strong&gt; 等 4、5 个容器。&lt;/p&gt;
+&lt;p&gt;如果全靠 &lt;code&gt;docker run&lt;/code&gt; 一条条敲，不仅手酸，而且怎么让它们互相通过网络通信（比如后端怎么连上数据库）也是个大问题。&lt;/p&gt;
+&lt;p&gt;别担心，下一篇 &lt;strong&gt;【Docker 系列 05】容器间怎么通信？一文搞懂 Docker 网络模型 (Network)&lt;/strong&gt;，我将带你破解 Docker 内部的网络迷宫，让你的容器们成功手牵手！&lt;/p&gt;</description></item></channel></rss>

@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>专家并行 on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/%E4%B8%93%E5%AE%B6%E5%B9%B6%E8%A1%8C/</link><description>Recent content in 专家并行 on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Mon, 06 Apr 2026 18:30:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/%E4%B8%93%E5%AE%B6%E5%B9%B6%E8%A1%8C/index.xml" rel="self" type="application/rss+xml"/><item><title>vLLM 系列(四)：分布式推理全景图 —— TP、PP 与 MoE 时代的 EP 进化</title><link>https://tkdwbiao.github.io/p/vllm-distributed-inference-tp-pp-ep-deep-dive/</link><pubDate>Mon, 06 Apr 2026 18:30:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/vllm-distributed-inference-tp-pp-ep-deep-dive/</guid><description>&lt;p&gt;当模型参数突破千亿（如 Llama-3-400B 或 DeepSeek-V3），单张 GPU 的 80GB 甚至 192GB 显存连模型的“脚后跟”都装不下。此时，分布式推理不再是可选项，而是生死线。&lt;/p&gt;
+&lt;p&gt;很多同学只听过张量并行（TP），但在 2026 年的工业界，真正的分布式推理是一场关于计算负载与通信带宽的精密博弈。今天阿彪带你拆解 vLLM 是如何指挥多张显卡协同工作的。&lt;/p&gt;
+&lt;h2 id="一-核心逻辑分布式推理的切肉艺术"&gt;一、 核心逻辑：分布式推理的“切肉”艺术
+&lt;/h2&gt;&lt;p&gt;想要玩转大规模集群推理，必须搞清楚这几种并行的底层逻辑：&lt;/p&gt;
+&lt;h3 id="1-张量并行-tensor-parallelism-tp--层内横向切分"&gt;1. 张量并行 (Tensor Parallelism, TP) —— 层内横向切分
+&lt;/h3&gt;&lt;p&gt;这是 vLLM 最核心的优化手段。它把模型每一层内部的矩阵（如 Attention 的线性层）切开，分给不同的 GPU 同时计算。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Megatron-LM 的行列切分逻辑（面试必考）：&lt;/strong&gt;
+为了减少通信开销，vLLM 采用了巧妙的行列切分方案：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;第一个矩阵 A 按列切 (Column Parallel)&lt;/strong&gt;：输入数据 X 拷贝到两张卡上，每张卡只算出半个结果。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;第二个矩阵 B 按行切 (Row Parallel)&lt;/strong&gt;：不需要立即通信，直接接着算。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;通信时机&lt;/strong&gt;：只有当这两层（如 MLP 的两层线性变换）全算完，两张卡才通过 NCCL 进行一次 &lt;strong&gt;All-Reduce&lt;/strong&gt; 同步。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这种设计让原本需要多次通信的操作，缩减到了每层只需要一两次，极大地保护了推理延迟（Latency）。&lt;/p&gt;
+&lt;h3 id="2-流水线并行-pipeline-parallelism-pp--层间纵向切分"&gt;2. 流水线并行 (Pipeline Parallelism, PP) —— 层间纵向切分
+&lt;/h3&gt;&lt;p&gt;这是“接力赛”模式。它把模型的 80 层分段，卡 0 跑前 40 层，卡 1 跑后 40 层。&lt;/p&gt;
+&lt;p&gt;PP 的主要目的是为了撑开显存空间。虽然它在推理中会引入一定的“气泡（Bubble）”延迟（即后面的卡在等前面的卡），但对于超大规模模型，这是必不可少的生存手段。在 vLLM 的新版本中，通过重叠计算与通信，PP 的气泡已经被压缩到了极小。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二-2026-高阶拓展ep-与-cp-的引入"&gt;二、 2026 高阶拓展：EP 与 CP 的引入
+&lt;/h2&gt;&lt;p&gt;随着 DeepSeek 等 MoE 架构和百万级长文本的普及，分布式推理又增加了两个维度：&lt;/p&gt;
+&lt;h3 id="1-专家并行-expert-parallelism-ep"&gt;1. 专家并行 (Expert Parallelism, EP)
+&lt;/h3&gt;&lt;p&gt;在 MoE（混合专家模型）中，模型拥有成百上千个专家，但每次只激活几个。
+EP 让不同的 GPU 维护不同的“专家”。Token 会像快递一样，通过 &lt;strong&gt;All-to-All&lt;/strong&gt; 通信被分拣到对应的专家卡上进行计算。这避免了每张卡都要存储所有专家权重的尴尬，极大地降低了显存负载。&lt;/p&gt;
+&lt;h3 id="2-上下文并行-context-parallelism-cp"&gt;2. 上下文并行 (Context Parallelism, CP)
+&lt;/h3&gt;&lt;p&gt;当 Context 达到 128k 甚至 1M 时，单张卡的 KV Cache 根本塞不下。
+CP 将长序列切段，分给不同的卡。卡 0 算前 512k token，卡 1 算后 512k token。这需要复杂的环形通信（Ring Attention）来同步注意力信息。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="三-代码案例模拟-tp-下的矩阵切分逻辑"&gt;三、 代码/案例：模拟 TP 下的矩阵切分逻辑
+&lt;/h2&gt;&lt;p&gt;为了理解 TP 是如何分担计算压力的，我们来看这个简单的矩阵乘法模拟：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kn"&gt;import&lt;/span&gt; &lt;span class="nn"&gt;torch&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;tp_simulation&lt;/span&gt;&lt;span class="p"&gt;():&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 原始矩阵 W: 1024 x 1024, 输入 X: 1 x 1024&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;X&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;torch&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;randn&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="mi"&gt;1&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;1024&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;W&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;torch&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;randn&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="mi"&gt;1024&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;1024&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# --- 模拟 TP=2 的列切分 ---&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 卡 0 存左半边，卡 1 存右半边&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;W_col_0&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;W&lt;/span&gt;&lt;span class="p"&gt;[:,&lt;/span&gt; &lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="mi"&gt;512&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;W_col_1&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;W&lt;/span&gt;&lt;span class="p"&gt;[:,&lt;/span&gt; &lt;span class="mi"&gt;512&lt;/span&gt;&lt;span class="p"&gt;:]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 两张卡并行计算 (同时发力)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;out_0&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;torch&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;matmul&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;X&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;W_col_0&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="c1"&gt;# 结果大小 1 x 512&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;out_1&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;torch&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;matmul&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;X&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;W_col_1&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="c1"&gt;# 结果大小 1 x 512&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 模拟 All-Gather 或拼接&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;final_out&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;torch&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;cat&lt;/span&gt;&lt;span class="p"&gt;([&lt;/span&gt;&lt;span class="n"&gt;out_0&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;out_1&lt;/span&gt;&lt;span class="p"&gt;],&lt;/span&gt; &lt;span class="n"&gt;dim&lt;/span&gt;&lt;span class="o"&gt;=-&lt;/span&gt;&lt;span class="mi"&gt;1&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;TP 模拟输出维度: &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;final_out&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;shape&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;final_out&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;tp_simulation&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;阿彪点评：在真实的 vLLM 中，这个过程是通过 NCCL 库在 GPU 硬件层面高速完成的。重点在于：&lt;strong&gt;每张卡只存了一半的参数，却完成了一次完整的计算。&lt;/strong&gt;&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="四-面试官会问到的问题及详细答案"&gt;四、 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;h3 id="-q1为什么推理场景通常首选-tp-而不是-pp"&gt;❓ Q1：为什么推理场景通常首选 TP 而不是 PP？
+&lt;/h3&gt;&lt;p&gt;答：
+因为推理对响应速度（Latency）极其敏感。
+PP（流水线并行）存在天然的逻辑先后顺序，导致后面的卡必须等前面的卡算完。即便使用了 Micro-batch 优化，首字延迟（TTFT）也会显著增加。
+而 TP（张量并行）是同步计算，多张卡同时发力完成同一个矩阵运算，能直接缩短计算耗时，是低延迟场景的真神。&lt;/p&gt;
+&lt;h3 id="-q2在-tp-并行下kv-cache-是如何分布的"&gt;❓ Q2：在 TP 并行下，KV Cache 是如何分布的？
+&lt;/h3&gt;&lt;p&gt;答：
+KV Cache 是跟随注意力头（Heads）进行分布式的。
+假设模型有 32 个 Attention Heads，设置 TP=2。那么卡 0 会存储并计算前 16 个头的 KV Cache，卡 1 负责后 16 个。
+这种设计保证了计算和存储的本地化：哪张卡负责算这个头，哪张卡就存这个头的 Cache，避免了昂贵的跨卡 KV Cache 搬运。&lt;/p&gt;
+&lt;h3 id="-q3为什么跨机器multi-node做-tp-效果通常很差"&gt;❓ Q3：为什么跨机器（Multi-node）做 TP 效果通常很差？
+&lt;/h3&gt;&lt;p&gt;答：
+因为 TP 极其依赖高频、低延迟的 All-Reduce 通信。
+在单台 8 卡机器内部，通过 NVLink 互联，通信带宽可以达到 900GB/s 甚至更高。
+一旦跨机，受限于网卡带宽（即使是 400G IB 网也远低于 NVLink）和网络延迟，通信开销会迅速超过计算节省的时间。因此，工业界通常在机内做 TP，跨机做 PP 或 DP。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="五-阿彪碎碎念-抱拳"&gt;五、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;讲完分布式这部分，我感触最深的是：大模型推理已经从“算法问题”彻底变成了一个“系统工程问题”。&lt;/p&gt;
+&lt;p&gt;很多同学面试时能推导出 Attention 公式，但被问到“如何平衡 TP 和 EP 的通信带宽”时就卡壳了。
+在 2026 年的今天，如果你想进大厂的核心架构组，你不仅要懂 Python，你还得懂 NCCL 通信原语，懂 GPU 的拓扑结构，懂 PCIe 带宽。&lt;/p&gt;
+&lt;p&gt;分布式推理就像一场交响乐表演。TP 是乐手间的默契配合，PP 是乐章间的衔接，而 EP 则是不同乐器的精准独奏。
+只有把这四者协调好，那个几千亿参数的巨人才能在毫秒间给出回答。兄弟们，搞懂了分布式，你才真正看清了大模型的全身骨骼。下一篇，我们将进入 vLLM 的高阶优化篇——Chunked Prefill 与投机解码，冲就完事了！&lt;/p&gt;</description></item></channel></rss>

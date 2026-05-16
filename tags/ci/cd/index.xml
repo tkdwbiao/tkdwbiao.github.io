@@ -1,0 +1,485 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>CI/CD on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/ci/cd/</link><description>Recent content in CI/CD on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Thu, 31 Jul 2025 09:00:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/ci/cd/index.xml" rel="self" type="application/rss+xml"/><item><title>【Docker 系列 09】解放双手：结合 GitHub Actions 实现自动化构建与推流</title><link>https://tkdwbiao.github.io/p/docker-series-09-cicd/</link><pubDate>Thu, 31 Jul 2025 09:00:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/docker-series-09-cicd/</guid><description>&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;“每天下班前，我都要敲一遍：&lt;code&gt;docker build&lt;/code&gt;、&lt;code&gt;docker push&lt;/code&gt;，然后 SSH 登录服务器，敲 &lt;code&gt;docker pull&lt;/code&gt;，最后 &lt;code&gt;docker compose up -d&lt;/code&gt;。整套动作行云流水，但我感觉自己像个流水线上的机器。”&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;在前面的 8 篇文章中，我们彻底攻克了 Docker 的各项核心技术，甚至能在遇到极其诡异的报错时（如权限崩溃、网络隔离）从容排障。&lt;/p&gt;
+&lt;p&gt;现在，你已经可以用 Docker 完美运行任何复杂架构了。但是，随着项目的高频迭代（比如你正在开发的“智能 OnCall 项目”，一天可能要修改十几处 Prompt 提示词和逻辑），&lt;strong&gt;手动打包、上传、下载、重启的噩梦开始了。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;“能不能让我只要敲一个 &lt;code&gt;git push&lt;/code&gt; 把代码提交到仓库，服务器就能&lt;strong&gt;自动&lt;/strong&gt;帮我把新代码打包成 Docker 镜像，并自动重启上线？”&lt;/p&gt;
+&lt;p&gt;能！这就是现代软件工程的最高奥义：&lt;strong&gt;CI/CD（持续集成与持续部署）&lt;/strong&gt;。
+今天，我们就来请一位免费且不知疲倦的机器人管家 —— &lt;strong&gt;GitHub Actions&lt;/strong&gt;，彻底解放你的双手。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="一什么是-cicd-与-github-actions"&gt;一、什么是 CI/CD 与 GitHub Actions？
+&lt;/h2&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;CI（Continuous Integration，持续集成）&lt;/strong&gt;：代码推送到远程仓库后，自动触发编译、测试和&lt;strong&gt;打包 Docker 镜像&lt;/strong&gt;的过程。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;CD（Continuous Deployment，持续部署）&lt;/strong&gt;：将打包好的镜像，自动发布到目标服务器并运行起来。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;以前做 CI/CD，你需要专门买一台服务器去搭建庞大复杂的 Jenkins。而现在，微软收购 GitHub 后，直接在代码仓库里集成了免费的自动化流水线工具 —— &lt;strong&gt;GitHub Actions&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;只要你在代码仓库里放一份特定的 YAML 剧本文件，一旦有代码 &lt;code&gt;push&lt;/code&gt; 上来，GitHub 就会免费分配一台云端服务器（Runner）给你，按照剧本帮你执行那些枯燥的命令。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二战前准备配置安全机密secrets"&gt;二、战前准备：配置安全机密（Secrets）
+&lt;/h2&gt;&lt;p&gt;既然要让 GitHub 替你干活，它就需要有&lt;strong&gt;登录你 Docker 镜像仓库的账号密码&lt;/strong&gt;，以及&lt;strong&gt;登录你生产服务器的 SSH 密钥&lt;/strong&gt;。
+但千万记住我们在&lt;a class="link" href="https://tkdwbiao.github.io/p/docker-series-06-compose/" &gt;第 6 篇&lt;/a&gt;说过的：&lt;strong&gt;绝对不能把密码明文写在代码里！&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;我们需要用到 GitHub 的机密保险箱：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;打开你的 GitHub 仓库主页。&lt;/li&gt;
+&lt;li&gt;进入 &lt;code&gt;Settings&lt;/code&gt; -&amp;gt; 左侧菜单栏展开 &lt;code&gt;Secrets and variables&lt;/code&gt; -&amp;gt; 点击 &lt;code&gt;Actions&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;点击 &lt;code&gt;New repository secret&lt;/code&gt;，依次添加以下三个机密：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;DOCKERHUB_USERNAME&lt;/code&gt;&lt;/strong&gt;：你的 Docker Hub 账号名（或者阿里云镜像库账号）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;DOCKERHUB_TOKEN&lt;/code&gt;&lt;/strong&gt;：你的 Docker Hub 密码（建议生成 Access Token）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;SERVER_SSH_KEY&lt;/code&gt;&lt;/strong&gt;：你服务器的 SSH 私钥（用于 CD 远程登录部署）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;SERVER_HOST&lt;/code&gt;&lt;/strong&gt;：你的服务器外网 IP。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;装好保险箱后，我们就可以开始写自动化剧本了。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="三实战演练编写自动化流转剧本"&gt;三、实战演练：编写自动化流转剧本
+&lt;/h2&gt;&lt;p&gt;在你的项目根目录下，创建一个特殊的文件夹层级：&lt;code&gt;.github/workflows/&lt;/code&gt;，并在里面新建一个名为 &lt;code&gt;docker-publish.yml&lt;/code&gt; 的文件。&lt;/p&gt;
+&lt;p&gt;当我们敲下 &lt;code&gt;git push&lt;/code&gt; 时，GitHub Actions 就会自动读取这个剧本并执行。&lt;/p&gt;
+&lt;h3 id="阶段一自动构建并推流镜像-ci"&gt;阶段一：自动构建并推流镜像 (CI)
+&lt;/h3&gt;&lt;p&gt;我们先来写剧本的前半部分，让它自动打包我们的 FastAPI 镜像并推送到 Docker Hub。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;span class="lnt"&gt;24
+&lt;/span&gt;&lt;span class="lnt"&gt;25
+&lt;/span&gt;&lt;span class="lnt"&gt;26
+&lt;/span&gt;&lt;span class="lnt"&gt;27
+&lt;/span&gt;&lt;span class="lnt"&gt;28
+&lt;/span&gt;&lt;span class="lnt"&gt;29
+&lt;/span&gt;&lt;span class="lnt"&gt;30
+&lt;/span&gt;&lt;span class="lnt"&gt;31
+&lt;/span&gt;&lt;span class="lnt"&gt;32
+&lt;/span&gt;&lt;span class="lnt"&gt;33
+&lt;/span&gt;&lt;span class="lnt"&gt;34
+&lt;/span&gt;&lt;span class="lnt"&gt;35
+&lt;/span&gt;&lt;span class="lnt"&gt;36
+&lt;/span&gt;&lt;span class="lnt"&gt;37
+&lt;/span&gt;&lt;span class="lnt"&gt;38
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# .github/workflows/docker-publish.yml&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;Build and Deploy to Server&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 触发条件：当主分支（main）有代码 push 时触发&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;on&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;push&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;branches&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="l"&gt;main&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;jobs&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 任务1：构建并推流 (CI)&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;build-and-push&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;runs-on&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;ubuntu-latest&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# GitHub 免费提供一台 Ubuntu 服务器来干活&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;steps&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 步骤1：把你的代码拉取到这台临时服务器上&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="nt"&gt;name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;Check out the repo&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;uses&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;actions/checkout@v3&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 步骤2：登录到 Docker Hub&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="nt"&gt;name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;Log in to Docker Hub&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;uses&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;docker/login-action@v2&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;with&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;username&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;${{ secrets.DOCKERHUB_USERNAME }}&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;password&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;${{ secrets.DOCKERHUB_TOKEN }}&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 步骤3：设置 Docker 镜像构建器&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="nt"&gt;name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;Set up Docker Buildx&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;uses&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;docker/setup-buildx-action@v2&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 步骤4：构建镜像并推送到 Docker Hub&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="nt"&gt;name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;Build and push&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;uses&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;docker/build-push-action@v4&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;with&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;context&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;. &lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 使用项目根目录的 Dockerfile&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;push&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="kc"&gt;true&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 动态打标签：以你的 GitHub 账户名/项目名:latest 为名&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;tags&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;${{ secrets.DOCKERHUB_USERNAME }}/my-smart-oncall-api:latest&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;发生了什么？&lt;/strong&gt;
+只要你把这段代码 &lt;code&gt;git push&lt;/code&gt; 上去，打开 GitHub 仓库的 &lt;code&gt;Actions&lt;/code&gt; 标签页，你会看到一个绿色的进度条在转。等它跑完，去你的 Docker Hub 主页看看，&lt;strong&gt;新鲜出炉的 Docker 镜像已经被自动上传上去了！&lt;/strong&gt;&lt;/p&gt;
+&lt;hr&gt;
+&lt;h3 id="阶段二自动远程重启服务-cd"&gt;阶段二：自动远程重启服务 (CD)
+&lt;/h3&gt;&lt;p&gt;镜像虽然做好了，但服务器上的容器还是旧版本。我们需要让 Actions 继续“顺着网线”爬进你的服务器，敲下重启命令。&lt;/p&gt;
+&lt;p&gt;在上面的剧本末尾，紧接着加上第二个 Job：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;span class="lnt"&gt;24
+&lt;/span&gt;&lt;span class="lnt"&gt;25
+&lt;/span&gt;&lt;span class="lnt"&gt;26
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 任务2：部署到服务器 (CD)&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;deploy&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 告诉 GitHub，必须等 build-and-push 任务成功后，才执行这步&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;needs&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;build-and-push &lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;runs-on&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;ubuntu-latest&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;steps&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 使用别人写好的 SSH 插件远程执行命令&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="nt"&gt;name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;Execute remote ssh commands&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;uses&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;appleboy/ssh-action@v0.1.10&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;with&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;host&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;${{ secrets.SERVER_HOST }}&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;username&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;root&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 你服务器的用户名，建议也放进 secrets&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;key&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;${{ secrets.SERVER_SSH_KEY }}&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;script&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="p"&gt;|&lt;/span&gt;&lt;span class="sd"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="sd"&gt; # 这里的命令就是在你服务器上执行的
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="sd"&gt; cd /data/smart-oncall-project
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="sd"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="sd"&gt; # 拉取刚刚制作好的最新镜像
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="sd"&gt; docker compose pull
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="sd"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="sd"&gt; # 重启容器，-d 后台运行，--remove-orphans 清理旧容器
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="sd"&gt; docker compose up -d --remove-orphans
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="sd"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="sd"&gt; # (可选) 清理被淘汰下来的旧镜像垃圾
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="sd"&gt; docker image prune -f&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;hr&gt;
+&lt;h2 id="四体验魔法的时刻"&gt;四、体验魔法的时刻
+&lt;/h2&gt;&lt;p&gt;现在，你的 CI/CD 流水线彻底打通了。我们来体验一下现代 DevOps 的丝滑：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;你在本地用 VS Code 修改了一行业务逻辑代码（比如修复了一个 Bug）。&lt;/li&gt;
+&lt;li&gt;在终端敲击：
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;git add .
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;git commit -m &lt;span class="s2"&gt;&amp;#34;fix: 修复了查询 CPU 指标的一个 Bug&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;git push
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;然后，你可以去喝杯咖啡了。&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;几分钟后，你刷新生产环境的网页，Bug 已经被修复。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;你不需要再开终端，不需要等待无聊的构建过程，不需要担心手动部署时敲错 &lt;code&gt;docker-compose&lt;/code&gt; 的参数。&lt;strong&gt;一切复杂性，都在那一份 YAML 文件中被消解于无形。&lt;/strong&gt;&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="结语"&gt;结语
+&lt;/h2&gt;&lt;p&gt;从&lt;a class="link" href="https://tkdwbiao.github.io/p/docker-series-01-introduction/" &gt;第一篇&lt;/a&gt;敲下 &lt;code&gt;docker run hello-world&lt;/code&gt;，到今天利用 CI/CD 流水线全自动更新包含大模型向量库的复杂微服务，你已经跨越了一个现代后端开发者的全部必经之路。&lt;/p&gt;
+&lt;p&gt;你现在所掌握的技术栈：&lt;strong&gt;Docker + Docker Compose + GitHub Actions&lt;/strong&gt;，已经完全能够支撑起百万日活以下的创业级项目，能够让小团队以极高的效率迭代交付。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;但是，这就到终点了吗？&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;设想一个场景：
+你的 AI 产品突然爆火，一台服务器的内存根本扛不住 Milvus 暴增的查询量和 FastAPI 的并发。你需要增加 10 台服务器来共同分担压力。
+在这个集群里：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;如果一台服务器突然断电宕机了怎么办？&lt;/li&gt;
+&lt;li&gt;怎么让用户的请求自动负载均衡到比较闲的那几台机器上？&lt;/li&gt;
+&lt;li&gt;怎么保证在更新服务时，用户完全感觉不到停机（零宕机发布）？&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在面对多机集群（Cluster）这个怪兽时，我们一直引以为傲的 &lt;code&gt;docker-compose&lt;/code&gt; 显得像个玩具一样力不从心。我们需要一个真正的“集群大脑”。&lt;/p&gt;
+&lt;p&gt;下期大结局，我们将揭开云原生时代的终极霸主面纱：&lt;strong&gt;【Docker 终章】生产环境部署方案：从 Docker 到 K8s 的过渡准备&lt;/strong&gt;。为我们整个容器化系列画上一个圆满的句号！&lt;/p&gt;</description></item><item><title>【Docker 系列 03】从零手写 Dockerfile：构建你的第一个专属镜像</title><link>https://tkdwbiao.github.io/p/docker-series-03-dockerfile/</link><pubDate>Thu, 19 Jun 2025 09:30:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/docker-series-03-dockerfile/</guid><description>&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;“我不想要别人的 Nginx，我想把我自己写的 Python/Go/Java 项目打包成镜像，该怎么做？”&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;在&lt;a class="link" href="https://tkdwbiao.github.io/p/docker-series-02-commands/" &gt;上一篇文章&lt;/a&gt;中，我们学会了如何使用命令行对现有的镜像和容器进行“生杀大权”的管理。当时我们留了一个悬念：如果我们要部署自己的代码，难道是先启动一个 Ubuntu 基础容器，用 &lt;code&gt;docker exec&lt;/code&gt; 进去 &lt;code&gt;apt-get install&lt;/code&gt;，然后再把代码通过 FTP 传进去吗？&lt;/p&gt;
+&lt;p&gt;绝对不要这么做！这种行为被称为制作“黑盒镜像”，它不仅体积庞大，而且别人根本不知道你在这个系统里干了什么，完全违背了 Docker “可复现”的核心理念。&lt;/p&gt;
+&lt;p&gt;今天，我们将学习 Docker 宇宙中最伟大的发明之一：&lt;strong&gt;Dockerfile&lt;/strong&gt;。
+有了它，你的代码从此就像是拥有了“自动安装说明书”，随时随地，一键生成完美运行环境。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="一dockerfile-是什么为什么我们需要它"&gt;一、Dockerfile 是什么？为什么我们需要它？
+&lt;/h2&gt;&lt;p&gt;&lt;strong&gt;Dockerfile 本质上就是一个普通的文本文件&lt;/strong&gt;，里面写满了一条条指令（Instructions）。&lt;/p&gt;
+&lt;p&gt;你可以把它想象成一张 &lt;strong&gt;“菜谱”&lt;/strong&gt; ：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;买底料&lt;/strong&gt;（准备基础系统，比如 Python 3.11 环境）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;切菜准备&lt;/strong&gt;（在系统里建个文件夹作为工作区）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;下锅炒菜&lt;/strong&gt;（把你的源代码复制进系统，并执行 &lt;code&gt;pip install&lt;/code&gt; 安装依赖）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;出锅装盘&lt;/strong&gt;（指定这个容器启动时要运行哪条命令）。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;Docker 引擎（厨师）只要拿着这份 Dockerfile，加上你的源代码，就能自动“炒”出一个包含你应用的全新镜像（Image）。只要菜谱不改，炒出来的味道（运行环境）就永远一模一样！&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二掌握-dockerfile-的-6-大核心指令"&gt;二、掌握 Dockerfile 的 6 大核心指令
+&lt;/h2&gt;&lt;p&gt;Dockerfile 的指令并不多，日常开发掌握以下 6 个就能应对 90% 的场景：&lt;/p&gt;
+&lt;h3 id="1-from站在巨人的肩膀上"&gt;1. &lt;code&gt;FROM&lt;/code&gt;：站在巨人的肩膀上
+&lt;/h3&gt;&lt;p&gt;所有的 Dockerfile 必须以 &lt;code&gt;FROM&lt;/code&gt; 开头，它指定了你的基础环境。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-dockerfile" data-lang="dockerfile"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 语法：FROM &amp;lt;镜像名&amp;gt;:&amp;lt;标签&amp;gt;&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;FROM&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;python:3.11-slim&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;em&gt;💡 阿彪建议：尽量不要用臃肿的 &lt;code&gt;ubuntu&lt;/code&gt; 或 &lt;code&gt;centos&lt;/code&gt; 作为基础镜像。官方提供的 &lt;code&gt;-slim&lt;/code&gt;（精简版）或 &lt;code&gt;-alpine&lt;/code&gt;（极简版）体积更小，安全性更高。&lt;/em&gt;&lt;/p&gt;
+&lt;h3 id="2-workdir指定工作目录"&gt;2. &lt;code&gt;WORKDIR&lt;/code&gt;：指定工作目录
+&lt;/h3&gt;&lt;p&gt;进入容器后的默认目录，相当于 Linux 里的 &lt;code&gt;cd&lt;/code&gt; 命令。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-dockerfile" data-lang="dockerfile"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 如果 /app 目录不存在，Docker 会自动帮你创建&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;WORKDIR&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;/app&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="3-copy把你的代码搬进去"&gt;3. &lt;code&gt;COPY&lt;/code&gt;：把你的代码搬进去
+&lt;/h3&gt;&lt;p&gt;把你电脑（宿主机）上的文件，复制到容器内部。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-dockerfile" data-lang="dockerfile"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 语法：COPY &amp;lt;本地路径&amp;gt; &amp;lt;容器内路径&amp;gt;&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 把当前目录下的所有文件，复制到容器的 /app 目录下&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;COPY&lt;/span&gt; . /app&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="4-run在构建阶段执行的命令"&gt;4. &lt;code&gt;RUN&lt;/code&gt;：在“构建阶段”执行的命令
+&lt;/h3&gt;&lt;p&gt;在打包镜像的过程中运行的命令，通常用于安装软件或依赖。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-dockerfile" data-lang="dockerfile"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;RUN&lt;/span&gt; pip install -r requirements.txt&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="5-expose声明暴露的端口"&gt;5. &lt;code&gt;EXPOSE&lt;/code&gt;：声明暴露的端口
+&lt;/h3&gt;&lt;p&gt;告诉看这个 Dockerfile 的人，你的程序监听了哪个端口。&lt;strong&gt;注意：它只是一个声明（类似于写注释），并不会真的在宿主机上把端口映射出去。&lt;/strong&gt; 真实的映射还是得靠 &lt;code&gt;docker run -p&lt;/code&gt;。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-dockerfile" data-lang="dockerfile"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;EXPOSE&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;8080&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="6-cmd-与-entrypoint容器启动时干什么"&gt;6. &lt;code&gt;CMD&lt;/code&gt; 与 &lt;code&gt;ENTRYPOINT&lt;/code&gt;：容器启动时干什么
+&lt;/h3&gt;&lt;p&gt;这两兄弟经常让人混淆。它们都是用来指定容器 &lt;strong&gt;启动时（Run 阶段）&lt;/strong&gt; 执行的命令。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;CMD [&amp;quot;python&amp;quot;, &amp;quot;app.py&amp;quot;]&lt;/code&gt;：默认执行命令。如果在终端运行 &lt;code&gt;docker run my-app echo &amp;quot;hello&amp;quot;&lt;/code&gt;，那么 &lt;code&gt;echo &amp;quot;hello&amp;quot;&lt;/code&gt; 会&lt;strong&gt;覆盖&lt;/strong&gt;掉 CMD 里的内容。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ENTRYPOINT [&amp;quot;python&amp;quot;, &amp;quot;app.py&amp;quot;]&lt;/code&gt;：固定的入口点。它很难被轻易覆盖，通常用于把容器当成一个特定的可执行程序来使用。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;em&gt;👉 结论：绝大多数普通 Web 项目，用 &lt;code&gt;CMD&lt;/code&gt; 就足够了。&lt;/em&gt;&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="三实战从零构建一个-python-web-镜像"&gt;三、实战：从零构建一个 Python Web 镜像
+&lt;/h2&gt;&lt;p&gt;说再多不如动手敲。假设我们现在有一个简单的 Python Web 项目，目录结构如下：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;my-web-app/
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;├── app.py # 核心业务代码
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;├── requirements.txt # 依赖列表
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;└── Dockerfile # 我们要写的构建清单
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;&lt;code&gt;app.py&lt;/code&gt; 内容（基于 FastAPI）：&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kn"&gt;from&lt;/span&gt; &lt;span class="nn"&gt;fastapi&lt;/span&gt; &lt;span class="kn"&gt;import&lt;/span&gt; &lt;span class="n"&gt;FastAPI&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kn"&gt;import&lt;/span&gt; &lt;span class="nn"&gt;uvicorn&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;app&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;FastAPI&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nd"&gt;@app.get&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;/&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;read_root&lt;/span&gt;&lt;span class="p"&gt;():&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="p"&gt;{&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;message&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;Hello Docker! 这是一篇来自阿彪博客的测试！&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;}&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="vm"&gt;__name__&lt;/span&gt; &lt;span class="o"&gt;==&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;__main__&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;uvicorn&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;run&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;app&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;host&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;0.0.0.0&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;port&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="mi"&gt;8080&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;&lt;code&gt;requirements.txt&lt;/code&gt; 内容：&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;fastapi==0.103.1
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;uvicorn==0.23.2
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="编写黄金标准版-dockerfile"&gt;编写黄金标准版 Dockerfile
+&lt;/h3&gt;&lt;p&gt;现在，在项目根目录下创建一个名为 &lt;code&gt;Dockerfile&lt;/code&gt;（注意大小写，没有后缀）的文件，填入以下内容。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;⚠️ 请注意第 3 步和第 4 步的顺序，这是高级玩家和新手的本质区别！&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-dockerfile" data-lang="dockerfile"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 1. 基础镜像&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;FROM&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;python:3.11-slim&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 2. 设置工作目录&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;WORKDIR&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;/app&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 3. ⭐️ 核心优化：先拷贝 requirements.txt&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;COPY&lt;/span&gt; requirements.txt .&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 4. ⭐️ 安装依赖（利用国内源加速）&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;RUN&lt;/span&gt; pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 5. 拷贝剩下的所有源代码&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;COPY&lt;/span&gt; . .&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 6. 声明端口&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;EXPOSE&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s"&gt;8080&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 7. 启动命令&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;CMD&lt;/span&gt; &lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;python&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="s2"&gt;&amp;#34;app.py&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;&lt;span class="err"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="为什么要把-copy-分成两步深刻理解-docker-缓存层"&gt;为什么要把 COPY 分成两步？（深刻理解 Docker 缓存层）
+&lt;/h3&gt;&lt;p&gt;Docker 构建镜像时，是一层一层叠加的（Layer），并且具有&lt;strong&gt;缓存机制&lt;/strong&gt;。如果某一层的内容没变，Docker 就会直接使用上一次的缓存，极大地加快构建速度。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;新手错误写法：&lt;/strong&gt; 直接 &lt;code&gt;COPY . .&lt;/code&gt; 然后 &lt;code&gt;RUN pip install&lt;/code&gt;。这种写法会导致你每次只修改了一行 &lt;code&gt;app.py&lt;/code&gt; 的代码，Docker 都会认为代码目录变了，从而&lt;strong&gt;让缓存失效，强行重新下载一遍所有的第三方依赖包&lt;/strong&gt;，非常浪费时间！&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;老鸟优化写法：&lt;/strong&gt; 先只 &lt;code&gt;COPY requirements.txt&lt;/code&gt;，然后 &lt;code&gt;RUN pip install&lt;/code&gt;。因为你的依赖项十天半个月才变一次，所以这一层的缓存几乎永远有效。最后再 &lt;code&gt;COPY . .&lt;/code&gt;（复制经常变动的业务代码）。这样每次重新打包时，安装依赖的那一步就直接秒跳过！&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="四见证奇迹构建并运行"&gt;四、见证奇迹：构建并运行
+&lt;/h2&gt;&lt;h3 id="1-构建镜像-docker-build"&gt;1. 构建镜像 (&lt;code&gt;docker build&lt;/code&gt;)
+&lt;/h3&gt;&lt;p&gt;在终端中进入你的 &lt;code&gt;my-web-app&lt;/code&gt; 目录，执行：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# -t 表示给镜像打标签 (tag)，最后一个 . 表示使用当前目录的 Dockerfile&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker build -t my-fastapi-app:v1 .
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;你会看到屏幕上一层一层地执行你写的指令，成功后会显示 &lt;code&gt;Successfully tagged my-fastapi-app:v1&lt;/code&gt;。
+用 &lt;code&gt;docker images&lt;/code&gt; 查看，你就能看到你的亲骨肉静静地躺在镜像列表里了！&lt;/p&gt;
+&lt;h3 id="2-运行你自己的镜像-docker-run"&gt;2. 运行你自己的镜像 (&lt;code&gt;docker run&lt;/code&gt;)
+&lt;/h3&gt;&lt;p&gt;有了镜像，跑起来就顺理成章了：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker run -d --name my-app-container -p 8080:8080 my-fastapi-app:v1
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;打开浏览器，访问 &lt;code&gt;http://localhost:8080&lt;/code&gt;，看到那句亲切的 &amp;ldquo;Hello Docker! 这是一篇来自阿彪博客的测试！&amp;rdquo; 了吗？&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;恭喜你，你已经掌握了把任意代码打包成工业级标准制品的终极技能！&lt;/strong&gt;&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="五千万别忘了这把锁dockerignore"&gt;五、千万别忘了这把锁：&lt;code&gt;.dockerignore&lt;/code&gt;
+&lt;/h2&gt;&lt;p&gt;在你执行 &lt;code&gt;docker build&lt;/code&gt; 时，Docker 引擎会把你当前目录下的&lt;strong&gt;所有文件&lt;/strong&gt;（称为构建上下文 Context）发送给守护进程。&lt;/p&gt;
+&lt;p&gt;如果你的目录下有个 500MB 的 &lt;code&gt;node_modules&lt;/code&gt; 文件夹，或者有一个 2GB 的虚拟环境 &lt;code&gt;.venv&lt;/code&gt; 文件夹，甚至包含着你的密钥配置文件 &lt;code&gt;.env&lt;/code&gt;，它们全都会被一股脑塞进 Docker 里。这会导致&lt;strong&gt;构建慢如蜗牛，且容易泄露机密数据&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;解决办法：在项目根目录建一个名叫 &lt;strong&gt;&lt;code&gt;.dockerignore&lt;/code&gt;&lt;/strong&gt; 的文件，语法和 &lt;code&gt;.gitignore&lt;/code&gt; 一模一样：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;span class="lnt"&gt;6
+&lt;/span&gt;&lt;span class="lnt"&gt;7
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;# .dockerignore
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;.git
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;.venv
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;__pycache__
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;*.pyc
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;.env
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;logs/
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;这不仅能让你的镜像体积暴瘦，还能避免我们在开发 AI 项目时遇到过的各种权限和目录挂载坑。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="结语"&gt;结语
+&lt;/h2&gt;&lt;p&gt;学到这里，你可以自豪地说你已经“会用 Docker”了。你的应用已经摆脱了操作系统的束缚，变成了一个标准化的“集装箱”。&lt;/p&gt;
+&lt;p&gt;但是，等等！
+如果你的项目是一个博客系统，有人发了一篇新文章，数据写进了容器的内部数据库。由于我们在&lt;a class="link" href="https://tkdwbiao.github.io/p/docker-series-02-commands/" &gt;第二篇&lt;/a&gt;里学过，容器被 &lt;code&gt;docker rm&lt;/code&gt; 删掉后，里面的一切都会灰飞烟灭。那我们的&lt;strong&gt;数据该怎么办？&lt;/strong&gt; 日志文件该放哪？&lt;/p&gt;
+&lt;p&gt;如何让珍贵的数据在容器的生死轮回中永生？
+请锁定下一篇：&lt;strong&gt;【Docker 系列 04】给容器加块硬盘：Docker 数据持久化 (Volumes) 完全指南&lt;/strong&gt;。我们不见不散！&lt;/p&gt;</description></item></channel></rss>

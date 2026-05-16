@@ -1,0 +1,579 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>运维实战 on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/%E8%BF%90%E7%BB%B4%E5%AE%9E%E6%88%98/</link><description>Recent content in 运维实战 on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Thu, 24 Jul 2025 10:00:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/%E8%BF%90%E7%BB%B4%E5%AE%9E%E6%88%98/index.xml" rel="self" type="application/rss+xml"/><item><title>【Docker 系列 08】排障指南：Docker 常见报错大赏与终极解决套路</title><link>https://tkdwbiao.github.io/p/docker-series-08-troubleshooting/</link><pubDate>Thu, 24 Jul 2025 10:00:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/docker-series-08-troubleshooting/</guid><description>&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;“我的 Dockerfile 写得完美无瑕，docker-compose.yml 结构严谨。满怀期待地敲下 &lt;code&gt;up -d&lt;/code&gt;，结果换来的却是满屏刺眼的红字：&lt;code&gt;Permission denied&lt;/code&gt;、&lt;code&gt;Address already in use&lt;/code&gt;、&lt;code&gt;Restarting (3)&lt;/code&gt;…… 苍天啊，到底哪里出了问题？”&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;欢迎来到真实的后端开发世界。
+在前面的 7 篇文章中，我们一路高歌猛进，学会了写 Dockerfile、挂载 Volume、配置网络、甚至做了多阶段构建的极限瘦身。&lt;/p&gt;
+&lt;p&gt;但理论总是丰满的，现实总是骨感的。当你把这些完美的代码部署到开发机或生产服务器上时，你会发现，&lt;strong&gt;90% 的时间并不是在写配置，而是在 Debug（排障）&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;今天，我将把自己这些年在开发微服务和 AI 大模型项目时，用血泪换来的“Docker 常见报错大赏及排障套路”倾囊相授。掌握了这套心法，面对再诡异的报错，你也能像老中医把脉一样，一击毙命！&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="一排障心法docker-医生的望闻问切三板斧"&gt;一、排障心法：Docker 医生的“望闻问切”三板斧
+&lt;/h2&gt;&lt;p&gt;当你敲下运行命令，却发现服务没起来时，千万不要瞎猜，更不要盲目重启。请严格遵守以下三步排障法：&lt;/p&gt;
+&lt;h3 id="1-望看整体状态docker-ps--a"&gt;1. 望（看整体状态）：&lt;code&gt;docker ps -a&lt;/code&gt;
+&lt;/h3&gt;&lt;p&gt;不要只敲 &lt;code&gt;docker ps&lt;/code&gt;！因为启动失败的容器是不会出现在存活列表里的。
+加上 &lt;code&gt;-a&lt;/code&gt;（all），你要重点观察容器的 &lt;code&gt;STATUS&lt;/code&gt; 字段：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;如果显示 &lt;code&gt;Up 2 minutes&lt;/code&gt;：说明它活着，但可能内部逻辑报错（如连不上数据库）。&lt;/li&gt;
+&lt;li&gt;如果显示 &lt;code&gt;Exited (1) 2 seconds ago&lt;/code&gt;：说明程序发生了致命错误，启动后立刻崩溃退出了。&lt;/li&gt;
+&lt;li&gt;如果显示 &lt;code&gt;Restarting (3) 4 seconds ago&lt;/code&gt;：说明程序崩溃了，但因为你配置了 &lt;code&gt;restart: always&lt;/code&gt;，Docker 正在无限次尝试拉起它。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="2-闻听错误原音docker-logs-容器名"&gt;2. 闻（听错误原音）：&lt;code&gt;docker logs &amp;lt;容器名&amp;gt;&lt;/code&gt;
+&lt;/h3&gt;&lt;p&gt;这是排障的&lt;strong&gt;绝对核心&lt;/strong&gt;。容器挂了，99% 的原因都写在日志里。
+如果是不断重启的容器，用 &lt;code&gt;docker logs -f &amp;lt;容器名&amp;gt;&lt;/code&gt; 实时抓取它临死前吐出的最后一行报错（Traceback）。&lt;/p&gt;
+&lt;h3 id="3-切深入内部解剖覆盖-entrypoint-启动"&gt;3. 切（深入内部解剖）：覆盖 Entrypoint 启动
+&lt;/h3&gt;&lt;p&gt;如果容器一起动就秒退，你连 &lt;code&gt;docker exec&lt;/code&gt; 进去查看配置的机会都没有怎么办？
+&lt;strong&gt;大招&lt;/strong&gt;：覆盖它的默认启动命令，强行让它活着。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 原本启动会崩溃，现在我们强行把它变成一个只运行 sh 的空壳容器进去排查&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker run -it --entrypoint sh my-crashing-image
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;进去之后，你就可以手动执行启动命令，看看究竟缺了什么环境变量或依赖。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二经典报错大赏那些年我们踩过的深坑"&gt;二、经典报错大赏：那些年我们踩过的深坑
+&lt;/h2&gt;&lt;p&gt;接下来，我们将对最常见的几个经典报错进行“尸检报告”分析。&lt;/p&gt;
+&lt;h3 id="-经典报错-1端口已被占用"&gt;🚨 经典报错 1：端口已被占用
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;报错原声：&lt;/strong&gt;&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;code&gt;Error response from daemon: driver failed programming external connectivity on endpoint... Bind for 0.0.0.0:9000 failed: port is already allocated&lt;/code&gt;
+或者你的 Python 程序报 &lt;code&gt;[Errno 98] Address already in use&lt;/code&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;&lt;strong&gt;症状分析：&lt;/strong&gt;
+Docker 试图把容器内部的端口映射到你宿主机的 9000 端口，但宿主机的 9000 端口&lt;strong&gt;已经被别人占用了&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;终极解法：&lt;/strong&gt;&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;揪出元凶：在宿主机终端执行 &lt;code&gt;sudo lsof -i :9000&lt;/code&gt; 或 &lt;code&gt;sudo netstat -tunlp | grep 9000&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;你会看到占用端口的进程（可能是上一次没关干净的僵尸 Python 进程，或者是另外一个残留的 Docker 容器）。&lt;/li&gt;
+&lt;li&gt;处决元凶：拿到它的 &lt;code&gt;PID&lt;/code&gt;（比如 1234），执行 &lt;code&gt;sudo kill -9 1234&lt;/code&gt;；如果是个旧容器，执行 &lt;code&gt;docker rm -f &amp;lt;旧容器名&amp;gt;&lt;/code&gt;。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h3 id="-经典报错-2恐怖的权限拒绝陷阱"&gt;🚨 经典报错 2：恐怖的权限拒绝陷阱
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;报错原声：&lt;/strong&gt;&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;code&gt;PermissionError: Permission denied (os error 13) about [&amp;quot;/home/user/my-project/volumes/etcd/member&amp;quot;]&lt;/code&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;&lt;strong&gt;症状分析：&lt;/strong&gt;
+这个报错多发于我们在本地进行混合开发时。你用 &lt;code&gt;docker-compose&lt;/code&gt; 启动了包含持久化目录（Volumes）的容器（比如 etcd、MySQL）。Docker 是以 &lt;strong&gt;Root 上帝权限&lt;/strong&gt; 在你的项目目录下创建了这些数据文件夹。
+此时，你在本地用自己的普通用户启动了带 &lt;strong&gt;热重载（WatchFiles/Reload）&lt;/strong&gt; 的 Web 框架（如 Uvicorn、Nodemon）。热重载器试图扫描整个项目目录以监听文件变化，但它作为一个普通人，一头撞在了 Root 所有的 &lt;code&gt;volumes&lt;/code&gt; 禁区上，当场暴毙。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;终极解法（两种）：&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;治标法&lt;/strong&gt;：每次启动完 Docker，在本地执行 &lt;code&gt;sudo chown -R $USER:$USER volumes/&lt;/code&gt;，把文件夹的拥有者改回你自己。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;治本法（推荐）&lt;/strong&gt;：修改你框架的热重载配置，明确告诉它&lt;strong&gt;忽略&lt;/strong&gt;数据目录。例如 Python Uvicorn 中：
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;uvicorn&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;run&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;app.main:app&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;reload&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="kc"&gt;True&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;reload_dirs&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;app&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;])&lt;/span&gt; &lt;span class="c1"&gt;# 只监听代码目录&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h3 id="-经典报错-3连不上-localhost-的服务"&gt;🚨 经典报错 3：连不上 localhost 的服务
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;报错原声：&lt;/strong&gt;&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;code&gt;ConnectionRefusedError: [Errno 111] Connection refused&lt;/code&gt;
+或 &lt;code&gt;Fail connecting to server on localhost:19530&lt;/code&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;&lt;strong&gt;症状分析：&lt;/strong&gt;
+你把后端代码和数据库都放进了 Docker 部署。但你的后端配置文件里依然写着 &lt;code&gt;DB_HOST=localhost&lt;/code&gt;。
+我们曾在&lt;a class="link" href="https://tkdwbiao.github.io/p/docker-series-05-network/" &gt;第 5 篇网络模型&lt;/a&gt;中强调过：在容器的世界里，&lt;code&gt;localhost&lt;/code&gt; 只代表&lt;strong&gt;容器它自己&lt;/strong&gt;这个狭小的密室，不代表你的电脑，更不代表其他容器！&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;终极解法：&lt;/strong&gt;&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;检查两个容器是否在同一个 Docker Network 中。&lt;/li&gt;
+&lt;li&gt;将配置文件里的 &lt;code&gt;localhost&lt;/code&gt; 修改为&lt;strong&gt;目标容器的名称&lt;/strong&gt;（比如 &lt;code&gt;DB_HOST=milvus-standalone&lt;/code&gt;）。Docker 内部的 DNS 会自动帮你解析。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h3 id="-经典报错-4依赖服务未准备好导致主程序崩溃"&gt;🚨 经典报错 4：依赖服务未准备好导致主程序崩溃
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;症状分析：&lt;/strong&gt;
+你写了一个 &lt;code&gt;docker-compose.yml&lt;/code&gt;，里面有 &lt;code&gt;standalone&lt;/code&gt; (主程序) 和 &lt;code&gt;minio&lt;/code&gt;、&lt;code&gt;etcd&lt;/code&gt; (依赖服务)。你还聪明地写了 &lt;code&gt;depends_on&lt;/code&gt;。
+但一键启动后，主程序还是报错退出了。日志显示：&lt;code&gt;timeout fetching ...&lt;/code&gt;（连接数据库超时）。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;深层原理：&lt;/strong&gt;
+&lt;code&gt;depends_on&lt;/code&gt; 默认只管 &lt;strong&gt;“启动顺序”&lt;/strong&gt;，不管 &lt;strong&gt;“是否就绪”&lt;/strong&gt;。Compose 把 MySQL 容器开机后，会瞬间启动你的主程序。但众所周知，像 MySQL、Milvus 这种重型数据库，从开机到真正能处理连接，可能需要 10 到 60 秒！你的程序去连的时候，数据库其实还在加载内存，自然连接失败而崩溃。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;终极解法：使用健康检查（Healthcheck）结合重试机制。&lt;/strong&gt;
+在 &lt;code&gt;docker-compose.yml&lt;/code&gt; 中配置真正的依赖等待：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;services&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;db&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;mysql:8.0&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 增加健康检查，告诉 Docker 什么时候数据库才算真活了&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;healthcheck&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;test&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;CMD&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;mysqladmin&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;ping&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;-h&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;localhost&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;interval&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;10s&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;retries&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="m"&gt;5&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;web&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;my-app&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;depends_on&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;db&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 要求不但要启动，还要健康检查通过！&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;condition&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;service_healthy&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;另外，在你的主程序代码中（特别是数据库连接处），一定要加上 &lt;code&gt;try...catch&lt;/code&gt; 和重试逻辑，不要一失败就自尽。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="结语"&gt;结语
+&lt;/h2&gt;&lt;p&gt;遇到报错不可怕，可怕的是遇到报错只会去搜索引擎里盲目复制粘贴别人的命令。&lt;/p&gt;
+&lt;p&gt;通过这篇排障大赏，我希望你能建立起真正的**“容器调试思维”**：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;查状态&lt;/strong&gt;确认生死（&lt;code&gt;ps -a&lt;/code&gt;）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;看日志&lt;/strong&gt;寻找元凶（&lt;code&gt;logs&lt;/code&gt;）。&lt;/li&gt;
+&lt;li&gt;检查&lt;strong&gt;网络拓扑与端口&lt;/strong&gt;是否对应（&lt;code&gt;localhost&lt;/code&gt; 陷阱）。&lt;/li&gt;
+&lt;li&gt;警惕&lt;strong&gt;文件挂载的权限&lt;/strong&gt;交锋（&lt;code&gt;os error 13&lt;/code&gt;）。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;当你熟练掌握了这套排障套路，单机的 Docker 部署对你来说已经没有任何秘密可言了。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;但随着项目慢慢成型，你可能会面临一个新的折磨：&lt;/strong&gt;
+每次你修改了几行代码，你都要手动在本地构建镜像（&lt;code&gt;docker build&lt;/code&gt;），然后手动把这个庞大的镜像推送到服务器，再连上服务器手动拉取（&lt;code&gt;pull&lt;/code&gt;），最后重启容器。一天如果改 10 次代码，你就要重复这套枯燥的动作 10 次。&lt;/p&gt;
+&lt;p&gt;有没有一种魔法，能让我&lt;strong&gt;只要一执行 &lt;code&gt;git push&lt;/code&gt; 把代码推送到 GitHub/GitLab，服务器就能自动帮我打包镜像并完成重启部署？&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;答案是肯定的！请锁定下一篇系列重头戏：&lt;strong&gt;【Docker CI/CD】解放双手：结合 GitHub Actions 实现自动化构建与推流&lt;/strong&gt;。我们将迈向现代 DevOps 工程化的最高殿堂！我们下周见！&lt;/p&gt;</description></item><item><title>【Docker 系列 04】给容器加块硬盘：Docker 数据持久化 (Volumes) 完全指南</title><link>https://tkdwbiao.github.io/p/docker-series-04-volumes/</link><pubDate>Thu, 26 Jun 2025 10:00:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/docker-series-04-volumes/</guid><description>&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;“老板，我不小心敲了 &lt;code&gt;docker rm&lt;/code&gt;，昨天用户的注册数据全没了，我现在买站票跑路还来得及吗？”&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;在&lt;a class="link" href="https://tkdwbiao.github.io/p/docker-series-03-dockerfile/" &gt;上一篇文章&lt;/a&gt;中，我们学会了用 Dockerfile 把代码打包成镜像。容器跑起来了，应用很完美。&lt;/p&gt;
+&lt;p&gt;但这引出了 Docker 世界里最致命的一个概念：&lt;strong&gt;容器是短暂的（Ephemeral）&lt;/strong&gt;。
+Docker 的文件系统是由一层层“只读镜像层”加上最上面一层“可读写容器层”组成的。当容器在运行时，你的程序产生的所有日志、新上传的图片、存入数据库的每一条记录，都写在这个最上层。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;一旦你执行了 &lt;code&gt;docker rm&lt;/code&gt; 删除了容器，这个可读写层就会伴随着里面的数据灰飞烟灭！&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;如果你用 Docker 部署了一个 MySQL 数据库，更新容器版本时随手一个删除，恭喜你，直接喜提“删库跑路”成就。&lt;/p&gt;
+&lt;p&gt;为了打破这种“人在塔在，人亡塔亡”的魔咒，Docker 提供了&lt;strong&gt;数据持久化&lt;/strong&gt;技术。今天，我们就来学习如何给容器插上一块“外接硬盘”。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="一拯救数据的两种终极方案"&gt;一、拯救数据的两种终极方案
+&lt;/h2&gt;&lt;p&gt;在 Docker 中，要把数据保存到容器外部（宿主机的硬盘上），主要有两种玩法。很多人把它们搞混，但它们的适用场景完全不同。&lt;/p&gt;
+&lt;h3 id="1-bind-mounts绑定挂载简单粗暴的随意门"&gt;1. Bind Mounts（绑定挂载）：简单粗暴的“随意门”
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;原理&lt;/strong&gt;：直接把你电脑（宿主机）上的某个绝对路径，强行映射到容器内部的某个路径上。
+在容器里往这个目录写文件，其实就是写在你电脑上；在你电脑上修改这个文件，容器里立刻就能看到变化。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;优点&lt;/strong&gt;：非常适合&lt;strong&gt;本地开发&lt;/strong&gt;。比如你可以把代码目录挂载进去，本地修改代码保存，容器里的 Web 服务器（如 Uvicorn/Nodemon）立刻热重载生效，不需要重新 build 镜像。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;缺点&lt;/strong&gt;：极度依赖宿主机的目录结构，在 Windows、Mac、Linux 上路径写法不同，容易出幺蛾子。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="2-docker-volumes数据卷官方正统的专属u盘"&gt;2. Docker Volumes（数据卷）：官方正统的“专属U盘”
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;原理&lt;/strong&gt;：这是由 Docker &lt;strong&gt;全权管理&lt;/strong&gt;的宿主机硬盘空间。你不需要知道它具体存在你电脑的哪个深层目录（通常在 &lt;code&gt;/var/lib/docker/volumes/&lt;/code&gt;），你只需要给这块“U盘”起个名字。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;优点&lt;/strong&gt;：跨平台兼容性极佳，安全性高，哪怕所有容器都删了，Volume 依然存活，非常适合&lt;strong&gt;生产环境的数据库存储&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;缺点&lt;/strong&gt;：你想用宿主机的编辑器直接修改 Volume 里的文件比较麻烦，因为它们被 Docker 藏得比较深。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="二实战演练不丢失数据的-mysql-数据库"&gt;二、实战演练：不丢失数据的 MySQL 数据库
+&lt;/h2&gt;&lt;p&gt;百闻不如一练，让我们用 &lt;strong&gt;Volumes（数据卷）&lt;/strong&gt; 跑一个 MySQL 容器，看看数据是如何“永生”的。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;第一步：创建一个数据卷（买一块U盘）&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker volume create my-db-data
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;em&gt;(你可以用 &lt;code&gt;docker volume ls&lt;/code&gt; 查看到它)&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;第二步：启动 MySQL 容器，并把数据卷插上去&lt;/strong&gt;
+注意这里的 &lt;code&gt;-v&lt;/code&gt; (volume) 参数，冒号前面是数据卷名字，冒号后面是 MySQL 在容器里存数据的固定路径。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker run -d &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --name my-mysql &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; -e &lt;span class="nv"&gt;MYSQL_ROOT_PASSWORD&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;mysecret &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; -v my-db-data:/var/lib/mysql &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; mysql:8.0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;第三步：搞点破坏（删库跑路测试）&lt;/strong&gt;
+现在数据库跑起来了。假设你在里面建了表，存了数据。然后你手抖了，删除了容器：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker rm -f my-mysql
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;完了，容器没了！但是别慌，因为我们用了 Volume，数据还在。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;第四步：浴火重生&lt;/strong&gt;
+你重新启动一个新的 MySQL 容器，只需再次挂载那个名叫 &lt;code&gt;my-db-data&lt;/code&gt; 的数据卷：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker run -d &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --name new-mysql &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; -e &lt;span class="nv"&gt;MYSQL_ROOT_PASSWORD&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;mysecret &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; -v my-db-data:/var/lib/mysql &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; mysql:8.0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;连上数据库一看，刚才建的表和数据&lt;strong&gt;完好无损&lt;/strong&gt;！这就是 Volume 的魔力。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="三阿彪的血泪避坑指南恐怖的-permission-denied-权限陷阱"&gt;三、阿彪的血泪避坑指南：恐怖的 Permission Denied 权限陷阱
+&lt;/h2&gt;&lt;p&gt;很多小伙伴在学完挂载后，在实际项目中会采用 &lt;strong&gt;Bind Mounts（绑定挂载）&lt;/strong&gt; 把项目里的数据库文件挂载到本地（比如 &lt;code&gt;./volumes/etcd:/etcd&lt;/code&gt;）。&lt;/p&gt;
+&lt;p&gt;结果在本地用 Python 或者 Node.js 运行主程序代码时，突然程序崩溃，抛出如下惨不忍睹的报错：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;PermissionError: Permission denied (os error 13) about [&amp;#34;/home/user/my-project/volumes/etcd/member&amp;#34;]
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;如果你开启了框架的“热重载”（Reload）功能，这个报错会像幽灵一样疯狂刷屏。&lt;/p&gt;
+&lt;h3 id="为什么会这样硬核原理解密"&gt;为什么会这样？（硬核原理解密）
+&lt;/h3&gt;&lt;p&gt;这是无数开发者在 Docker 上踩过的最大的坑，没有之一。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Docker 内部默认是上帝（Root）&lt;/strong&gt;：Docker 容器内部的进程默认是以 &lt;code&gt;root&lt;/code&gt; 用户运行的。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;上帝创建了文件&lt;/strong&gt;：当容器（比如 etcd、MySQL、Milvus）启动并向挂载的目录 &lt;code&gt;./volumes&lt;/code&gt; 写入数据时，这些&lt;strong&gt;在宿主机上生成的文件，其所有者（Owner）都是 root&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;凡人试图访问&lt;/strong&gt;：你在宿主机上是以普通用户（比如 &lt;code&gt;jf234&lt;/code&gt;）的身份在写代码。你的 Web 框架（如 Uvicorn）为了实现热重载，会去扫描项目下的所有文件。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;悲剧发生&lt;/strong&gt;：当你的普通用户扫描到被 Docker root 锁定的 &lt;code&gt;volumes&lt;/code&gt; 文件夹时，Linux 系统的权限管理机制无情地伸出手——&lt;strong&gt;Permission Denied（不准看）！&lt;/strong&gt; 程序当场暴毙。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id="如何破解这个权限诅咒"&gt;如何破解这个权限诅咒？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;解法一：夺回主权（最简单直接）&lt;/strong&gt;
+如果容器已经跑起来并且生成了数据，你可以直接在宿主机上用 &lt;code&gt;sudo&lt;/code&gt; 把文件夹的所有权抢回来，改回你自己的用户。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 将 volumes 文件夹的所有权改回当前用户和当前用户组&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo chown -R &lt;span class="nv"&gt;$USER&lt;/span&gt;:&lt;span class="nv"&gt;$USER&lt;/span&gt; ./volumes
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;em&gt;（每次 Docker 容器产生新级别的深层文件时，可能都需要再敲一次，适合开发阶段临时救急）&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;解法二：惹不起躲得起（最优雅）&lt;/strong&gt;
+修改你本地代码的热重载配置，明确告诉监控器（Watcher）&lt;strong&gt;不要去扫描 Docker 的数据文件夹&lt;/strong&gt;。
+以 Python FastAPI 为例，启动时加上 &lt;code&gt;reload_dirs&lt;/code&gt; 或排除项：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;span class="lnt"&gt;6
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;uvicorn&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;run&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="s2"&gt;&amp;#34;app.main:app&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;reload&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="kc"&gt;True&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 明确告诉框架，只监听 app 代码目录，不要去碰 volumes&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;reload_dirs&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;app&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;解法三：让 Docker 以凡人的身份运行&lt;/strong&gt;
+在启动容器时，强制 Docker 使用你当前宿主机的用户身份运行，这样它生成的文件你天生就有权限访问：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 使用 $(id -u):$(id -g) 获取当前用户的 UID 和 GID&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker run -d -u &lt;span class="k"&gt;$(&lt;/span&gt;id -u&lt;span class="k"&gt;)&lt;/span&gt;:&lt;span class="k"&gt;$(&lt;/span&gt;id -g&lt;span class="k"&gt;)&lt;/span&gt; -v &lt;span class="k"&gt;$(&lt;/span&gt;&lt;span class="nb"&gt;pwd&lt;/span&gt;&lt;span class="k"&gt;)&lt;/span&gt;/data:/app/data my-image
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;hr&gt;
+&lt;h2 id="结语"&gt;结语
+&lt;/h2&gt;&lt;p&gt;掌握了 Volume 和 Bind Mounts，你的 Docker 技能树就点亮了“数据不朽”的成就。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;回顾最佳实践：&lt;/strong&gt;&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;代码和配置文件&lt;/strong&gt;：用 &lt;code&gt;Bind Mounts&lt;/code&gt; 映射，方便你在本地用 VS Code 随时修改看效果。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;数据库和大型中间件的存储&lt;/strong&gt;：用 &lt;code&gt;Docker Volumes&lt;/code&gt; 交给引擎托管，安全省心。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;遇到权限报错&lt;/strong&gt;：别慌，想想是不是 Docker 这个“上帝”在你的地盘创建了普通人无权访问的文件。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;现在，我们解决了单个容器的打包和数据存储。但是，在真实的“智能 OnCall 项目”或微服务架构中，你往往需要同时运行 &lt;strong&gt;Web后端 + 日志服务 + 向量数据库 (Milvus) + MinIO&lt;/strong&gt; 等 4、5 个容器。&lt;/p&gt;
+&lt;p&gt;如果全靠 &lt;code&gt;docker run&lt;/code&gt; 一条条敲，不仅手酸，而且怎么让它们互相通过网络通信（比如后端怎么连上数据库）也是个大问题。&lt;/p&gt;
+&lt;p&gt;别担心，下一篇 &lt;strong&gt;【Docker 系列 05】容器间怎么通信？一文搞懂 Docker 网络模型 (Network)&lt;/strong&gt;，我将带你破解 Docker 内部的网络迷宫，让你的容器们成功手牵手！&lt;/p&gt;</description></item><item><title>【Docker 系列 02】不再害怕命令行：20个必备的容器生命周期管理指令</title><link>https://tkdwbiao.github.io/p/docker-series-02-commands/</link><pubDate>Thu, 12 Jun 2025 09:15:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/docker-series-02-commands/</guid><description>&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;“我的容器去哪了？为什么我一关终端服务就挂了？怎么看报错日志？”&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;在&lt;a class="link" href="https://tkdwbiao.github.io/p/docker-series-01-introduction/" &gt;上一篇文章&lt;/a&gt;中，我们成功运行了 &lt;code&gt;hello-world&lt;/code&gt;，初步领略了 Docker 的魅力。但回到现实工作，真正的服务器是没有图形界面的（哪怕你本地用着漂亮的 Docker Desktop）。&lt;/p&gt;
+&lt;p&gt;在真实的开发和运维场景中，&lt;strong&gt;命令行（CLI）才是你唯一的武器&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;很多新手看到 Docker 那几十个命令和成百上千的参数会感到恐惧。别怕！今天这篇文章，我会按照“&lt;strong&gt;找镜像 -&amp;gt; 创建容器 -&amp;gt; 查看状态 -&amp;gt; 进入内部 -&amp;gt; 销毁清理&lt;/strong&gt;”的生命周期逻辑，带你彻底吃透日常开发中最常用的 20 个高频指令。&lt;/p&gt;
+&lt;p&gt;只要掌握了它们，你在公司里处理 Docker 故障就能横着走。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="一镜像image操作获取你的系统安装盘"&gt;一、镜像（Image）操作：获取你的“系统安装盘”
+&lt;/h2&gt;&lt;p&gt;容器是从镜像启动的，所以我们得先有镜像。&lt;/p&gt;
+&lt;h3 id="1-docker-search在镜像市场淘宝"&gt;1. &lt;code&gt;docker search&lt;/code&gt;：在镜像市场“淘宝”
+&lt;/h3&gt;&lt;p&gt;如果你想跑一个 Nginx 服务器，但不确定官方镜像叫什么，可以搜一下：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker search nginx
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;em&gt;你会看到一个列表，优先选择带有 &lt;code&gt;[OK]&lt;/code&gt; 官方认证（OFFICIAL）的镜像。&lt;/em&gt;&lt;/p&gt;
+&lt;h3 id="2-docker-pull把镜像拉取到本地"&gt;2. &lt;code&gt;docker pull&lt;/code&gt;：把镜像拉取到本地
+&lt;/h3&gt;&lt;p&gt;确定了名字，我们把它下载下来。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker pull nginx:latest
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;💡 阿彪避坑指南：&lt;/strong&gt;
+冒号后面的叫 &lt;strong&gt;标签（Tag）&lt;/strong&gt;，通常用来标识版本。如果不加标签（直接 &lt;code&gt;docker pull nginx&lt;/code&gt;），Docker 会默认拉取 &lt;code&gt;:latest&lt;/code&gt;（最新版）。在&lt;strong&gt;生产环境&lt;/strong&gt;中，强烈建议写死版本号（如 &lt;code&gt;nginx:1.24.0&lt;/code&gt;），避免哪天 &lt;code&gt;latest&lt;/code&gt; 偷偷更新导致你的代码不兼容。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id="3-docker-images查看本地有哪些镜像"&gt;3. &lt;code&gt;docker images&lt;/code&gt;：查看本地有哪些镜像
+&lt;/h3&gt;&lt;p&gt;下载完后，看看你的“仓库”里有什么存货：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker images
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 或者使用新版命令：docker image ls&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;em&gt;输出会显示镜像名、标签、Image ID（镜像身份证号）以及占用的磁盘大小。&lt;/em&gt;&lt;/p&gt;
+&lt;h3 id="4-docker-rmi删除不需要的镜像"&gt;4. &lt;code&gt;docker rmi&lt;/code&gt;：删除不需要的镜像
+&lt;/h3&gt;&lt;p&gt;硬盘空间不够了？把不用的镜像删掉（注意是 &lt;code&gt;rmi&lt;/code&gt;，&lt;code&gt;rm&lt;/code&gt; 代表 remove，&lt;code&gt;i&lt;/code&gt; 代表 image）：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker rmi nginx:latest
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 也可以用 Image ID 来删除：docker rmi a1b2c3d4e5f6&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;hr&gt;
+&lt;h2 id="二容器container生命周期生与死"&gt;二、容器（Container）生命周期：生与死
+&lt;/h2&gt;&lt;p&gt;有了镜像，重头戏来了：让它跑起来！&lt;/p&gt;
+&lt;h3 id="5-docker-run万物起源最重要参数最多的命令"&gt;5. &lt;code&gt;docker run&lt;/code&gt;：万物起源（最重要、参数最多的命令）
+&lt;/h3&gt;&lt;p&gt;这不仅是启动容器，这是&lt;strong&gt;创建并运行&lt;/strong&gt;一个全新的容器。&lt;/p&gt;
+&lt;p&gt;我们来运行刚才下载的 Nginx：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker run -d --name my-web-server -p 8080:80 nginx:latest
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;看不懂参数？别慌，我们逐一拆解：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;-d&lt;/code&gt; (&lt;strong&gt;d&lt;/strong&gt;etach)：&lt;strong&gt;后台运行&lt;/strong&gt;。如果不加它，容器的日志会一直霸占你的终端，你一按 &lt;code&gt;Ctrl+C&lt;/code&gt; 或者关掉窗口，容器就当场暴毙。加了 &lt;code&gt;-d&lt;/code&gt;，它就会在后台乖乖运行。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;--name&lt;/code&gt;：&lt;strong&gt;给容器起个好记的名字&lt;/strong&gt;（这里叫 &lt;code&gt;my-web-server&lt;/code&gt;）。如果不加，Docker 会随机给你起个奇葩名字（比如 &lt;code&gt;crazy_einstein&lt;/code&gt;），以后排错时你会找得痛不欲生。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;-p&lt;/code&gt; (&lt;strong&gt;p&lt;/strong&gt;ort)：&lt;strong&gt;端口映射&lt;/strong&gt;。格式是 &lt;code&gt;宿主机端口:容器内部端口&lt;/code&gt;。Nginx 内部默认跑在 80 端口，这里把它映射到你电脑的 8080 端口。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;em&gt;现在，打开浏览器访问 &lt;code&gt;http://localhost:8080&lt;/code&gt;，你就能看到 Nginx 的欢迎页面了！&lt;/em&gt;&lt;/p&gt;
+&lt;h3 id="6-docker-ps查看活着的容器"&gt;6. &lt;code&gt;docker ps&lt;/code&gt;：查看活着的容器
+&lt;/h3&gt;&lt;p&gt;想知道当前有哪些容器在运行？&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker ps
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="7-docker-ps--a查看停尸房所有容器"&gt;7. &lt;code&gt;docker ps -a&lt;/code&gt;：查看“停尸房”（所有容器）
+&lt;/h3&gt;&lt;p&gt;有时候你跑了一个容器，但 &lt;code&gt;docker ps&lt;/code&gt; 里却没有。&lt;strong&gt;它可能是报错秒退了！&lt;/strong&gt;
+加个 &lt;code&gt;-a&lt;/code&gt; (all)，能看到所有活着的和已经停止（Exited）的容器：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker ps -a
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="8-docker-stop--docker-start--docker-restart"&gt;8. &lt;code&gt;docker stop&lt;/code&gt; / &lt;code&gt;docker start&lt;/code&gt; / &lt;code&gt;docker restart&lt;/code&gt;
+&lt;/h3&gt;&lt;p&gt;这三个很好理解：停止、启动、重启容器。你可以用容器名字，也可以用 Container ID 的前几位。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker stop my-web-server
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker start my-web-server
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker restart my-web-server
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="9-docker-kill拔电源"&gt;9. &lt;code&gt;docker kill&lt;/code&gt;：拔电源
+&lt;/h3&gt;&lt;p&gt;&lt;code&gt;docker stop&lt;/code&gt; 是温柔地发送终止信号，给程序时间保存数据；如果程序卡死了，不听指挥，直接用 &lt;code&gt;kill&lt;/code&gt; 拔电源：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker &lt;span class="nb"&gt;kill&lt;/span&gt; my-web-server
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="10-docker-rm火化删除容器"&gt;10. &lt;code&gt;docker rm&lt;/code&gt;：火化（删除容器）
+&lt;/h3&gt;&lt;p&gt;一个停止的容器依然会占用少量磁盘空间，并且它的名字还被占用着。不需要了就删掉它：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker rm my-web-server
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;💡 进阶技巧：&lt;/strong&gt; 正在运行的容器是删不掉的，必须先 stop。如果你嫌麻烦，可以加 &lt;code&gt;-f&lt;/code&gt; (force) 强制删除运行中的容器：&lt;code&gt;docker rm -f my-web-server&lt;/code&gt;。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;hr&gt;
+&lt;h2 id="三进阶探查黑盒排错里面到底发生了什么"&gt;三、进阶探查：黑盒排错，里面到底发生了什么？
+&lt;/h2&gt;&lt;p&gt;部署只是第一步，真正的挑战在于&lt;strong&gt;排错 (Debug)&lt;/strong&gt;。当你把代码跑在 Docker 里却报错时，下面这几个命令是你的救命稻草。&lt;/p&gt;
+&lt;h3 id="11-docker-logs看日志排错第一神技"&gt;11. &lt;code&gt;docker logs&lt;/code&gt;：看日志（排错第一神技）
+&lt;/h3&gt;&lt;p&gt;项目起不来？看日志！&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker logs my-web-server
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;高频参数组合：&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;docker logs -f my-web-server&lt;/code&gt;：&lt;code&gt;-f&lt;/code&gt; (follow) 会&lt;strong&gt;实时滚动&lt;/strong&gt;显示最新日志，就像 Linux 的 &lt;code&gt;tail -f&lt;/code&gt; 一样。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;docker logs --tail 100 my-web-server&lt;/code&gt;：只看最后 100 行，避免日志太长刷屏。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="12-docker-exec进入容器内部深入敌后"&gt;12. &lt;code&gt;docker exec&lt;/code&gt;：进入容器内部（深入敌后）
+&lt;/h3&gt;&lt;p&gt;虽然容器是隔离的，但我们有时需要进去敲几个命令，比如看看里面的配置文件对不对。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker &lt;span class="nb"&gt;exec&lt;/span&gt; -it my-web-server /bin/bash
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;em&gt;（注意：如果是 Alpine 等精简版镜像，可能没有 bash，需要把 &lt;code&gt;/bin/bash&lt;/code&gt; 换成 &lt;code&gt;sh&lt;/code&gt;）&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;硬核知识点：&lt;code&gt;-it&lt;/code&gt; 到底是什么意思？&lt;/strong&gt;
+绝大多数教程只告诉你加 &lt;code&gt;-it&lt;/code&gt;，但不说为什么。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;-i&lt;/code&gt; (interactive)：保持标准输入打开，让你可以持续输入命令。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;-t&lt;/code&gt; (tty)：分配一个伪终端，让终端显示颜色、提示符，看起来像个正常的 Linux 命令行。
+结合起来，你就能像 SSH 登录服务器一样，在容器里面自由探索了。输入 &lt;code&gt;exit&lt;/code&gt; 可以退出容器。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="13-docker-inspect核磁共振查看详细元数据"&gt;13. &lt;code&gt;docker inspect&lt;/code&gt;：核磁共振（查看详细元数据）
+&lt;/h3&gt;&lt;p&gt;如果你想知道容器内部的 IP 地址、环境变量、挂载的目录路径，用它：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker inspect my-web-server
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;它会输出一坨巨大的 JSON 数据，包含了这个容器的所有身世秘密。配合 &lt;code&gt;grep&lt;/code&gt; 食用更佳。&lt;/p&gt;
+&lt;h3 id="14-docker-stats实时资源监控容器版的-top"&gt;14. &lt;code&gt;docker stats&lt;/code&gt;：实时资源监控（容器版的 top）
+&lt;/h3&gt;&lt;p&gt;服务器变卡了？想知道哪个容器在狂吃 CPU 和内存？&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker stats
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;它会实时显示每个容器的 CPU、内存占用率、网络 IO 和磁盘 IO。&lt;/p&gt;
+&lt;h3 id="15-docker-top查看容器内的进程"&gt;15. &lt;code&gt;docker top&lt;/code&gt;：查看容器内的进程
+&lt;/h3&gt;&lt;p&gt;看看容器内部到底有哪些进程在跑：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker top my-web-server
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;hr&gt;
+&lt;h2 id="四系统清理与维护拯救你的磁盘焦虑"&gt;四、系统清理与维护：拯救你的磁盘焦虑
+&lt;/h2&gt;&lt;p&gt;用了一段时间 Docker 后，你会发现 C 盘（或服务器磁盘）被塞满了各种废弃的镜像、停止的容器和悬空（dangling）的数据。&lt;/p&gt;
+&lt;h3 id="16-docker-system-df查看磁盘使用情况"&gt;16. &lt;code&gt;docker system df&lt;/code&gt;：查看磁盘使用情况
+&lt;/h3&gt;&lt;p&gt;先查查 Docker 到底占了多少空间：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker system df
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="17-docker-system-prune一键瘦身危险但爽快"&gt;17. &lt;code&gt;docker system prune&lt;/code&gt;：一键瘦身（危险但爽快）
+&lt;/h3&gt;&lt;p&gt;这是一个非常解压的命令，它会自动清理所有停止的容器、没有任何容器使用的网络、以及悬空镜像。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker system prune
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;如果想更狠一点，连&lt;strong&gt;没有被使用的正常镜像&lt;/strong&gt;也一起干掉，可以加 &lt;code&gt;-a&lt;/code&gt; 参数：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker system prune -a
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;⚠️ 警告：&lt;/strong&gt; 在生产服务器上千万慎用 &lt;code&gt;-a&lt;/code&gt;！万一你只是把服务停下来维护一会，结果敲了这个命令，镜像被删了，等会启动又得重新下载半天。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id="18-镜像容器重命名与导出扩展补充"&gt;18. 镜像/容器重命名与导出（扩展补充）
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;改名 (&lt;code&gt;tag&lt;/code&gt;)&lt;/strong&gt;：&lt;code&gt;docker tag nginx:latest my-repo/nginx:v1&lt;/code&gt;&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;打包容器为镜像 (&lt;code&gt;commit&lt;/code&gt;)&lt;/strong&gt;：如果你在进入容器后修改了配置，想把它保存成一个新的镜像：&lt;code&gt;docker commit my-web-server my-custom-nginx:v1&lt;/code&gt; &lt;em&gt;(注：虽然能用，但极度不推荐这种方式，正确的做法是写 Dockerfile，这将在下一篇讲解)&lt;/em&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;导出镜像 (&lt;code&gt;save&lt;/code&gt;)&lt;/strong&gt;：如果在内网环境无法上网，可以把镜像打包成压缩包拷贝过去：&lt;code&gt;docker save -o nginx.tar nginx:latest&lt;/code&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="总结你的-docker-武器库"&gt;总结：你的 Docker 武器库
+&lt;/h2&gt;&lt;p&gt;恭喜你，至此你已经掌握了 95% 甚至更多的 Docker 日常使用命令！&lt;/p&gt;
+&lt;p&gt;让我们复习一下典型的排错流程：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;发现服务不通。&lt;/li&gt;
+&lt;li&gt;敲 &lt;code&gt;docker ps -a&lt;/code&gt; 发现容器挂了 (Exited)。&lt;/li&gt;
+&lt;li&gt;敲 &lt;code&gt;docker logs 容器名&lt;/code&gt; 看报错原因。&lt;/li&gt;
+&lt;li&gt;发现是配置文件写错了。&lt;/li&gt;
+&lt;li&gt;敲 &lt;code&gt;docker start 容器名&lt;/code&gt; 强行启动，然后马上 &lt;code&gt;docker exec -it 容器名 sh&lt;/code&gt; 进去改配置。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;docker restart 容器名&lt;/code&gt;，服务恢复正常！&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;但是，刚才我们提到 &lt;code&gt;docker commit&lt;/code&gt; 不是一种好习惯。&lt;strong&gt;如果我们需要部署一个自己写的包含 Python 代码的复杂项目，难道要拉一个基础镜像，手动进去 &lt;code&gt;pip install&lt;/code&gt;，然后再 commit 吗？&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;这太 low 了，而且完全不可复现。&lt;/p&gt;
+&lt;p&gt;在真正的工程实践中，我们希望代码就是基石，通过一份代码清单，让 Docker 自动帮我们“构建”出想要的镜像。&lt;/p&gt;
+&lt;p&gt;下一篇，也就是本系列的重头戏：&lt;strong&gt;【Docker 系列 03】从零手写 Dockerfile：构建你的第一个专属镜像&lt;/strong&gt;，我将带你亲手把一个项目从源码变成 Docker 镜像，彻底告别依赖烦恼！我们下周见！&lt;/p&gt;</description></item></channel></rss>

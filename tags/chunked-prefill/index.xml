@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Chunked Prefill on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/chunked-prefill/</link><description>Recent content in Chunked Prefill on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Mon, 06 Apr 2026 18:40:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/chunked-prefill/index.xml" rel="self" type="application/rss+xml"/><item><title>vLLM 系列(五)：极致优化的前沿 —— Chunked Prefill 与投机解码</title><link>https://tkdwbiao.github.io/p/vllm-advanced-optimization-speculative-decoding/</link><pubDate>Mon, 06 Apr 2026 18:40:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/vllm-advanced-optimization-speculative-decoding/</guid><description>&lt;p&gt;进入 2026 年，大模型已经全面迈入百万上下文（1M+ Context）时代。在如此恐怖的长度下，传统的推理调度方案已经捉襟见肘。&lt;/p&gt;
+&lt;p&gt;用户不再满足于“能跑通”，他们要求在处理万字长文的同时，回答速度还能像打字机一样流畅。今天阿彪带你拆解 vLLM 压榨性能的两大高阶黑科技：&lt;strong&gt;Chunked Prefill（分块预填充）&lt;/strong&gt; 与 &lt;strong&gt;Speculative Decoding（投机解码）&lt;/strong&gt;。&lt;/p&gt;
+&lt;h2 id="一-chunked-prefill终结长文本带来的顿挫感"&gt;一、 Chunked Prefill：终结长文本带来的“顿挫感”
+&lt;/h2&gt;&lt;p&gt;在 vLLM 的早期版本中，新请求的 Prefill（预填充）阶段具有最高优先级。&lt;/p&gt;
+&lt;h3 id="1-为什么新人会卡死老人"&gt;1. 为什么“新人”会卡死“老人”？
+&lt;/h3&gt;&lt;p&gt;当一个 128k 长度的请求进来时，计算 $Q, K, V$ 并填充 KV Cache 需要消耗巨大的计算量。此时，GPU 会全量投入这个 Prefill 任务，导致正在生成答案的其他请求（Decode 阶段）全部挂起。&lt;/p&gt;
+&lt;p&gt;对于用户来说，这种“顿挫感（Jitter）”是不可接受的。&lt;/p&gt;
+&lt;h3 id="2-调度策略的进化分块与交织"&gt;2. 调度策略的进化：分块与交织
+&lt;/h3&gt;&lt;p&gt;vLLM 引入了 Chunked Prefill 机制。它不再试图一次性吞下整个长 Prompt，而是将其切分为若干个块（Chunks）。&lt;/p&gt;
+&lt;p&gt;在每一次迭代（Iteration）中，调度器会巧妙地将一小块 Prefill 任务与当前的 Decode 批次混合在一起。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;公平性&lt;/strong&gt;：新请求依然在推进，不会被饿死。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;流畅性&lt;/strong&gt;：老请求的生成节奏不被打断，首字延迟（TTFT）与逐字延迟（TPOT）达到了完美的平衡。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="二-speculative-decoding用概率挑战物理带宽"&gt;二、 Speculative Decoding：用概率挑战物理带宽
+&lt;/h2&gt;&lt;p&gt;大模型推理本质上是 &lt;strong&gt;Memory-Bound（访存受限）&lt;/strong&gt; 的。每次预测一个 token，都要把几十 GB 的参数从 HBM 读到计算核心，而计算本身只花了一点点时间。&lt;/p&gt;
+&lt;h3 id="1-猜想-验证模式"&gt;1. “猜想-验证”模式
+&lt;/h3&gt;&lt;p&gt;投机解码的核心思想是：用极小的代价去“赌”未来的输出。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;草稿阶段&lt;/strong&gt;：由一个轻量级模型（或 Medusa 头）快速预测接下来的 $N$ 个 token。由于它体积小，速度极快。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;验证阶段&lt;/strong&gt;：主模型（如 Llama-3-70B）一次性读取权重，同时验证这 $N$ 个预测是否正确。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;如果 $N=5$，且草稿模型猜对了 3 个，那么这一轮迭代我们就直接拿到了 3 个 token。相对于原来“读一次权重出一颗词”，现在变成了“读一次权重出三颗词”，效率直接起飞。&lt;/p&gt;
+&lt;h3 id="2-2026-年的新标配medusa-与-fp8"&gt;2. 2026 年的新标配：Medusa 与 FP8
+&lt;/h3&gt;&lt;p&gt;在 2026 年，我们已经很少看到额外挂载小模型的投机解码了。目前主流是 &lt;strong&gt;Medusa（美杜莎）&lt;/strong&gt; 方案：在主模型的输出层并联几个微型预测头。&lt;/p&gt;
+&lt;p&gt;配合 Blackwell 架构的 &lt;strong&gt;FP8 推理&lt;/strong&gt;，验证过程的延迟进一步降低。在代码编写、结构化数据提取等任务中，投机解码的实际加速比通常能稳定在 2.0x 以上。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="三--代码模拟投机解码的接受逻辑"&gt;三 : 代码模拟：投机解码的接受逻辑
+&lt;/h2&gt;&lt;p&gt;为了理解系统是如何“回滚”错误预测的，我们来看这段模拟逻辑：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;verify_speculative_tokens&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;main_logits&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;draft_tokens&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="s2"&gt;&amp;#34;&amp;#34;&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s2"&gt; 模拟主模型验证草稿序列
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s2"&gt; main_logits: 主模型一次性算出的所有位置概率
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s2"&gt; draft_tokens: 草稿模型猜的序列
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s2"&gt; &amp;#34;&amp;#34;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;accepted_tokens&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="p"&gt;[]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;for&lt;/span&gt; &lt;span class="n"&gt;i&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;draft_token&lt;/span&gt; &lt;span class="ow"&gt;in&lt;/span&gt; &lt;span class="nb"&gt;enumerate&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;draft_tokens&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 找到主模型在第 i 个位置认为概率最大的词&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;true_token&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;torch&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;argmax&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;main_logits&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="n"&gt;i&lt;/span&gt;&lt;span class="p"&gt;])&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="n"&gt;draft_token&lt;/span&gt; &lt;span class="o"&gt;==&lt;/span&gt; &lt;span class="n"&gt;true_token&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 猜对了，收下&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;accepted_tokens&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;append&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;draft_token&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;else&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 猜错了，止损！&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 这一步非常关键：即便猜错了，主模型当前的正确结果也要带走&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;accepted_tokens&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;append&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;true_token&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;break&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;accepted_tokens&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;阿彪点评：这种机制最优雅的地方在于，即使草稿模型全是瞎猜，系统最差的情况也只是退化回原始的逐字生成，绝对不会影响输出的正确性。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="四-面试官会问到的问题及详细答案"&gt;四、 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;h3 id="-q1在长文本场景下除了-chunked-prefill还有什么办法优化-ttft"&gt;❓ Q1：在长文本场景下，除了 Chunked Prefill，还有什么办法优化 TTFT？
+&lt;/h3&gt;&lt;p&gt;答：
+可以引入 &lt;strong&gt;Prefix Caching（前缀缓存）&lt;/strong&gt;。对于 RAG 场景或长系统提示词，vLLM 会缓存这些公共前缀的 KV Cache。如果命中缓存，Prefill 阶段几乎被缩减为零，TTFT 会从秒级降至毫秒级。&lt;/p&gt;
+&lt;h3 id="-q2投机解码为什么能增加吞吐量throughput"&gt;❓ Q2：投机解码为什么能增加吞吐量（Throughput）？
+&lt;/h3&gt;&lt;p&gt;答：
+因为它提升了 &lt;strong&gt;算力利用率（MFU）&lt;/strong&gt;。
+在传统的 Decode 阶段，GPU 的计算单元大部分时间在等待显存读取。投机解码通过一次验证多个 token，增加了每一轮迭代的计算负载，使得原本闲置的计算核心得到了利用，从而在单位时间内产出了更多的 token。&lt;/p&gt;
+&lt;h3 id="-q3如何评估投机解码在特定业务中的收益"&gt;❓ Q3：如何评估投机解码在特定业务中的收益？
+&lt;/h3&gt;&lt;p&gt;答：
+主要看两个指标：&lt;strong&gt;接受率（Acceptance Rate）&lt;/strong&gt; 和 &lt;strong&gt;加速比（Speedup Ratio）&lt;/strong&gt;。
+我会先在业务数据集上跑一个测试集，如果接受率低于 30%，说明任务太发散，投机解码带来的额外开销可能不划算；如果接受率在 50% 以上，我会毫不犹豫地开启它。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="五-阿彪碎碎念-抱拳"&gt;五、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;学到这一篇，你已经触碰到了大模型推理最前沿的“暴力美学”。&lt;/p&gt;
+&lt;p&gt;Chunked Prefill 是对&lt;strong&gt;调度公平性&lt;/strong&gt;的极致追求，而投机解码则是对&lt;strong&gt;硬件瓶颈&lt;/strong&gt;的疯狂挑衅。
+在 2026 年的面试现场，如果你能清晰地解释出为什么“一次验证多个 token”比“逐个生成 token”更节省时间，面试官就会明白，你已经跨过了“调包侠”的门槛，开始理解计算架构的本质了。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;别被复杂的公式吓到，底层逻辑永远是：能省一次显存读取，就省一次。&lt;/strong&gt; 下一篇，我们将迎来系列的终章——工业级部署、调优与线上事故复盘。冲就完事了！&lt;/p&gt;</description></item></channel></rss>

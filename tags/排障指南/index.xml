@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>排障指南 on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/%E6%8E%92%E9%9A%9C%E6%8C%87%E5%8D%97/</link><description>Recent content in 排障指南 on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Thu, 24 Jul 2025 10:00:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/%E6%8E%92%E9%9A%9C%E6%8C%87%E5%8D%97/index.xml" rel="self" type="application/rss+xml"/><item><title>【Docker 系列 08】排障指南：Docker 常见报错大赏与终极解决套路</title><link>https://tkdwbiao.github.io/p/docker-series-08-troubleshooting/</link><pubDate>Thu, 24 Jul 2025 10:00:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/docker-series-08-troubleshooting/</guid><description>&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;“我的 Dockerfile 写得完美无瑕，docker-compose.yml 结构严谨。满怀期待地敲下 &lt;code&gt;up -d&lt;/code&gt;，结果换来的却是满屏刺眼的红字：&lt;code&gt;Permission denied&lt;/code&gt;、&lt;code&gt;Address already in use&lt;/code&gt;、&lt;code&gt;Restarting (3)&lt;/code&gt;…… 苍天啊，到底哪里出了问题？”&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;欢迎来到真实的后端开发世界。
+在前面的 7 篇文章中，我们一路高歌猛进，学会了写 Dockerfile、挂载 Volume、配置网络、甚至做了多阶段构建的极限瘦身。&lt;/p&gt;
+&lt;p&gt;但理论总是丰满的，现实总是骨感的。当你把这些完美的代码部署到开发机或生产服务器上时，你会发现，&lt;strong&gt;90% 的时间并不是在写配置，而是在 Debug（排障）&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;今天，我将把自己这些年在开发微服务和 AI 大模型项目时，用血泪换来的“Docker 常见报错大赏及排障套路”倾囊相授。掌握了这套心法，面对再诡异的报错，你也能像老中医把脉一样，一击毙命！&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="一排障心法docker-医生的望闻问切三板斧"&gt;一、排障心法：Docker 医生的“望闻问切”三板斧
+&lt;/h2&gt;&lt;p&gt;当你敲下运行命令，却发现服务没起来时，千万不要瞎猜，更不要盲目重启。请严格遵守以下三步排障法：&lt;/p&gt;
+&lt;h3 id="1-望看整体状态docker-ps--a"&gt;1. 望（看整体状态）：&lt;code&gt;docker ps -a&lt;/code&gt;
+&lt;/h3&gt;&lt;p&gt;不要只敲 &lt;code&gt;docker ps&lt;/code&gt;！因为启动失败的容器是不会出现在存活列表里的。
+加上 &lt;code&gt;-a&lt;/code&gt;（all），你要重点观察容器的 &lt;code&gt;STATUS&lt;/code&gt; 字段：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;如果显示 &lt;code&gt;Up 2 minutes&lt;/code&gt;：说明它活着，但可能内部逻辑报错（如连不上数据库）。&lt;/li&gt;
+&lt;li&gt;如果显示 &lt;code&gt;Exited (1) 2 seconds ago&lt;/code&gt;：说明程序发生了致命错误，启动后立刻崩溃退出了。&lt;/li&gt;
+&lt;li&gt;如果显示 &lt;code&gt;Restarting (3) 4 seconds ago&lt;/code&gt;：说明程序崩溃了，但因为你配置了 &lt;code&gt;restart: always&lt;/code&gt;，Docker 正在无限次尝试拉起它。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="2-闻听错误原音docker-logs-容器名"&gt;2. 闻（听错误原音）：&lt;code&gt;docker logs &amp;lt;容器名&amp;gt;&lt;/code&gt;
+&lt;/h3&gt;&lt;p&gt;这是排障的&lt;strong&gt;绝对核心&lt;/strong&gt;。容器挂了，99% 的原因都写在日志里。
+如果是不断重启的容器，用 &lt;code&gt;docker logs -f &amp;lt;容器名&amp;gt;&lt;/code&gt; 实时抓取它临死前吐出的最后一行报错（Traceback）。&lt;/p&gt;
+&lt;h3 id="3-切深入内部解剖覆盖-entrypoint-启动"&gt;3. 切（深入内部解剖）：覆盖 Entrypoint 启动
+&lt;/h3&gt;&lt;p&gt;如果容器一起动就秒退，你连 &lt;code&gt;docker exec&lt;/code&gt; 进去查看配置的机会都没有怎么办？
+&lt;strong&gt;大招&lt;/strong&gt;：覆盖它的默认启动命令，强行让它活着。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 原本启动会崩溃，现在我们强行把它变成一个只运行 sh 的空壳容器进去排查&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker run -it --entrypoint sh my-crashing-image
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;进去之后，你就可以手动执行启动命令，看看究竟缺了什么环境变量或依赖。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二经典报错大赏那些年我们踩过的深坑"&gt;二、经典报错大赏：那些年我们踩过的深坑
+&lt;/h2&gt;&lt;p&gt;接下来，我们将对最常见的几个经典报错进行“尸检报告”分析。&lt;/p&gt;
+&lt;h3 id="-经典报错-1端口已被占用"&gt;🚨 经典报错 1：端口已被占用
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;报错原声：&lt;/strong&gt;&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;code&gt;Error response from daemon: driver failed programming external connectivity on endpoint... Bind for 0.0.0.0:9000 failed: port is already allocated&lt;/code&gt;
+或者你的 Python 程序报 &lt;code&gt;[Errno 98] Address already in use&lt;/code&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;&lt;strong&gt;症状分析：&lt;/strong&gt;
+Docker 试图把容器内部的端口映射到你宿主机的 9000 端口，但宿主机的 9000 端口&lt;strong&gt;已经被别人占用了&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;终极解法：&lt;/strong&gt;&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;揪出元凶：在宿主机终端执行 &lt;code&gt;sudo lsof -i :9000&lt;/code&gt; 或 &lt;code&gt;sudo netstat -tunlp | grep 9000&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;你会看到占用端口的进程（可能是上一次没关干净的僵尸 Python 进程，或者是另外一个残留的 Docker 容器）。&lt;/li&gt;
+&lt;li&gt;处决元凶：拿到它的 &lt;code&gt;PID&lt;/code&gt;（比如 1234），执行 &lt;code&gt;sudo kill -9 1234&lt;/code&gt;；如果是个旧容器，执行 &lt;code&gt;docker rm -f &amp;lt;旧容器名&amp;gt;&lt;/code&gt;。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h3 id="-经典报错-2恐怖的权限拒绝陷阱"&gt;🚨 经典报错 2：恐怖的权限拒绝陷阱
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;报错原声：&lt;/strong&gt;&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;code&gt;PermissionError: Permission denied (os error 13) about [&amp;quot;/home/user/my-project/volumes/etcd/member&amp;quot;]&lt;/code&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;&lt;strong&gt;症状分析：&lt;/strong&gt;
+这个报错多发于我们在本地进行混合开发时。你用 &lt;code&gt;docker-compose&lt;/code&gt; 启动了包含持久化目录（Volumes）的容器（比如 etcd、MySQL）。Docker 是以 &lt;strong&gt;Root 上帝权限&lt;/strong&gt; 在你的项目目录下创建了这些数据文件夹。
+此时，你在本地用自己的普通用户启动了带 &lt;strong&gt;热重载（WatchFiles/Reload）&lt;/strong&gt; 的 Web 框架（如 Uvicorn、Nodemon）。热重载器试图扫描整个项目目录以监听文件变化，但它作为一个普通人，一头撞在了 Root 所有的 &lt;code&gt;volumes&lt;/code&gt; 禁区上，当场暴毙。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;终极解法（两种）：&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;治标法&lt;/strong&gt;：每次启动完 Docker，在本地执行 &lt;code&gt;sudo chown -R $USER:$USER volumes/&lt;/code&gt;，把文件夹的拥有者改回你自己。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;治本法（推荐）&lt;/strong&gt;：修改你框架的热重载配置，明确告诉它&lt;strong&gt;忽略&lt;/strong&gt;数据目录。例如 Python Uvicorn 中：
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;uvicorn&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;run&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;app.main:app&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;reload&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="kc"&gt;True&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;reload_dirs&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;app&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;])&lt;/span&gt; &lt;span class="c1"&gt;# 只监听代码目录&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h3 id="-经典报错-3连不上-localhost-的服务"&gt;🚨 经典报错 3：连不上 localhost 的服务
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;报错原声：&lt;/strong&gt;&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;code&gt;ConnectionRefusedError: [Errno 111] Connection refused&lt;/code&gt;
+或 &lt;code&gt;Fail connecting to server on localhost:19530&lt;/code&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;&lt;strong&gt;症状分析：&lt;/strong&gt;
+你把后端代码和数据库都放进了 Docker 部署。但你的后端配置文件里依然写着 &lt;code&gt;DB_HOST=localhost&lt;/code&gt;。
+我们曾在&lt;a class="link" href="https://tkdwbiao.github.io/p/docker-series-05-network/" &gt;第 5 篇网络模型&lt;/a&gt;中强调过：在容器的世界里，&lt;code&gt;localhost&lt;/code&gt; 只代表&lt;strong&gt;容器它自己&lt;/strong&gt;这个狭小的密室，不代表你的电脑，更不代表其他容器！&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;终极解法：&lt;/strong&gt;&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;检查两个容器是否在同一个 Docker Network 中。&lt;/li&gt;
+&lt;li&gt;将配置文件里的 &lt;code&gt;localhost&lt;/code&gt; 修改为&lt;strong&gt;目标容器的名称&lt;/strong&gt;（比如 &lt;code&gt;DB_HOST=milvus-standalone&lt;/code&gt;）。Docker 内部的 DNS 会自动帮你解析。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h3 id="-经典报错-4依赖服务未准备好导致主程序崩溃"&gt;🚨 经典报错 4：依赖服务未准备好导致主程序崩溃
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;症状分析：&lt;/strong&gt;
+你写了一个 &lt;code&gt;docker-compose.yml&lt;/code&gt;，里面有 &lt;code&gt;standalone&lt;/code&gt; (主程序) 和 &lt;code&gt;minio&lt;/code&gt;、&lt;code&gt;etcd&lt;/code&gt; (依赖服务)。你还聪明地写了 &lt;code&gt;depends_on&lt;/code&gt;。
+但一键启动后，主程序还是报错退出了。日志显示：&lt;code&gt;timeout fetching ...&lt;/code&gt;（连接数据库超时）。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;深层原理：&lt;/strong&gt;
+&lt;code&gt;depends_on&lt;/code&gt; 默认只管 &lt;strong&gt;“启动顺序”&lt;/strong&gt;，不管 &lt;strong&gt;“是否就绪”&lt;/strong&gt;。Compose 把 MySQL 容器开机后，会瞬间启动你的主程序。但众所周知，像 MySQL、Milvus 这种重型数据库，从开机到真正能处理连接，可能需要 10 到 60 秒！你的程序去连的时候，数据库其实还在加载内存，自然连接失败而崩溃。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;终极解法：使用健康检查（Healthcheck）结合重试机制。&lt;/strong&gt;
+在 &lt;code&gt;docker-compose.yml&lt;/code&gt; 中配置真正的依赖等待：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;services&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;db&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;mysql:8.0&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 增加健康检查，告诉 Docker 什么时候数据库才算真活了&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;healthcheck&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;test&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;CMD&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;mysqladmin&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;ping&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;-h&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;localhost&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;interval&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;10s&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;retries&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="m"&gt;5&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;web&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;my-app&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;depends_on&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;db&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 要求不但要启动，还要健康检查通过！&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;condition&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;service_healthy&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;另外，在你的主程序代码中（特别是数据库连接处），一定要加上 &lt;code&gt;try...catch&lt;/code&gt; 和重试逻辑，不要一失败就自尽。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="结语"&gt;结语
+&lt;/h2&gt;&lt;p&gt;遇到报错不可怕，可怕的是遇到报错只会去搜索引擎里盲目复制粘贴别人的命令。&lt;/p&gt;
+&lt;p&gt;通过这篇排障大赏，我希望你能建立起真正的**“容器调试思维”**：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;查状态&lt;/strong&gt;确认生死（&lt;code&gt;ps -a&lt;/code&gt;）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;看日志&lt;/strong&gt;寻找元凶（&lt;code&gt;logs&lt;/code&gt;）。&lt;/li&gt;
+&lt;li&gt;检查&lt;strong&gt;网络拓扑与端口&lt;/strong&gt;是否对应（&lt;code&gt;localhost&lt;/code&gt; 陷阱）。&lt;/li&gt;
+&lt;li&gt;警惕&lt;strong&gt;文件挂载的权限&lt;/strong&gt;交锋（&lt;code&gt;os error 13&lt;/code&gt;）。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;当你熟练掌握了这套排障套路，单机的 Docker 部署对你来说已经没有任何秘密可言了。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;但随着项目慢慢成型，你可能会面临一个新的折磨：&lt;/strong&gt;
+每次你修改了几行代码，你都要手动在本地构建镜像（&lt;code&gt;docker build&lt;/code&gt;），然后手动把这个庞大的镜像推送到服务器，再连上服务器手动拉取（&lt;code&gt;pull&lt;/code&gt;），最后重启容器。一天如果改 10 次代码，你就要重复这套枯燥的动作 10 次。&lt;/p&gt;
+&lt;p&gt;有没有一种魔法，能让我&lt;strong&gt;只要一执行 &lt;code&gt;git push&lt;/code&gt; 把代码推送到 GitHub/GitLab，服务器就能自动帮我打包镜像并完成重启部署？&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;答案是肯定的！请锁定下一篇系列重头戏：&lt;strong&gt;【Docker CI/CD】解放双手：结合 GitHub Actions 实现自动化构建与推流&lt;/strong&gt;。我们将迈向现代 DevOps 工程化的最高殿堂！我们下周见！&lt;/p&gt;</description></item></channel></rss>

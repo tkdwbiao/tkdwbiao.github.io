@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>显存管理 on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/%E6%98%BE%E5%AD%98%E7%AE%A1%E7%90%86/</link><description>Recent content in 显存管理 on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Mon, 06 Apr 2026 17:20:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/%E6%98%BE%E5%AD%98%E7%AE%A1%E7%90%86/index.xml" rel="self" type="application/rss+xml"/><item><title>vLLM 系列(二)：显存手术刀 —— 深度拆解 PagedAttention 机制</title><link>https://tkdwbiao.github.io/p/vllm-paged-attention-deep-dive/</link><pubDate>Mon, 06 Apr 2026 17:20:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/vllm-paged-attention-deep-dive/</guid><description>&lt;p&gt;如果说 vLLM 是大模型推理的皇冠，那么 &lt;strong&gt;PagedAttention&lt;/strong&gt; 就是皇冠上最耀眼的明珠。在上一篇中我们提到，传统框架的显存利用率低得离谱，原因在于它们把显存当成“大豪宅”预分配。
+今天阿彪带你拿起手术刀，深入显存底层，看看 vLLM 到底是怎么把“虚拟内存分页”这套老技术，在 GPU 显存里玩出花来的。&lt;/p&gt;
+&lt;h2 id="一-核心逻辑从逻辑块到物理块"&gt;一、 核心逻辑：从逻辑块到物理块
+&lt;/h2&gt;&lt;p&gt;在 PagedAttention 中，KV Cache 不再是连续存储的一长条数组，而是被拆分成了固定大小的 &lt;strong&gt;Block（块）&lt;/strong&gt;（默认通常是 16 个 token）。&lt;/p&gt;
+&lt;h3 id="1-三大核心组件"&gt;1. 三大核心组件
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Logical Blocks (逻辑块)&lt;/strong&gt;：对模型来说，它看到的依然是连续生成的 token 序列（&lt;code&gt;0~15&lt;/code&gt; 在块 0，&lt;code&gt;16~31&lt;/code&gt; 在块 1&amp;hellip;）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Physical Blocks (物理块)&lt;/strong&gt;：在 GPU 显存池（Memory Pool）中真实存在的空间。这些块在显存里是不连续的。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Block Table (块表)&lt;/strong&gt;：这是核心“中介”。它负责记录：第 $i$ 个逻辑块对应显存里的哪一个物理块。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="2-动态分配流程"&gt;2. 动态分配流程
+&lt;/h3&gt;&lt;p&gt;当模型产生第 17 个 token 时（假设 Block Size=16）：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;系统发现逻辑块 1（对应 token 16~31）还没有分配物理空间。&lt;/li&gt;
+&lt;li&gt;调度器从&lt;strong&gt;空闲物理块池&lt;/strong&gt;里随机抓一个块（比如索引为 77 的块）。&lt;/li&gt;
+&lt;li&gt;在块表里记录：&lt;code&gt;Logical Block 1 -&amp;gt; Physical Block 77&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;模型继续写入，直到第 32 个 token 产生，再申请下一个物理块。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;strong&gt;结论&lt;/strong&gt;：这种按需分配的方式，彻底解决了“预分配”导致的内部碎片。除了每个请求生成的最后一个 Block 可能没填满，其他地方都是满载的。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二-进阶黑科技copy-on-write-与显存共享"&gt;二、 进阶黑科技：Copy-on-Write 与显存共享
+&lt;/h2&gt;&lt;p&gt;这部分是 PagedAttention 最迷人的地方，也是面试官最喜欢问的&lt;strong&gt;显存零拷贝&lt;/strong&gt;。&lt;/p&gt;
+&lt;h3 id="1-案例场景并行采样-parallel-sampling"&gt;1. 案例场景：并行采样 (Parallel Sampling)
+&lt;/h3&gt;&lt;p&gt;假设你让模型写一个故事，要求生成 5 个不同的结局。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;传统做法&lt;/strong&gt;：你需要把 Prompt 的 KV Cache 复制 5 份，显存占用直接翻 5 倍。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;vLLM 做法&lt;/strong&gt;：
+&lt;ol&gt;
+&lt;li&gt;5 个请求的前文（Prompt）一模一样，它们的块表都指向&lt;strong&gt;同一组物理块&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;这些物理块的 &lt;strong&gt;引用计数（Reference Count）&lt;/strong&gt; 被设为 5。&lt;/li&gt;
+&lt;li&gt;显存里只存了一份 Prompt，节省了 80% 的空间。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="2-写时复制-copy-on-write-cow"&gt;2. 写时复制 (Copy-on-Write, CoW)
+&lt;/h3&gt;&lt;p&gt;当这 5 个请求开始生成不同的结局时：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;请求 A 要写第 1 个不同的字，它发现要写入的物理块引用计数 &amp;gt; 1。&lt;/li&gt;
+&lt;li&gt;系统触发 &lt;strong&gt;CoW&lt;/strong&gt;：为请求 A 单独拷贝一个该块的副本，把请求 A 的块表指向新块，引用计数减 1。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;只有在发生差异时，才真正占用新显存。&lt;/strong&gt; 这不仅是省钱，更是极致的优雅。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="三-实战案例高并发下的显存计算对比"&gt;三、 实战案例：高并发下的显存计算对比
+&lt;/h2&gt;&lt;p&gt;我们来算一笔账，看看 PagedAttention 到底多牛。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;实验环境：&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;模型：Llama-3-7B (FP16)&lt;/li&gt;
+&lt;li&gt;显存：一张 A100 (80GB)&lt;/li&gt;
+&lt;li&gt;场景：100 个并发请求，每个请求平均 Seq_Len = 2048。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;1. 传统预分配方式：&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;每个 token 的 KV Cache 大小约 0.5 MB（见&lt;a class="link" href="#custom-anchor" &gt;Q0：请写出 KV Cache 占用显存的计算公式&lt;/a&gt;）。&lt;/li&gt;
+&lt;li&gt;每个请求预分配 2048 个空间 $\to 2048 \times 0.5 \text{ MB} = 1024 \text{ MB} = 1 \text{ GB}$。&lt;/li&gt;
+&lt;li&gt;100 个请求就要 &lt;strong&gt;100 GB&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;结果&lt;/strong&gt;：80GB 的显存根本装不下，直接 OOM。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;2. vLLM (PagedAttention) 方式：&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;假设 100 个请求中，有很多是共享 System Prompt 的（比如 1024 个 token 的 Prompt 是公共的）。&lt;/li&gt;
+&lt;li&gt;公共部分显存：$1024 \times 0.5 \text{ MB} = 0.5 \text{ GB}$ (只需存一份)。&lt;/li&gt;
+&lt;li&gt;剩余生成部分：假设平均已生成 512 个 token。&lt;/li&gt;
+&lt;li&gt;总占用：$0.5 \text{ GB} + (100 \times 512 \times 0.5 \text{ MB}) = 0.5 \text{ GB} + 25 \text{ GB} = 25.5 \text{ GB}$。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;结果&lt;/strong&gt;：显存还剩下 50 多 GB，轻轻松松再接 200 个请求。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="四-面试官会问到的问题及详细答案"&gt;四、 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;p&gt;&lt;a id="custom-anchor"&gt;&lt;/a&gt;&lt;/p&gt;
+&lt;h3 id="-q0请写出-kv-cache-占用显存的计算公式并估算-llama-7bfp16在-batch1seq_len1024-时的显存占用"&gt;❓ Q0：请写出 KV Cache 占用显存的计算公式，并估算 Llama-7B（FP16）在 Batch=1，Seq_Len=1024 时的显存占用。
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+&lt;strong&gt;核心公式&lt;/strong&gt;：&lt;mark&gt;&lt;code&gt;KV Cache 显存 = 2 (K和V) × 批次(Batch) × 层数(Layers) × 头数(Heads) × 头维度(Head_Dim) × 序列长度(Seq_Len) × 字节数(Bytes)&lt;/code&gt;&lt;/mark&gt;。&lt;/p&gt;
+&lt;p&gt;以典型的 7B 模型为例：层数 = 32，头数 = 32，头维度 = 128，FP16 占用 2 Bytes。
+代入公式：$2 \times 1 \times 32 \times 32 \times 128 \times 1024 \times 2 = 536,870,912$ bytes。
+约等于 &lt;strong&gt;0.5 GB&lt;/strong&gt;。&lt;br&gt;
+&lt;em&gt;(顺便向面试官抛出：如果并发请求量达到 Batch=32，且生成长度达到 4K，单单是 KV Cache 就会暴增到 64 GB，一张 80G 的 A100 瞬间就满了！这也是为什么要做 PagedAttention 的核心原因。)&lt;/em&gt;&lt;/p&gt;
+&lt;h3 id="-q1pagedattention-的块大小block-size设为-16-是最优的吗"&gt;❓ Q1：PagedAttention 的块大小（Block Size）设为 16 是最优的吗？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+这是一个权衡（Trade-off）问题。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;设太小（如 4）&lt;/strong&gt;：显存碎片极小，但块表管理开销大。CPU 需要频繁计算物理地址，且 GPU 做 Attention 时的访存不连续，会导致吞吐量下降。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;设太大（如 128）&lt;/strong&gt;：利于 GPU 并行计算和访存合并，但在长文本末尾或短请求场景下，会产生较严重的&lt;strong&gt;内部碎片&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;结论&lt;/strong&gt;：vLLM 经过大量实验，发现 16 是一个在“访存性能”和“显存利用率”之间最均衡的数字。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="-q2在-pagedattention-中如果不连续的物理块会导致-gpu-访存变慢vllm-是怎么解决的"&gt;❓ Q2：在 PagedAttention 中，如果不连续的物理块会导致 GPU 访存变慢，vLLM 是怎么解决的？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+这是 vLLM 团队最硬核的地方。他们手写了&lt;strong&gt;专门的 CUDA Kernel&lt;/strong&gt; 来执行 PagedAttention。
+在这个 Kernel 中，每个线程块（Thread Block）在计算注意力时，会先通过 Block Table 查找当前逻辑块对应的物理地址。虽然块与块之间不连续，但因为&lt;strong&gt;每个块内部（16个 token）是严格连续存储的&lt;/strong&gt;，Kernel 可以通过对齐内存访问，保证极高的计算效率。&lt;/p&gt;
+&lt;h3 id="-q3pagedattention-如何支持多轮对话multi-turn-chat的显存优化"&gt;❓ Q3：PagedAttention 如何支持多轮对话（Multi-turn Chat）的显存优化？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+通过 &lt;strong&gt;Prefix Caching&lt;/strong&gt;（前缀缓存）。
+在多轮对话中，前面的聊天记录（History）其实也是重复的。vLLM 会计算 History 的 Hash 值，将其 KV Cache 物理块缓存在显存中。当同一个用户的下一轮请求，或者不同用户的相同前缀请求进来时，直接复用物理块，连重新推理（Prefill）的计算量都省了。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="五-阿彪碎碎念-抱拳"&gt;五、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;学完 PagedAttention，你是不是有一种“众里寻他千百度，蓦然回首，那人却在灯火阑珊处”的感觉？
+现在的 AI 行业，天天在刷榜、在卷模型架构。但真正让大模型能像水电煤一样普及的，反而是这些扎根于&lt;strong&gt;操作系统内核思想&lt;/strong&gt;、在 &lt;strong&gt;CUDA 算子层精雕细琢&lt;/strong&gt;的底层工程。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;千万不要觉得底层技术枯燥。&lt;/strong&gt;
+当你能站在面试官面前，手绘出 Block Table 的映射逻辑，讲清楚 Copy-on-Write 的引用计数时，你才真正触碰到了 LLM 推理的脉搏。记住，在大模型时代，&lt;strong&gt;最好的算法工程师，首先必须是一个顶级的系统工程师。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;下一篇，我们将聊聊 vLLM 的大脑 —— &lt;strong&gt;连续批处理（Continuous Batching）与请求调度系统&lt;/strong&gt;。看它是如何把 GPU 压榨到最后一秒的，冲就完事了！&lt;/p&gt;</description></item></channel></rss>

@@ -1,0 +1,362 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>微服务 on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/%E5%BE%AE%E6%9C%8D%E5%8A%A1/</link><description>Recent content in 微服务 on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Thu, 10 Jul 2025 09:00:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/%E5%BE%AE%E6%9C%8D%E5%8A%A1/index.xml" rel="self" type="application/rss+xml"/><item><title>【Docker 系列 06】告别繁琐的长命令：Docker Compose 一键启动多服务架构</title><link>https://tkdwbiao.github.io/p/docker-series-06-compose/</link><pubDate>Thu, 10 Jul 2025 09:00:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/docker-series-06-compose/</guid><description>&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;“我的项目要连数据库、要连缓存、还要连消息队列。每次重启，我都得小心翼翼地按顺序敲 6 个长达四五行的 &lt;code&gt;docker run&lt;/code&gt; 命令，错一个字母就全盘崩溃。有没有救？”&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;通过前面五篇文章的学习，你已经掌握了 Docker 的四大神器：&lt;strong&gt;镜像、容器、Volume（数据卷）和 Network（网络）&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;但在真实的商业项目中，一个系统绝对不只有一个容器。
+以我最近正在开发的 &lt;strong&gt;“智能 OnCall AI 助手项目”&lt;/strong&gt; 为例，为了让大模型具备记忆，我需要用到 Milvus 向量数据库。但 Milvus 不是一个单体软件，它底层依赖 &lt;code&gt;Etcd&lt;/code&gt; 存元数据，依赖 &lt;code&gt;MinIO&lt;/code&gt; 存实际文件，最后还要加上我自己的 &lt;code&gt;FastAPI&lt;/code&gt; 后端服务和 &lt;code&gt;Attu&lt;/code&gt; 可视化面板。&lt;/p&gt;
+&lt;p&gt;如果纯靠 &lt;code&gt;docker run&lt;/code&gt; 命令手动启动这 5 个容器：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;你必须先建好自定义网络。&lt;/li&gt;
+&lt;li&gt;你得算准启动顺序（先起 Etcd，再起 Milvus）。&lt;/li&gt;
+&lt;li&gt;你的终端历史记录里会塞满长达几百个字符的变态命令。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;最惨的是交接&lt;/strong&gt;：当新同事入职，你要怎么教他把这套环境在本地跑起来？&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;为了消灭这种反人类的操作，Docker 官方推出了终极杀器：&lt;strong&gt;Docker Compose&lt;/strong&gt;。今天，我们就来学习如何用一份优雅的文件，一键指挥千军万马。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="一什么是-docker-compose从命令式到声明式"&gt;一、什么是 Docker Compose？（从命令式到声明式）
+&lt;/h2&gt;&lt;p&gt;&lt;code&gt;docker run&lt;/code&gt; 是一种 &lt;strong&gt;命令式（Imperative）&lt;/strong&gt; 操作：“嘿，Docker，给我用 80 端口、挂载 A 目录、连接 B 网络，跑一个 C 容器！”&lt;/p&gt;
+&lt;p&gt;而 Docker Compose 是一种 &lt;strong&gt;声明式（Declarative）&lt;/strong&gt; 操作：“嘿，Docker，这是我的架构图（一份 YAML 文件），我不管你怎么弄，反正我要 5 个容器按照这个图纸跑起来，互相能连通，你看着办吧。”&lt;/p&gt;
+&lt;p&gt;Docker Compose 的核心就只有一个名为 &lt;strong&gt;&lt;code&gt;docker-compose.yml&lt;/code&gt;&lt;/strong&gt; 的文本文件。你在这个文件里定义好所有的服务（Services）、网络（Networks）和数据卷（Volumes），然后只需要敲&lt;strong&gt;一个单词&lt;/strong&gt;，一切就会按照剧本自动上演。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二扒开-docker-composeyml-的外衣核心语法解析"&gt;二、扒开 &lt;code&gt;docker-compose.yml&lt;/code&gt; 的外衣：核心语法解析
+&lt;/h2&gt;&lt;p&gt;不要被几十行的代码吓到，&lt;code&gt;docker-compose.yml&lt;/code&gt; 的结构其实非常清晰，主要分为三大部分：&lt;code&gt;services&lt;/code&gt;（服务）、&lt;code&gt;volumes&lt;/code&gt;（数据卷声明）和 &lt;code&gt;networks&lt;/code&gt;（网络声明）。&lt;/p&gt;
+&lt;p&gt;我们直接拿一个高度简化的&lt;strong&gt;真实 AI 项目数据库架构&lt;/strong&gt;来解剖。这份图纸包含了向量数据库主体（Standalone）及其依赖（Etcd 和 MinIO）：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;span class="lnt"&gt;24
+&lt;/span&gt;&lt;span class="lnt"&gt;25
+&lt;/span&gt;&lt;span class="lnt"&gt;26
+&lt;/span&gt;&lt;span class="lnt"&gt;27
+&lt;/span&gt;&lt;span class="lnt"&gt;28
+&lt;/span&gt;&lt;span class="lnt"&gt;29
+&lt;/span&gt;&lt;span class="lnt"&gt;30
+&lt;/span&gt;&lt;span class="lnt"&gt;31
+&lt;/span&gt;&lt;span class="lnt"&gt;32
+&lt;/span&gt;&lt;span class="lnt"&gt;33
+&lt;/span&gt;&lt;span class="lnt"&gt;34
+&lt;/span&gt;&lt;span class="lnt"&gt;35
+&lt;/span&gt;&lt;span class="lnt"&gt;36
+&lt;/span&gt;&lt;span class="lnt"&gt;37
+&lt;/span&gt;&lt;span class="lnt"&gt;38
+&lt;/span&gt;&lt;span class="lnt"&gt;39
+&lt;/span&gt;&lt;span class="lnt"&gt;40
+&lt;/span&gt;&lt;span class="lnt"&gt;41
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# docker-compose.yml&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;services&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 服务1：Etcd (元数据存储)&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;etcd&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;container_name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;milvus-etcd&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;quay.io/coreos/etcd:v3.5.18&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;volumes&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="l"&gt;./volumes/etcd:/etcd&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;command&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 服务2：MinIO (底层文件存储)&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;minio&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;container_name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;milvus-minio&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;minio/minio:RELEASE.2023-03-20T20-16-18Z&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;environment&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;MINIO_ACCESS_KEY&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;minioadmin&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;MINIO_SECRET_KEY&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;minioadmin&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;ports&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="s2"&gt;&amp;#34;9001:9001&amp;#34;&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="s2"&gt;&amp;#34;9000:9000&amp;#34;&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;volumes&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="l"&gt;./volumes/minio:/minio_data&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;command&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;minio server /minio_data --console-address &amp;#34;:9001&amp;#34;&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 服务3：Milvus 主体 (依赖前两个服务)&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;standalone&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;container_name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;milvus-standalone&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;milvusdb/milvus:v2.5.10&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;ports&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="s2"&gt;&amp;#34;19530:19530&amp;#34;&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;environment&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;ETCD_ENDPOINTS&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;etcd:2379 &lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 重点：直接使用服务名通信&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;MINIO_ADDRESS&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;minio:9000 &lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 重点：直接使用服务名通信&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;depends_on&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="l"&gt;etcd&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="l"&gt;minio&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 声明自定义网络&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;networks&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;default&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;milvus_network&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="核心标签大扫盲"&gt;核心标签大扫盲：
+&lt;/h3&gt;&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;services&lt;/code&gt;&lt;/strong&gt;：在这个标签下的缩进列表，每一个节点（如 &lt;code&gt;etcd&lt;/code&gt;, &lt;code&gt;minio&lt;/code&gt;, &lt;code&gt;standalone&lt;/code&gt;）就是一个容器。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;image&lt;/code&gt; vs &lt;code&gt;build&lt;/code&gt;&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;image: nginx:latest&lt;/code&gt; 表示直接去网上拉取现成的镜像。&lt;/li&gt;
+&lt;li&gt;如果是你自己写的项目，可以用 &lt;code&gt;build: .&lt;/code&gt;，它会自动寻找当前目录的 &lt;code&gt;Dockerfile&lt;/code&gt; 现场帮你打包镜像并启动！&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;environment&lt;/code&gt;&lt;/strong&gt;：注入环境变量，相当于 &lt;code&gt;docker run -e&lt;/code&gt;。非常适合配置账号密码（如 MinIO 的密钥）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;depends_on&lt;/code&gt;（重点！）&lt;/strong&gt;：决定了容器的&lt;strong&gt;启动顺序&lt;/strong&gt;。在上面的例子中，&lt;code&gt;standalone&lt;/code&gt; 声明了依赖 &lt;code&gt;etcd&lt;/code&gt; 和 &lt;code&gt;minio&lt;/code&gt;。所以当你按下一键启动时，Compose 会聪明地先启动存储引擎，最后再启动 Milvus 主服务。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;内置网络 DNS 魔法&lt;/strong&gt;：还记得上一篇我们大费周章创建的自定义网络吗？&lt;strong&gt;在 Compose 里，这全是自动的！&lt;/strong&gt; 它会自动创建一个以当前文件夹命名的网络，并把所有服务放进去。看 &lt;code&gt;standalone&lt;/code&gt; 的配置：它直接用 &lt;code&gt;etcd:2379&lt;/code&gt; 就能连上 Etcd 容器，省去了所有 IP 配置烦恼。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h2 id="三docker-compose-的日常四板斧命令"&gt;三、Docker Compose 的日常“四板斧”命令
+&lt;/h2&gt;&lt;p&gt;有了这份 &lt;code&gt;docker-compose.yml&lt;/code&gt;，你的命令行生活将变得极其枯燥且安逸。&lt;/p&gt;
+&lt;h3 id="1-魔法开启docker-compose-up--d"&gt;1. 魔法开启：&lt;code&gt;docker compose up -d&lt;/code&gt;
+&lt;/h3&gt;&lt;p&gt;进入 &lt;code&gt;docker-compose.yml&lt;/code&gt; 所在的目录，敲下这行命令（&lt;code&gt;-d&lt;/code&gt; 表示后台运行）。
+Docker 会自动去下载镜像、自动建网络、自动按顺序启动所有服务。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;💡 阿彪小科普&lt;/strong&gt;：在老版本中命令是带横杠的 &lt;code&gt;docker-compose up&lt;/code&gt;。现在新版 Docker 已经把 Compose 吸收为了官方内置插件，统一使用 &lt;code&gt;docker compose&lt;/code&gt;（中间是空格）。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id="2-查看群雄docker-compose-ps"&gt;2. 查看群雄：&lt;code&gt;docker compose ps&lt;/code&gt;
+&lt;/h3&gt;&lt;p&gt;如果你想看看这个“项目集”里所有的容器状态，不用再全局 &lt;code&gt;docker ps&lt;/code&gt; 了。
+这个命令只会列出&lt;strong&gt;当前图纸&lt;/strong&gt;管控下的容器运行状况。&lt;/p&gt;
+&lt;h3 id="3-上帝视角看日志docker-compose-logs--f"&gt;3. 上帝视角看日志：&lt;code&gt;docker compose logs -f&lt;/code&gt;
+&lt;/h3&gt;&lt;p&gt;当微服务多了，不知道错误出在哪个环节？
+敲下这个命令，你会看到一个极其壮观的画面：&lt;strong&gt;所有容器的日志交织在一起实时滚动，而且 Compose 非常贴心地给每个服务分配了不同的颜色标明前缀！&lt;/strong&gt;（例如蓝色的 &lt;code&gt;minio |&lt;/code&gt;，红色的 &lt;code&gt;etcd |&lt;/code&gt;）。排障效率瞬间提升十倍。&lt;/p&gt;
+&lt;h3 id="4-毁尸灭迹docker-compose-down"&gt;4. 毁尸灭迹：&lt;code&gt;docker compose down&lt;/code&gt;
+&lt;/h3&gt;&lt;p&gt;不想用了？不要再一个个 &lt;code&gt;docker stop&lt;/code&gt; 和 &lt;code&gt;docker rm&lt;/code&gt;。
+执行 &lt;code&gt;down&lt;/code&gt; 命令，它会：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;优雅地停止所有相关容器。&lt;/li&gt;
+&lt;li&gt;删除这些容器。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;最重要的是：它会自动清理掉为了这个项目创建的临时内部网络&lt;/strong&gt;，绝不给你的系统留下一丝垃圾。
+&lt;em&gt;(注：默认情况下，挂载的数据卷 Volumes 会被保留，保证你的数据安全)&lt;/em&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h2 id="四高阶避坑env-环境隔离大法"&gt;四、高阶避坑：&lt;code&gt;.env&lt;/code&gt; 环境隔离大法
+&lt;/h2&gt;&lt;p&gt;在真实开发中，我们绝不会把真实的数据库密码或者通义千问的 &lt;code&gt;DASHSCOPE_API_KEY&lt;/code&gt; 明文写在 &lt;code&gt;docker-compose.yml&lt;/code&gt; 里然后推送到 GitHub 上。这等同于把金库钥匙挂在菜市口。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;最佳实践是使用环境变量文件隔离。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Docker Compose 原生支持读取同目录下的 &lt;code&gt;.env&lt;/code&gt; 文本文件。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;1. 创建 &lt;code&gt;.env&lt;/code&gt; 文件（不要把它提交到 Git）：&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;MYSQL_ROOT_PASSWORD&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;SuperSecretPass_888
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;DOCKER_VOLUME_DIR&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;./my_data
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;2. 在 &lt;code&gt;docker-compose.yml&lt;/code&gt; 中使用 &lt;code&gt;${变量名}&lt;/code&gt; 占位：&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;span class="lnt"&gt;6
+&lt;/span&gt;&lt;span class="lnt"&gt;7
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;services&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;db&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;mysql:8.0&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;environment&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;MYSQL_ROOT_PASSWORD&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;${MYSQL_ROOT_PASSWORD}&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;volumes&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="l"&gt;${DOCKER_VOLUME_DIR}/mysql:/var/lib/mysql&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;这样，你的 YAML 文件就是一套干净的、可随意分享的架构模板，而真正的机密和本地差异化配置，全部留在了每个人电脑的 &lt;code&gt;.env&lt;/code&gt; 文件里。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="结语"&gt;结语
+&lt;/h2&gt;&lt;p&gt;从手敲 10 遍 &lt;code&gt;docker run&lt;/code&gt; 到写一份 &lt;code&gt;docker-compose.yml&lt;/code&gt; 一键启动，你完成了从“搬砖工”到“包工头”的华丽转变。&lt;/p&gt;
+&lt;p&gt;如今，无论是本地开发还是单机服务器部署，你只需把代码和这份 YAML 文件发给同事，他只要敲下 &lt;code&gt;docker compose up -d&lt;/code&gt;，他的电脑上就会完美复刻出一个包含 Nginx、Python、MySQL、Redis 且互相连通的庞大微服务帝国。这，就是容器编排的魅力。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;但是，随着我们打包的项目越来越多，你可能会发现一个尴尬的问题：&lt;/strong&gt;
+“为什么我用 Dockerfile 随便打包一个跑着简单 Web 服务的 Python 镜像，体积竟然高达 &lt;strong&gt;1.5 GB&lt;/strong&gt;？这上传和下载的速度简直要命啊！”&lt;/p&gt;
+&lt;p&gt;你的镜像里是不是塞满了编译工具、多余的缓存和根本用不到的源代码？
+如何为你的镜像做一场“抽脂手术”，把它从 1.5GB 压榨到仅仅几十 MB？&lt;/p&gt;
+&lt;p&gt;请锁定下期高阶魔法：&lt;strong&gt;【Docker 高级】镜像太大了怎么办？多阶段构建 (Multi-stage Build) 瘦身术&lt;/strong&gt;。我们下周见！&lt;/p&gt;</description></item><item><title>【Docker 系列 05】容器间怎么通信？一文搞懂 Docker 网络模型 (Network)</title><link>https://tkdwbiao.github.io/p/docker-series-05-network/</link><pubDate>Thu, 03 Jul 2025 09:00:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/docker-series-05-network/</guid><description>&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;“我的 Python 后端明明写了连接 &lt;code&gt;127.0.0.1:3306&lt;/code&gt;，而且 MySQL 容器也跑起来了，为什么就是报 &lt;code&gt;Connection Refused&lt;/code&gt; 连不上？！”&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;在&lt;a class="link" href="https://tkdwbiao.github.io/p/docker-series-04-volumes/" &gt;上一篇文章&lt;/a&gt;中，我们解决了数据的生死存亡问题，学会了用 Volume 给容器挂载“外接硬盘”。&lt;/p&gt;
+&lt;p&gt;现在，你的手艺越来越熟练了。你分别用 &lt;code&gt;docker run&lt;/code&gt; 启动了一个 Web 后端容器，又启动了一个 MySQL 数据库容器，还有一个 Redis 缓存容器。&lt;/p&gt;
+&lt;p&gt;但在你满怀期待地发起请求时，程序却崩溃了。后端容器疯狂报错：找不到数据库！
+你很纳闷：“我明明都在同一台电脑上跑着，而且数据库也映射了 3306 端口，凭什么连不上？”&lt;/p&gt;
+&lt;p&gt;欢迎来到 Docker 新手必踩的第二大坑：&lt;strong&gt;网络隔离陷阱&lt;/strong&gt;。
+今天，我们就来彻底搞懂 Docker 的网络模型，让你的容器们成功手牵手。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="一最致命的错觉被误解的-localhost"&gt;一、最致命的错觉：被误解的 &lt;code&gt;localhost&lt;/code&gt;
+&lt;/h2&gt;&lt;p&gt;在弄懂 Docker 网络之前，必须先破除一个根深蒂固的思维定势。&lt;/p&gt;
+&lt;p&gt;以前我们在物理机上开发，后端代码写 &lt;code&gt;localhost:3306&lt;/code&gt;，它会去找这台电脑上的 3306 端口。
+但是在 Docker 的世界里，&lt;strong&gt;容器是隔离的（Namespace 机制）&lt;/strong&gt;。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;把你的宿主机想象成一栋&lt;strong&gt;大楼&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;每一个容器，就是大楼里的一间&lt;strong&gt;独立密室&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;在容器 A（Web后端）里面喊 &lt;code&gt;localhost&lt;/code&gt;（我自己），它指的是&lt;strong&gt;密室 A 内部&lt;/strong&gt;。它不可能跨过墙壁去访问密室 B（MySQL）的 3306 端口。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;所以，在容器内部访问 &lt;code&gt;127.0.0.1&lt;/code&gt;，永远只能访问它自己。这就是为什么你的后端连不上数据库的根本原因。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二docker-的三大基础网络模式"&gt;二、Docker 的三大基础网络模式
+&lt;/h2&gt;&lt;p&gt;为了让这些“密室”既能隔离又能通信，Docker 在安装时就自动帮你建好了三种基础网络模式（你可以用 &lt;code&gt;docker network ls&lt;/code&gt; 命令查看）：&lt;/p&gt;
+&lt;h3 id="1-none-模式真正的小黑屋"&gt;1. &lt;code&gt;none&lt;/code&gt; 模式：真正的“小黑屋”
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;原理&lt;/strong&gt;：在这个模式下，容器除了自己的回环网卡（&lt;code&gt;localhost&lt;/code&gt;），没有任何外部网络接口。不能上网，别人也连不上它。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;场景&lt;/strong&gt;：适用于极度强调安全、不需要联网的离线计算任务（比如生成机密密钥）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="2-host-模式打破次元壁"&gt;2. &lt;code&gt;host&lt;/code&gt; 模式：打破次元壁
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;原理&lt;/strong&gt;：容器直接“剥夺”了隔离权，完全使用宿主机（大楼）的网络。容器里面监听了 80 端口，你的宿主机 80 端口就会被直接占用。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;优点&lt;/strong&gt;：性能极高，因为没有 NAT（网络地址转换）的损耗。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;缺点&lt;/strong&gt;：端口极易冲突。如果你跑了两个 Nginx 容器都用 &lt;code&gt;host&lt;/code&gt; 模式，第二个肯定启动失败。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="3-bridge-模式默认大楼里的内部交换机"&gt;3. &lt;code&gt;bridge&lt;/code&gt; 模式（默认）：大楼里的内部交换机
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;原理&lt;/strong&gt;：这是 Docker &lt;strong&gt;最常用、也是默认&lt;/strong&gt;的网络模式。Docker 会在你的宿主机上虚拟出一个名为 &lt;code&gt;docker0&lt;/code&gt; 的网桥（就像一个内部交换机）。所有以默认模式启动的容器，都会连到这个交换机上，并被分配一个内部 IP（比如 &lt;code&gt;172.17.0.2&lt;/code&gt;、&lt;code&gt;172.17.0.3&lt;/code&gt;）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;通信方式&lt;/strong&gt;：容器 A 可以通过容器 B 的&lt;strong&gt;内部 IP&lt;/strong&gt;互相访问。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;💡 阿彪避坑指南：默认 Bridge 的致命缺陷！&lt;/strong&gt;
+虽然容器分配了 IP，但是每次容器重启，Docker 给它的 &lt;strong&gt;IP 是会随机变化的！&lt;/strong&gt;
+难道你每次重启数据库容器，都要去修改后端的配置文件吗？这简直是反人类！&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;hr&gt;
+&lt;h2 id="三终极杀器自定义网络user-defined-bridge"&gt;三、终极杀器：自定义网络（User-Defined Bridge）
+&lt;/h2&gt;&lt;p&gt;为了解决 IP 变动的问题，Docker 提供了高阶玩法：&lt;strong&gt;自定义网络&lt;/strong&gt;。
+这也是在企业级开发中，让多个容器通信的&lt;strong&gt;唯一正确姿势&lt;/strong&gt;。&lt;/p&gt;
+&lt;h3 id="1-魔法的核心内嵌-dns"&gt;1. 魔法的核心：内嵌 DNS
+&lt;/h3&gt;&lt;p&gt;当你使用自定义网络时，Docker 会启动一个内嵌的 DNS 服务器。
+它的魔法在于：&lt;strong&gt;容器之间可以直接通过“容器名字（Container Name）”进行通信，完全不需要知道 IP 是多少！&lt;/strong&gt;&lt;/p&gt;
+&lt;h3 id="2-实战演练让-web-和-db-手牵手"&gt;2. 实战演练：让 Web 和 DB 手牵手
+&lt;/h3&gt;&lt;p&gt;跟着我敲下面四行命令，见证奇迹：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;第一步：创建一个属于你的内部网络&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker network create my-app-network
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;第二步：启动数据库，并加入这个网络&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker run -d &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --name my-mysql &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --network my-app-network &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; -e &lt;span class="nv"&gt;MYSQL_ROOT_PASSWORD&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="m"&gt;123456&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; mysql:8.0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;em&gt;注意：这里我们将容器命名为 &lt;code&gt;my-mysql&lt;/code&gt;。&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;第三步：启动一个用来测试的工具容器，也加入这个网络&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker run -it &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --name my-tester &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; --network my-app-network &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; alpine sh
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;em&gt;(这会让你进入一个名叫 my-tester 的极简版 Linux 命令行)&lt;/em&gt;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;第四步：见证魔法（在 my-tester 的终端里）&lt;/strong&gt;
+试着 ping 一下数据库的名字：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ping my-mysql
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;输出结果：&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;PING my-mysql (172.18.0.2): 56 data bytes
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;64 bytes from 172.18.0.2: seq=0 ttl=64 time=0.088 ms
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;...
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;通了！而且它自动把 &lt;code&gt;my-mysql&lt;/code&gt; 解析成了真实的内部 IP！&lt;/strong&gt;&lt;/p&gt;
+&lt;h3 id="结论"&gt;结论
+&lt;/h3&gt;&lt;p&gt;现在你应该明白了，如果要把后端和数据库都部署在 Docker 里，你的后端配置文件里的数据库地址，不要写 &lt;code&gt;127.0.0.1&lt;/code&gt;，也不要写本机的公网 IP，而是&lt;strong&gt;直接写数据库容器的名字&lt;/strong&gt;（比如 &lt;code&gt;host=&amp;quot;my-mysql&amp;quot;&lt;/code&gt;），只要它们在同一个网络下，Docker 就会帮你搞定一切。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="四网络排错必备指令"&gt;四、网络排错必备指令
+&lt;/h2&gt;&lt;p&gt;当你发现两个容器还是连不上时，这两个命令能帮你快速定位问题：&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;1. 查看网络详情 (&lt;code&gt;docker network inspect&lt;/code&gt;)&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker network inspect my-app-network
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;这个命令会输出一个 JSON，在 &lt;code&gt;Containers&lt;/code&gt; 节点下，你能清楚地看到到底有哪些容器加入了这个网络，以及它们被分配的 IP 是什么。如果你的 Web 容器不在列表里，那肯定连不上。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;2. 将运行中的容器接入网络 (&lt;code&gt;docker network connect&lt;/code&gt;)&lt;/strong&gt;
+如果你一开始忘加 &lt;code&gt;--network&lt;/code&gt; 参数了，难道要删了重开？不需要：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;docker network connect my-app-network my-web-container
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;这就像给运行中的机器临时拉了一根网线插上。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="结语"&gt;结语
+&lt;/h2&gt;&lt;p&gt;学完今天的内容，我们来盘点一下你现在的 Docker 技能库：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;用 &lt;strong&gt;Dockerfile&lt;/strong&gt; 打造灵魂（定制镜像）。&lt;/li&gt;
+&lt;li&gt;用 &lt;strong&gt;Volumes&lt;/strong&gt; 护住命脉（持久化数据）。&lt;/li&gt;
+&lt;li&gt;用 &lt;strong&gt;Network&lt;/strong&gt; 建立羁绊（容器互通）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;理论上，你已经具备了部署任何复杂微服务架构的能力。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;但是，现实依然很骨感。&lt;/strong&gt;
+假设你要部署一个稍微复杂点的“智能 OnCall 项目”，你需要：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;启动一个 Redis。&lt;/li&gt;
+&lt;li&gt;启动一个 MySQL，挂载数据卷。&lt;/li&gt;
+&lt;li&gt;启动一个 Milvus 向量数据库（这玩意甚至依赖 Etcd 和 MinIO）。&lt;/li&gt;
+&lt;li&gt;启动你的 FastAPI 后端。&lt;/li&gt;
+&lt;li&gt;记得给它们配置同一个自定义网络&amp;hellip;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;如果你每次上线都要手动敲 &lt;strong&gt;10 几条长达四五行的 &lt;code&gt;docker run&lt;/code&gt; 命令&lt;/strong&gt;，不仅容易敲错，而且交接给同事时，同事大概率会想打人。&lt;/p&gt;
+&lt;p&gt;有没有一种方法，可以像写代码一样，把这十几个容器的启动顺序、网络映射、端口配置&lt;strong&gt;全部写在一个文件里&lt;/strong&gt;，然后敲一个命令，它们就按照剧本自动拉起？&lt;/p&gt;
+&lt;p&gt;有！这就是让无数运维工程师彻底解放双手的神器：&lt;strong&gt;Docker Compose&lt;/strong&gt;。
+请锁定下期：&lt;strong&gt;【Docker 高级】告别繁琐的长命令：Docker Compose 一键启动多服务架构&lt;/strong&gt;。我们下周见！&lt;/p&gt;</description></item></channel></rss>

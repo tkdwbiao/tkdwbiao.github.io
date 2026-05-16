@@ -1,0 +1,864 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>VLLM on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/vllm/</link><description>Recent content in VLLM on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Mon, 06 Apr 2026 19:00:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/vllm/index.xml" rel="self" type="application/rss+xml"/><item><title>vLLM 系列(六)：终章 —— 工业级调优、监控与线上事故复盘</title><link>https://tkdwbiao.github.io/p/vllm-production-tuning-monitoring-oom-case/</link><pubDate>Mon, 06 Apr 2026 19:00:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/vllm-production-tuning-monitoring-oom-case/</guid><description>&lt;p&gt;写完了原理，拆完了代码，如果最后不会部署调优，那之前的学习只能算是“纸上谈兵”。&lt;/p&gt;
+&lt;p&gt;在 2026 年的工业界，大模型推理已经进入了 FP8 和百万上下文的深水区。今天阿彪带你完成这个系列的收官之作：如何配置出一台“稳如老狗”的 vLLM 服务器，并分享一个我亲手处理过的线上 OOM 事故。&lt;/p&gt;
+&lt;h2 id="一-核心参数避坑指南拒绝默认值陷阱"&gt;一、 核心参数避坑指南：拒绝“默认值”陷阱
+&lt;/h2&gt;&lt;p&gt;在 vLLM 的启动命令行里，有三个参数直接决定了你的服务会不会“炸”：&lt;/p&gt;
+&lt;h3 id="1-gpu_memory_utilization-默认-09"&gt;1. gpu_memory_utilization (默认 0.9)
+&lt;/h3&gt;&lt;p&gt;这决定了 KV Cache 内存池的大小。
+在 2026 年的显卡架构上，如果你使用了 QLoRA 挂载或者开启了 Medusa 投机解码，剩下的 10% 显存往往不足以支撑动态计算。
+阿彪建议：如果有外挂 Adapter 需求，这个值建议下调到 0.82 或 0.85，给系统留一点“呼吸空间”。&lt;/p&gt;
+&lt;h3 id="2-max_num_seqs-最大并发数"&gt;2. max_num_seqs (最大并发数)
+&lt;/h3&gt;&lt;p&gt;它控制同时处理的 Request 数量。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;追求低延迟（如实时对话）：设小一点（128）。&lt;/li&gt;
+&lt;li&gt;追求高吞吐（如文档批量翻译）：设大一点（512+）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="3-max_model_len-最大长度限制"&gt;3. max_model_len (最大长度限制)
+&lt;/h3&gt;&lt;p&gt;千万不要完全信任模型 Config 里的长度。
+在 2026 年，很多模型号称支持 1M 上下文。如果一个用户真的传了 100 万 token 进来，你的显存会瞬间被拉爆。必须根据你的 GPU 算力，强制设定一个业务合理的阈值。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二-监控黄金三角prometheus--grafana"&gt;二、 监控黄金三角：Prometheus + Grafana
+&lt;/h2&gt;&lt;p&gt;线上服务最怕“裸奔”。在 vLLM 的监控看板中，我只盯着三个关键指标：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;vllm:num_requests_running&lt;/strong&gt;：
+这是系统的实时负载。如果这个数字频繁触达你的 &lt;code&gt;max_num_seqs&lt;/code&gt;，说明用户正在排队，需要扩容机器了。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;vllm:gpu_cache_usage_perc&lt;/strong&gt;：
+KV Cache 利用率。如果利用率长期在 95% 以上，且 &lt;code&gt;vllm:num_requests_swapped&lt;/code&gt; 大于 0，说明系统在频繁发生“显存-内存”交换，用户端会感到严重的响应卡顿。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;vllm:request_queue_time_seconds&lt;/strong&gt;：
+请求在队列里排队的时间。这是导致用户流失的头号杀手。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h2 id="三--工程经验一次真实的线上-oom-事故复盘"&gt;三 : 工程经验：一次真实的线上 OOM 事故复盘
+&lt;/h2&gt;&lt;h3 id="1-事故现场"&gt;1. 事故现场
+&lt;/h3&gt;&lt;p&gt;2026年初，某医疗 RAG 项目上线。晚上 8 点请求高峰，多台分布式推理节点连续重启，报错 &lt;code&gt;torch.cuda.OutOfMemoryError&lt;/code&gt;。&lt;/p&gt;
+&lt;h3 id="2-排查过程"&gt;2. 排查过程
+&lt;/h3&gt;&lt;p&gt;我们观察监控发现，在事故发生前，KV Cache 利用率并没有满，但系统的非缓存显存突然飙升。
+最后定位到：业务方为了提升回答精度，临时为每个用户动态加载了一个专门的医疗 LoRA。
+由于 vLLM 的 &lt;code&gt;gpu_memory_utilization&lt;/code&gt; 设置为默认的 0.95，预留给非缓存部分的显存不到 4GB。当多个不同 LoRA 同时加载并触发计算时，显存瞬间耗尽。&lt;/p&gt;
+&lt;h3 id="3-解决对策"&gt;3. 解决对策
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;将 &lt;code&gt;gpu_memory_utilization&lt;/code&gt; 强制下调至 0.82。&lt;/li&gt;
+&lt;li&gt;引入 &lt;code&gt;enforce_eager=True&lt;/code&gt;。虽然牺牲了 CUDA Graph 的一点性能，但回收了数 GB 的固定显存占用。&lt;/li&gt;
+&lt;li&gt;严格限制 &lt;code&gt;max_loras&lt;/code&gt; 数量，防止恶意请求堆积。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="四-面试官会问到的问题及详细答案"&gt;四、 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;h3 id="-q1如果线上-ttft首字延迟太高你会如何排查"&gt;❓ Q1：如果线上 TTFT（首字延迟）太高，你会如何排查？
+&lt;/h3&gt;&lt;p&gt;答：
+我会从三个维度排查：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;看排队&lt;/strong&gt;：检查 &lt;code&gt;request_queue_time&lt;/code&gt;，如果排队严重，说明并发过高，需增加实例。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;看 Prefill&lt;/strong&gt;：是否因为单次 Prompt 太长，我会开启 Chunked Prefill 将计算平滑化。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;看带宽&lt;/strong&gt;：检查多卡通信（NCCL）是否成为瓶颈，确认 NVLink 状态是否正常。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id="-q2vllm-里的-swap交换机制是怎么回事频繁-swap-说明了什么"&gt;❓ Q2：vLLM 里的 Swap（交换）机制是怎么回事？频繁 Swap 说明了什么？
+&lt;/h3&gt;&lt;p&gt;答：
+当显存池满，且有新请求需要空间时，vLLM 会把老请求的 KV Cache 搬运到 CPU 内存里，这就是 Swap。
+频繁 Swap 说明你的 &lt;code&gt;gpu_memory_utilization&lt;/code&gt; 设得太满，或者并发数远超其硬件承受能力。这会导致严重的性能抖动。&lt;/p&gt;
+&lt;h3 id="-q3在-2026-年fp8-推理对-vllm-调优有什么影响"&gt;❓ Q3：在 2026 年，FP8 推理对 vLLM 调优有什么影响？
+&lt;/h3&gt;&lt;p&gt;答：
+FP8 极大地缓解了显存压力。由于权重和 KV Cache 体积减半，相同的显存可以容纳 2 倍的请求。但在调优时，需要注意 FP8 的量化缩放因子（Scaling factors）计算可能会占用额外的显存，需要预留足够的 Buffer。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="五-阿彪碎碎念-抱拳"&gt;五、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;到这里，《vLLM 工业级推理引擎深度剖析》系列就正式完结了。&lt;/p&gt;
+&lt;p&gt;从第一篇的“旋转寿司”比喻，到今天的线上事故复盘，我们把这个 2026 年最强大的推理框架翻了个底朝天。
+在大模型开发的面试中，面试官其实并不指望你是一个“人肉编译器”，他真正看重的是你面对复杂系统时的&lt;strong&gt;工程直觉&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;你知不知道 PagedAttention 的每一块意味着多少显存？
+你知不知道调度器的每一个决定会如何影响用户的等待感？
+你知不知道线上那一排黄绿色的监控曲线背后代表着怎样的硬件脉搏？&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;掌握工具的人会被淘汰，但理解工具灵魂的人永远会被需要。&lt;/strong&gt;
+阿彪的这套笔记只是一个起点，希望你在 2026 年的职场赛道上，不仅能跑通代码，更能镇住集群。兄弟们，全系列啃完了，面试稳了，冲就完事了！&lt;/p&gt;</description></item><item><title>vLLM 系列(五)：极致优化的前沿 —— Chunked Prefill 与投机解码</title><link>https://tkdwbiao.github.io/p/vllm-advanced-optimization-speculative-decoding/</link><pubDate>Mon, 06 Apr 2026 18:40:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/vllm-advanced-optimization-speculative-decoding/</guid><description>&lt;p&gt;进入 2026 年，大模型已经全面迈入百万上下文（1M+ Context）时代。在如此恐怖的长度下，传统的推理调度方案已经捉襟见肘。&lt;/p&gt;
+&lt;p&gt;用户不再满足于“能跑通”，他们要求在处理万字长文的同时，回答速度还能像打字机一样流畅。今天阿彪带你拆解 vLLM 压榨性能的两大高阶黑科技：&lt;strong&gt;Chunked Prefill（分块预填充）&lt;/strong&gt; 与 &lt;strong&gt;Speculative Decoding（投机解码）&lt;/strong&gt;。&lt;/p&gt;
+&lt;h2 id="一-chunked-prefill终结长文本带来的顿挫感"&gt;一、 Chunked Prefill：终结长文本带来的“顿挫感”
+&lt;/h2&gt;&lt;p&gt;在 vLLM 的早期版本中，新请求的 Prefill（预填充）阶段具有最高优先级。&lt;/p&gt;
+&lt;h3 id="1-为什么新人会卡死老人"&gt;1. 为什么“新人”会卡死“老人”？
+&lt;/h3&gt;&lt;p&gt;当一个 128k 长度的请求进来时，计算 $Q, K, V$ 并填充 KV Cache 需要消耗巨大的计算量。此时，GPU 会全量投入这个 Prefill 任务，导致正在生成答案的其他请求（Decode 阶段）全部挂起。&lt;/p&gt;
+&lt;p&gt;对于用户来说，这种“顿挫感（Jitter）”是不可接受的。&lt;/p&gt;
+&lt;h3 id="2-调度策略的进化分块与交织"&gt;2. 调度策略的进化：分块与交织
+&lt;/h3&gt;&lt;p&gt;vLLM 引入了 Chunked Prefill 机制。它不再试图一次性吞下整个长 Prompt，而是将其切分为若干个块（Chunks）。&lt;/p&gt;
+&lt;p&gt;在每一次迭代（Iteration）中，调度器会巧妙地将一小块 Prefill 任务与当前的 Decode 批次混合在一起。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;公平性&lt;/strong&gt;：新请求依然在推进，不会被饿死。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;流畅性&lt;/strong&gt;：老请求的生成节奏不被打断，首字延迟（TTFT）与逐字延迟（TPOT）达到了完美的平衡。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="二-speculative-decoding用概率挑战物理带宽"&gt;二、 Speculative Decoding：用概率挑战物理带宽
+&lt;/h2&gt;&lt;p&gt;大模型推理本质上是 &lt;strong&gt;Memory-Bound（访存受限）&lt;/strong&gt; 的。每次预测一个 token，都要把几十 GB 的参数从 HBM 读到计算核心，而计算本身只花了一点点时间。&lt;/p&gt;
+&lt;h3 id="1-猜想-验证模式"&gt;1. “猜想-验证”模式
+&lt;/h3&gt;&lt;p&gt;投机解码的核心思想是：用极小的代价去“赌”未来的输出。&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;草稿阶段&lt;/strong&gt;：由一个轻量级模型（或 Medusa 头）快速预测接下来的 $N$ 个 token。由于它体积小，速度极快。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;验证阶段&lt;/strong&gt;：主模型（如 Llama-3-70B）一次性读取权重，同时验证这 $N$ 个预测是否正确。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;如果 $N=5$，且草稿模型猜对了 3 个，那么这一轮迭代我们就直接拿到了 3 个 token。相对于原来“读一次权重出一颗词”，现在变成了“读一次权重出三颗词”，效率直接起飞。&lt;/p&gt;
+&lt;h3 id="2-2026-年的新标配medusa-与-fp8"&gt;2. 2026 年的新标配：Medusa 与 FP8
+&lt;/h3&gt;&lt;p&gt;在 2026 年，我们已经很少看到额外挂载小模型的投机解码了。目前主流是 &lt;strong&gt;Medusa（美杜莎）&lt;/strong&gt; 方案：在主模型的输出层并联几个微型预测头。&lt;/p&gt;
+&lt;p&gt;配合 Blackwell 架构的 &lt;strong&gt;FP8 推理&lt;/strong&gt;，验证过程的延迟进一步降低。在代码编写、结构化数据提取等任务中，投机解码的实际加速比通常能稳定在 2.0x 以上。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="三--代码模拟投机解码的接受逻辑"&gt;三 : 代码模拟：投机解码的接受逻辑
+&lt;/h2&gt;&lt;p&gt;为了理解系统是如何“回滚”错误预测的，我们来看这段模拟逻辑：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;verify_speculative_tokens&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;main_logits&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;draft_tokens&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="s2"&gt;&amp;#34;&amp;#34;&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s2"&gt; 模拟主模型验证草稿序列
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s2"&gt; main_logits: 主模型一次性算出的所有位置概率
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s2"&gt; draft_tokens: 草稿模型猜的序列
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s2"&gt; &amp;#34;&amp;#34;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;accepted_tokens&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="p"&gt;[]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;for&lt;/span&gt; &lt;span class="n"&gt;i&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;draft_token&lt;/span&gt; &lt;span class="ow"&gt;in&lt;/span&gt; &lt;span class="nb"&gt;enumerate&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;draft_tokens&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 找到主模型在第 i 个位置认为概率最大的词&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;true_token&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;torch&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;argmax&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;main_logits&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="n"&gt;i&lt;/span&gt;&lt;span class="p"&gt;])&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="n"&gt;draft_token&lt;/span&gt; &lt;span class="o"&gt;==&lt;/span&gt; &lt;span class="n"&gt;true_token&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 猜对了，收下&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;accepted_tokens&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;append&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;draft_token&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;else&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 猜错了，止损！&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 这一步非常关键：即便猜错了，主模型当前的正确结果也要带走&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;accepted_tokens&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;append&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;true_token&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;break&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;accepted_tokens&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;阿彪点评：这种机制最优雅的地方在于，即使草稿模型全是瞎猜，系统最差的情况也只是退化回原始的逐字生成，绝对不会影响输出的正确性。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="四-面试官会问到的问题及详细答案"&gt;四、 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;h3 id="-q1在长文本场景下除了-chunked-prefill还有什么办法优化-ttft"&gt;❓ Q1：在长文本场景下，除了 Chunked Prefill，还有什么办法优化 TTFT？
+&lt;/h3&gt;&lt;p&gt;答：
+可以引入 &lt;strong&gt;Prefix Caching（前缀缓存）&lt;/strong&gt;。对于 RAG 场景或长系统提示词，vLLM 会缓存这些公共前缀的 KV Cache。如果命中缓存，Prefill 阶段几乎被缩减为零，TTFT 会从秒级降至毫秒级。&lt;/p&gt;
+&lt;h3 id="-q2投机解码为什么能增加吞吐量throughput"&gt;❓ Q2：投机解码为什么能增加吞吐量（Throughput）？
+&lt;/h3&gt;&lt;p&gt;答：
+因为它提升了 &lt;strong&gt;算力利用率（MFU）&lt;/strong&gt;。
+在传统的 Decode 阶段，GPU 的计算单元大部分时间在等待显存读取。投机解码通过一次验证多个 token，增加了每一轮迭代的计算负载，使得原本闲置的计算核心得到了利用，从而在单位时间内产出了更多的 token。&lt;/p&gt;
+&lt;h3 id="-q3如何评估投机解码在特定业务中的收益"&gt;❓ Q3：如何评估投机解码在特定业务中的收益？
+&lt;/h3&gt;&lt;p&gt;答：
+主要看两个指标：&lt;strong&gt;接受率（Acceptance Rate）&lt;/strong&gt; 和 &lt;strong&gt;加速比（Speedup Ratio）&lt;/strong&gt;。
+我会先在业务数据集上跑一个测试集，如果接受率低于 30%，说明任务太发散，投机解码带来的额外开销可能不划算；如果接受率在 50% 以上，我会毫不犹豫地开启它。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="五-阿彪碎碎念-抱拳"&gt;五、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;学到这一篇，你已经触碰到了大模型推理最前沿的“暴力美学”。&lt;/p&gt;
+&lt;p&gt;Chunked Prefill 是对&lt;strong&gt;调度公平性&lt;/strong&gt;的极致追求，而投机解码则是对&lt;strong&gt;硬件瓶颈&lt;/strong&gt;的疯狂挑衅。
+在 2026 年的面试现场，如果你能清晰地解释出为什么“一次验证多个 token”比“逐个生成 token”更节省时间，面试官就会明白，你已经跨过了“调包侠”的门槛，开始理解计算架构的本质了。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;别被复杂的公式吓到，底层逻辑永远是：能省一次显存读取，就省一次。&lt;/strong&gt; 下一篇，我们将迎来系列的终章——工业级部署、调优与线上事故复盘。冲就完事了！&lt;/p&gt;</description></item><item><title>vLLM 系列(四)：分布式推理全景图 —— TP、PP 与 MoE 时代的 EP 进化</title><link>https://tkdwbiao.github.io/p/vllm-distributed-inference-tp-pp-ep-deep-dive/</link><pubDate>Mon, 06 Apr 2026 18:30:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/vllm-distributed-inference-tp-pp-ep-deep-dive/</guid><description>&lt;p&gt;当模型参数突破千亿（如 Llama-3-400B 或 DeepSeek-V3），单张 GPU 的 80GB 甚至 192GB 显存连模型的“脚后跟”都装不下。此时，分布式推理不再是可选项，而是生死线。&lt;/p&gt;
+&lt;p&gt;很多同学只听过张量并行（TP），但在 2026 年的工业界，真正的分布式推理是一场关于计算负载与通信带宽的精密博弈。今天阿彪带你拆解 vLLM 是如何指挥多张显卡协同工作的。&lt;/p&gt;
+&lt;h2 id="一-核心逻辑分布式推理的切肉艺术"&gt;一、 核心逻辑：分布式推理的“切肉”艺术
+&lt;/h2&gt;&lt;p&gt;想要玩转大规模集群推理，必须搞清楚这几种并行的底层逻辑：&lt;/p&gt;
+&lt;h3 id="1-张量并行-tensor-parallelism-tp--层内横向切分"&gt;1. 张量并行 (Tensor Parallelism, TP) —— 层内横向切分
+&lt;/h3&gt;&lt;p&gt;这是 vLLM 最核心的优化手段。它把模型每一层内部的矩阵（如 Attention 的线性层）切开，分给不同的 GPU 同时计算。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;Megatron-LM 的行列切分逻辑（面试必考）：&lt;/strong&gt;
+为了减少通信开销，vLLM 采用了巧妙的行列切分方案：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;第一个矩阵 A 按列切 (Column Parallel)&lt;/strong&gt;：输入数据 X 拷贝到两张卡上，每张卡只算出半个结果。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;第二个矩阵 B 按行切 (Row Parallel)&lt;/strong&gt;：不需要立即通信，直接接着算。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;通信时机&lt;/strong&gt;：只有当这两层（如 MLP 的两层线性变换）全算完，两张卡才通过 NCCL 进行一次 &lt;strong&gt;All-Reduce&lt;/strong&gt; 同步。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这种设计让原本需要多次通信的操作，缩减到了每层只需要一两次，极大地保护了推理延迟（Latency）。&lt;/p&gt;
+&lt;h3 id="2-流水线并行-pipeline-parallelism-pp--层间纵向切分"&gt;2. 流水线并行 (Pipeline Parallelism, PP) —— 层间纵向切分
+&lt;/h3&gt;&lt;p&gt;这是“接力赛”模式。它把模型的 80 层分段，卡 0 跑前 40 层，卡 1 跑后 40 层。&lt;/p&gt;
+&lt;p&gt;PP 的主要目的是为了撑开显存空间。虽然它在推理中会引入一定的“气泡（Bubble）”延迟（即后面的卡在等前面的卡），但对于超大规模模型，这是必不可少的生存手段。在 vLLM 的新版本中，通过重叠计算与通信，PP 的气泡已经被压缩到了极小。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二-2026-高阶拓展ep-与-cp-的引入"&gt;二、 2026 高阶拓展：EP 与 CP 的引入
+&lt;/h2&gt;&lt;p&gt;随着 DeepSeek 等 MoE 架构和百万级长文本的普及，分布式推理又增加了两个维度：&lt;/p&gt;
+&lt;h3 id="1-专家并行-expert-parallelism-ep"&gt;1. 专家并行 (Expert Parallelism, EP)
+&lt;/h3&gt;&lt;p&gt;在 MoE（混合专家模型）中，模型拥有成百上千个专家，但每次只激活几个。
+EP 让不同的 GPU 维护不同的“专家”。Token 会像快递一样，通过 &lt;strong&gt;All-to-All&lt;/strong&gt; 通信被分拣到对应的专家卡上进行计算。这避免了每张卡都要存储所有专家权重的尴尬，极大地降低了显存负载。&lt;/p&gt;
+&lt;h3 id="2-上下文并行-context-parallelism-cp"&gt;2. 上下文并行 (Context Parallelism, CP)
+&lt;/h3&gt;&lt;p&gt;当 Context 达到 128k 甚至 1M 时，单张卡的 KV Cache 根本塞不下。
+CP 将长序列切段，分给不同的卡。卡 0 算前 512k token，卡 1 算后 512k token。这需要复杂的环形通信（Ring Attention）来同步注意力信息。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="三-代码案例模拟-tp-下的矩阵切分逻辑"&gt;三、 代码/案例：模拟 TP 下的矩阵切分逻辑
+&lt;/h2&gt;&lt;p&gt;为了理解 TP 是如何分担计算压力的，我们来看这个简单的矩阵乘法模拟：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kn"&gt;import&lt;/span&gt; &lt;span class="nn"&gt;torch&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;tp_simulation&lt;/span&gt;&lt;span class="p"&gt;():&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 原始矩阵 W: 1024 x 1024, 输入 X: 1 x 1024&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;X&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;torch&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;randn&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="mi"&gt;1&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;1024&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;W&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;torch&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;randn&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="mi"&gt;1024&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;1024&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# --- 模拟 TP=2 的列切分 ---&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 卡 0 存左半边，卡 1 存右半边&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;W_col_0&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;W&lt;/span&gt;&lt;span class="p"&gt;[:,&lt;/span&gt; &lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="mi"&gt;512&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;W_col_1&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;W&lt;/span&gt;&lt;span class="p"&gt;[:,&lt;/span&gt; &lt;span class="mi"&gt;512&lt;/span&gt;&lt;span class="p"&gt;:]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 两张卡并行计算 (同时发力)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;out_0&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;torch&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;matmul&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;X&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;W_col_0&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="c1"&gt;# 结果大小 1 x 512&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;out_1&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;torch&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;matmul&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;X&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;W_col_1&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="c1"&gt;# 结果大小 1 x 512&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 模拟 All-Gather 或拼接&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;final_out&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;torch&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;cat&lt;/span&gt;&lt;span class="p"&gt;([&lt;/span&gt;&lt;span class="n"&gt;out_0&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;out_1&lt;/span&gt;&lt;span class="p"&gt;],&lt;/span&gt; &lt;span class="n"&gt;dim&lt;/span&gt;&lt;span class="o"&gt;=-&lt;/span&gt;&lt;span class="mi"&gt;1&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;TP 模拟输出维度: &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;final_out&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;shape&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;final_out&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;tp_simulation&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;阿彪点评：在真实的 vLLM 中，这个过程是通过 NCCL 库在 GPU 硬件层面高速完成的。重点在于：&lt;strong&gt;每张卡只存了一半的参数，却完成了一次完整的计算。&lt;/strong&gt;&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="四-面试官会问到的问题及详细答案"&gt;四、 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;h3 id="-q1为什么推理场景通常首选-tp-而不是-pp"&gt;❓ Q1：为什么推理场景通常首选 TP 而不是 PP？
+&lt;/h3&gt;&lt;p&gt;答：
+因为推理对响应速度（Latency）极其敏感。
+PP（流水线并行）存在天然的逻辑先后顺序，导致后面的卡必须等前面的卡算完。即便使用了 Micro-batch 优化，首字延迟（TTFT）也会显著增加。
+而 TP（张量并行）是同步计算，多张卡同时发力完成同一个矩阵运算，能直接缩短计算耗时，是低延迟场景的真神。&lt;/p&gt;
+&lt;h3 id="-q2在-tp-并行下kv-cache-是如何分布的"&gt;❓ Q2：在 TP 并行下，KV Cache 是如何分布的？
+&lt;/h3&gt;&lt;p&gt;答：
+KV Cache 是跟随注意力头（Heads）进行分布式的。
+假设模型有 32 个 Attention Heads，设置 TP=2。那么卡 0 会存储并计算前 16 个头的 KV Cache，卡 1 负责后 16 个。
+这种设计保证了计算和存储的本地化：哪张卡负责算这个头，哪张卡就存这个头的 Cache，避免了昂贵的跨卡 KV Cache 搬运。&lt;/p&gt;
+&lt;h3 id="-q3为什么跨机器multi-node做-tp-效果通常很差"&gt;❓ Q3：为什么跨机器（Multi-node）做 TP 效果通常很差？
+&lt;/h3&gt;&lt;p&gt;答：
+因为 TP 极其依赖高频、低延迟的 All-Reduce 通信。
+在单台 8 卡机器内部，通过 NVLink 互联，通信带宽可以达到 900GB/s 甚至更高。
+一旦跨机，受限于网卡带宽（即使是 400G IB 网也远低于 NVLink）和网络延迟，通信开销会迅速超过计算节省的时间。因此，工业界通常在机内做 TP，跨机做 PP 或 DP。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="五-阿彪碎碎念-抱拳"&gt;五、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;讲完分布式这部分，我感触最深的是：大模型推理已经从“算法问题”彻底变成了一个“系统工程问题”。&lt;/p&gt;
+&lt;p&gt;很多同学面试时能推导出 Attention 公式，但被问到“如何平衡 TP 和 EP 的通信带宽”时就卡壳了。
+在 2026 年的今天，如果你想进大厂的核心架构组，你不仅要懂 Python，你还得懂 NCCL 通信原语，懂 GPU 的拓扑结构，懂 PCIe 带宽。&lt;/p&gt;
+&lt;p&gt;分布式推理就像一场交响乐表演。TP 是乐手间的默契配合，PP 是乐章间的衔接，而 EP 则是不同乐器的精准独奏。
+只有把这四者协调好，那个几千亿参数的巨人才能在毫秒间给出回答。兄弟们，搞懂了分布式，你才真正看清了大模型的全身骨骼。下一篇，我们将进入 vLLM 的高阶优化篇——Chunked Prefill 与投机解码，冲就完事了！&lt;/p&gt;</description></item><item><title>vLLM 系列(三)：流水线上的旋转寿司 —— 连续批处理 (Continuous Batching)</title><link>https://tkdwbiao.github.io/p/vllm-continuous-batching-scheduling/</link><pubDate>Mon, 06 Apr 2026 18:15:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/vllm-continuous-batching-scheduling/</guid><description>&lt;p&gt;如果说 PagedAttention 解决了显存的“空间”浪费，那么 &lt;strong&gt;Continuous Batching（连续批处理）&lt;/strong&gt; 解决的就是 GPU 的“时间”空转。
+在传统的推理框架里，GPU 就像一辆非要等所有人到齐才出发的大巴车；但在 vLLM 里，它变成了流动的旋转寿司，谁吃完谁走，空位立刻补上。今天阿彪就带你拆解这个让吞吐量翻倍的调度奥秘。&lt;/p&gt;
+&lt;h2 id="一-知识点详解从静态到动态的降维打击"&gt;一、 知识点详解：从静态到动态的降维打击
+&lt;/h2&gt;&lt;h3 id="1-静态批处理static-batching的平庸"&gt;1. 静态批处理（Static Batching）的平庸
+&lt;/h3&gt;&lt;p&gt;在传统的推理（如 HuggingFace）中，批处理是以“请求”为单位的。
+假设 Batch Size = 4，其中 3 个请求只要生成 5 个词，而 1 个请求要生成 500 个词。
+那 3 个短请求在 1 秒钟内就结束了，但它们&lt;strong&gt;必须在显存里占着坑“陪跑”&lt;/strong&gt;，直到那个 500 词的长请求跑完，四个人才能一起收工。这种“一人迟到，全家等死”的机制，是吞吐量的头号杀手。&lt;/p&gt;
+&lt;h3 id="2-连续批处理continuous-batching的优雅"&gt;2. 连续批处理（Continuous Batching）的优雅
+&lt;/h3&gt;&lt;p&gt;vLLM 引入了 &lt;strong&gt;Iteration-level Scheduling（迭代级调度）&lt;/strong&gt;。
+它不再以整个请求的结束为边界，而是以 &lt;strong&gt;“每一个 Token 的生成”&lt;/strong&gt; 为边界。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;mark&gt;核心逻辑：每当 GPU 完成一次迭代（生成一个词），调度器就会检查：有没有请求已经输出了结束符（STOP）？如果有，立刻释放它的显存，并从等待队列中拉入新请求补充空位。&lt;/mark&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;这种机制保证了 GPU 的每一个 Slot（槽位）都在马不停蹄地干活，极大压榨了计算资源的利用率。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二-进阶拓展显存爆了怎么办抢占与交换机制"&gt;二、 进阶拓展：显存爆了怎么办？（抢占与交换机制）
+&lt;/h2&gt;&lt;p&gt;在高并发场景下，即使有 PagedAttention，显存也可能被填满。当新请求的 Prefill（预填充）需要显存，而正在运行的请求又不能中断时，vLLM 会启动 &lt;strong&gt;抢占（Preemption）&lt;/strong&gt; 机制。&lt;/p&gt;
+&lt;p&gt;调度器有两条路可以选：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Recompute（重算）&lt;/strong&gt;：直接把那个倒霉请求的 KV Cache 删掉，把它踢回等待队列。等以后显存空了，再从头算一遍。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Swap（交换）&lt;/strong&gt;：利用 PCIe 带宽，把请求的 KV Cache 搬到 &lt;strong&gt;CPU 内存&lt;/strong&gt;里。等显存宽裕了，再搬回来。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;mark&gt;阿彪面试小贴士：Swap 还是 Recompute？这是一个算力与带宽的博弈。如果 KV Cache 很大且 PCIe 够快，Swap 更划算；如果重算代价极小（Prompt 短），则 Recompute 更直接。&lt;/mark&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;hr&gt;
+&lt;h2 id="三-代码模拟简易版调度状态机"&gt;三、 代码模拟：简易版调度状态机
+&lt;/h2&gt;&lt;p&gt;为了让你看清“动态插队”的过程，阿彪写了一个微型模拟器：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;span class="lnt"&gt;24
+&lt;/span&gt;&lt;span class="lnt"&gt;25
+&lt;/span&gt;&lt;span class="lnt"&gt;26
+&lt;/span&gt;&lt;span class="lnt"&gt;27
+&lt;/span&gt;&lt;span class="lnt"&gt;28
+&lt;/span&gt;&lt;span class="lnt"&gt;29
+&lt;/span&gt;&lt;span class="lnt"&gt;30
+&lt;/span&gt;&lt;span class="lnt"&gt;31
+&lt;/span&gt;&lt;span class="lnt"&gt;32
+&lt;/span&gt;&lt;span class="lnt"&gt;33
+&lt;/span&gt;&lt;span class="lnt"&gt;34
+&lt;/span&gt;&lt;span class="lnt"&gt;35
+&lt;/span&gt;&lt;span class="lnt"&gt;36
+&lt;/span&gt;&lt;span class="lnt"&gt;37
+&lt;/span&gt;&lt;span class="lnt"&gt;38
+&lt;/span&gt;&lt;span class="lnt"&gt;39
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kn"&gt;import&lt;/span&gt; &lt;span class="nn"&gt;collections&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;class&lt;/span&gt; &lt;span class="nc"&gt;Request&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="fm"&gt;__init__&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;req_id&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;steps&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;req_id&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;req_id&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;remaining_steps&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;steps&lt;/span&gt; &lt;span class="c1"&gt;# 模拟需要生成的 token 数&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;vllm_scheduler_sim&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;waiting_list&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;batch_size&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="mi"&gt;2&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;running&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="p"&gt;[]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;finished&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="p"&gt;[]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;iteration&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="mi"&gt;0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;while&lt;/span&gt; &lt;span class="n"&gt;waiting_list&lt;/span&gt; &lt;span class="ow"&gt;or&lt;/span&gt; &lt;span class="n"&gt;running&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;iteration&lt;/span&gt; &lt;span class="o"&gt;+=&lt;/span&gt; &lt;span class="mi"&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 1. 尝试从等待队列补充空位&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;while&lt;/span&gt; &lt;span class="nb"&gt;len&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;running&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;&amp;lt;&lt;/span&gt; &lt;span class="n"&gt;batch_size&lt;/span&gt; &lt;span class="ow"&gt;and&lt;/span&gt; &lt;span class="n"&gt;waiting_list&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;new_req&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;waiting_list&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;popleft&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;Iter &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;iteration&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;: 请求 &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;new_req&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;req_id&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt; 加入战斗！&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;running&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;append&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;new_req&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 2. 模拟 GPU 生成一个 token&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;for&lt;/span&gt; &lt;span class="n"&gt;req&lt;/span&gt; &lt;span class="ow"&gt;in&lt;/span&gt; &lt;span class="n"&gt;running&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;req&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;remaining_steps&lt;/span&gt; &lt;span class="o"&gt;-=&lt;/span&gt; &lt;span class="mi"&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 3. 检查谁跑完了（Iteration-level！）&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;for&lt;/span&gt; &lt;span class="n"&gt;req&lt;/span&gt; &lt;span class="ow"&gt;in&lt;/span&gt; &lt;span class="nb"&gt;list&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;running&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;if&lt;/span&gt; &lt;span class="n"&gt;req&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;remaining_steps&lt;/span&gt; &lt;span class="o"&gt;&amp;lt;=&lt;/span&gt; &lt;span class="mi"&gt;0&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;Iter &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;iteration&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;: 请求 &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;req&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;req_id&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt; 搞定，光速下班！&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;running&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;remove&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;req&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;finished&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;append&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;req&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# --- 阿彪的模拟测试 ---&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;queue&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;collections&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;deque&lt;/span&gt;&lt;span class="p"&gt;([&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;Request&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;A&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;3&lt;/span&gt;&lt;span class="p"&gt;),&lt;/span&gt; &lt;span class="c1"&gt;# 短请求&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;Request&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;B&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;10&lt;/span&gt;&lt;span class="p"&gt;),&lt;/span&gt;&lt;span class="c1"&gt;# 长请求&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;Request&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;C&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;2&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="c1"&gt;# 正在排队的短请求&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="p"&gt;])&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;vllm_scheduler_sim&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;queue&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;batch_size&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="mi"&gt;2&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;阿彪点评&lt;/strong&gt;：看到没有？请求 A 在第 3 次迭代结束后，请求 C &lt;strong&gt;立刻&lt;/strong&gt;在第 4 次迭代就插进去了，根本不需要等请求 B 跑完那 10 步。这就是 Throughput 起飞的原因！&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="四--面试官会问到的问题及详细答案"&gt;四 : 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;h3 id="-q1continuous-batching-既然这么牛它有缺点吗"&gt;❓ Q1：Continuous Batching 既然这么牛，它有缺点吗？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+有的，它会对 &lt;strong&gt;TTFT（首字延迟）&lt;/strong&gt; 造成一定的波动。
+因为当调度器在 Decode 阶段强行插入一个新的 Prefill 请求（新用户进来）时，由于 Prefill 阶段的计算量远大于 Decode 阶段，会导致那一瞬间正在生成的旧用户感到明显的“卡顿（Jitter）”。
+&lt;em&gt;（加分点：目前的优化方案是 Chunked Prefill，将长 Prompt 切片，分批插入迭代中，平滑延迟波动。）&lt;/em&gt;&lt;/p&gt;
+&lt;h3 id="-q2vllm-是如何避免长请求被饿死starvation的"&gt;❓ Q2：vLLM 是如何避免长请求被“饿死（Starvation）”的？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+vLLM 内部维护了一个 FCFS（先来后到）的等待队列。
+调度器在分配显存块（Blocks）时，会优先保证队列最前面的请求。如果显存不足以容纳新请求，调度器会宁可让 GPU 暂时不满载，也要保护老请求的顺利运行，或者通过抢占机制公平地调度资源。&lt;/p&gt;
+&lt;h3 id="-q3在抢占发生时vllm-为什么优先抢占最后进入的请求"&gt;❓ Q3：在抢占发生时，vLLM 为什么优先抢占最后进入的请求？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+因为最后进入的请求通常生成的 Token 数最少，积累的 KV Cache 也最少。
+抢占它意味着：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;重算代价最小&lt;/strong&gt;：如果需要 Recompute，重算几个词比重算几百个词快得多。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;迁移开销最小&lt;/strong&gt;：如果需要 Swap，搬运少量的 KV Cache 对 PCIe 带宽的压力也最小。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h2 id="五-阿彪碎碎念-抱拳"&gt;五、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;学到这里，你有没有发现，vLLM 的本质其实是一场&lt;strong&gt;关于“公平”与“效率”的权衡游戏&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;静态批处理追求的是“整齐划一”，结果输给了效率；而连续批处理追求的是“各尽其能”，却带来了调度的复杂性。
+在大模型开发的面试中，面试官最想听到的不是你背出了多少个名词，而是你能不能像阿彪这样，&lt;strong&gt;把冷冰冰的代码逻辑，转化为对业务场景（长短请求交替、显存挤占、延迟波动）的深度思考。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;拒绝死记硬背，从理解每一个 Iteration 开始。&lt;/strong&gt; 下一篇，我们将聊聊分布式推理，看 vLLM 是如何让几十台机器像一个人一样协同工作的，冲就完事了！&lt;/p&gt;</description></item><item><title>vLLM 系列(二)：显存手术刀 —— 深度拆解 PagedAttention 机制</title><link>https://tkdwbiao.github.io/p/vllm-paged-attention-deep-dive/</link><pubDate>Mon, 06 Apr 2026 17:20:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/vllm-paged-attention-deep-dive/</guid><description>&lt;p&gt;如果说 vLLM 是大模型推理的皇冠，那么 &lt;strong&gt;PagedAttention&lt;/strong&gt; 就是皇冠上最耀眼的明珠。在上一篇中我们提到，传统框架的显存利用率低得离谱，原因在于它们把显存当成“大豪宅”预分配。
+今天阿彪带你拿起手术刀，深入显存底层，看看 vLLM 到底是怎么把“虚拟内存分页”这套老技术，在 GPU 显存里玩出花来的。&lt;/p&gt;
+&lt;h2 id="一-核心逻辑从逻辑块到物理块"&gt;一、 核心逻辑：从逻辑块到物理块
+&lt;/h2&gt;&lt;p&gt;在 PagedAttention 中，KV Cache 不再是连续存储的一长条数组，而是被拆分成了固定大小的 &lt;strong&gt;Block（块）&lt;/strong&gt;（默认通常是 16 个 token）。&lt;/p&gt;
+&lt;h3 id="1-三大核心组件"&gt;1. 三大核心组件
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Logical Blocks (逻辑块)&lt;/strong&gt;：对模型来说，它看到的依然是连续生成的 token 序列（&lt;code&gt;0~15&lt;/code&gt; 在块 0，&lt;code&gt;16~31&lt;/code&gt; 在块 1&amp;hellip;）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Physical Blocks (物理块)&lt;/strong&gt;：在 GPU 显存池（Memory Pool）中真实存在的空间。这些块在显存里是不连续的。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Block Table (块表)&lt;/strong&gt;：这是核心“中介”。它负责记录：第 $i$ 个逻辑块对应显存里的哪一个物理块。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="2-动态分配流程"&gt;2. 动态分配流程
+&lt;/h3&gt;&lt;p&gt;当模型产生第 17 个 token 时（假设 Block Size=16）：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;系统发现逻辑块 1（对应 token 16~31）还没有分配物理空间。&lt;/li&gt;
+&lt;li&gt;调度器从&lt;strong&gt;空闲物理块池&lt;/strong&gt;里随机抓一个块（比如索引为 77 的块）。&lt;/li&gt;
+&lt;li&gt;在块表里记录：&lt;code&gt;Logical Block 1 -&amp;gt; Physical Block 77&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;模型继续写入，直到第 32 个 token 产生，再申请下一个物理块。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;&lt;strong&gt;结论&lt;/strong&gt;：这种按需分配的方式，彻底解决了“预分配”导致的内部碎片。除了每个请求生成的最后一个 Block 可能没填满，其他地方都是满载的。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二-进阶黑科技copy-on-write-与显存共享"&gt;二、 进阶黑科技：Copy-on-Write 与显存共享
+&lt;/h2&gt;&lt;p&gt;这部分是 PagedAttention 最迷人的地方，也是面试官最喜欢问的&lt;strong&gt;显存零拷贝&lt;/strong&gt;。&lt;/p&gt;
+&lt;h3 id="1-案例场景并行采样-parallel-sampling"&gt;1. 案例场景：并行采样 (Parallel Sampling)
+&lt;/h3&gt;&lt;p&gt;假设你让模型写一个故事，要求生成 5 个不同的结局。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;传统做法&lt;/strong&gt;：你需要把 Prompt 的 KV Cache 复制 5 份，显存占用直接翻 5 倍。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;vLLM 做法&lt;/strong&gt;：
+&lt;ol&gt;
+&lt;li&gt;5 个请求的前文（Prompt）一模一样，它们的块表都指向&lt;strong&gt;同一组物理块&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;这些物理块的 &lt;strong&gt;引用计数（Reference Count）&lt;/strong&gt; 被设为 5。&lt;/li&gt;
+&lt;li&gt;显存里只存了一份 Prompt，节省了 80% 的空间。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="2-写时复制-copy-on-write-cow"&gt;2. 写时复制 (Copy-on-Write, CoW)
+&lt;/h3&gt;&lt;p&gt;当这 5 个请求开始生成不同的结局时：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;请求 A 要写第 1 个不同的字，它发现要写入的物理块引用计数 &amp;gt; 1。&lt;/li&gt;
+&lt;li&gt;系统触发 &lt;strong&gt;CoW&lt;/strong&gt;：为请求 A 单独拷贝一个该块的副本，把请求 A 的块表指向新块，引用计数减 1。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;只有在发生差异时，才真正占用新显存。&lt;/strong&gt; 这不仅是省钱，更是极致的优雅。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="三-实战案例高并发下的显存计算对比"&gt;三、 实战案例：高并发下的显存计算对比
+&lt;/h2&gt;&lt;p&gt;我们来算一笔账，看看 PagedAttention 到底多牛。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;实验环境：&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;模型：Llama-3-7B (FP16)&lt;/li&gt;
+&lt;li&gt;显存：一张 A100 (80GB)&lt;/li&gt;
+&lt;li&gt;场景：100 个并发请求，每个请求平均 Seq_Len = 2048。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;1. 传统预分配方式：&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;每个 token 的 KV Cache 大小约 0.5 MB（见&lt;a class="link" href="#custom-anchor" &gt;Q0：请写出 KV Cache 占用显存的计算公式&lt;/a&gt;）。&lt;/li&gt;
+&lt;li&gt;每个请求预分配 2048 个空间 $\to 2048 \times 0.5 \text{ MB} = 1024 \text{ MB} = 1 \text{ GB}$。&lt;/li&gt;
+&lt;li&gt;100 个请求就要 &lt;strong&gt;100 GB&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;结果&lt;/strong&gt;：80GB 的显存根本装不下，直接 OOM。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;2. vLLM (PagedAttention) 方式：&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;假设 100 个请求中，有很多是共享 System Prompt 的（比如 1024 个 token 的 Prompt 是公共的）。&lt;/li&gt;
+&lt;li&gt;公共部分显存：$1024 \times 0.5 \text{ MB} = 0.5 \text{ GB}$ (只需存一份)。&lt;/li&gt;
+&lt;li&gt;剩余生成部分：假设平均已生成 512 个 token。&lt;/li&gt;
+&lt;li&gt;总占用：$0.5 \text{ GB} + (100 \times 512 \times 0.5 \text{ MB}) = 0.5 \text{ GB} + 25 \text{ GB} = 25.5 \text{ GB}$。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;结果&lt;/strong&gt;：显存还剩下 50 多 GB，轻轻松松再接 200 个请求。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="四-面试官会问到的问题及详细答案"&gt;四、 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;p&gt;&lt;a id="custom-anchor"&gt;&lt;/a&gt;&lt;/p&gt;
+&lt;h3 id="-q0请写出-kv-cache-占用显存的计算公式并估算-llama-7bfp16在-batch1seq_len1024-时的显存占用"&gt;❓ Q0：请写出 KV Cache 占用显存的计算公式，并估算 Llama-7B（FP16）在 Batch=1，Seq_Len=1024 时的显存占用。
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+&lt;strong&gt;核心公式&lt;/strong&gt;：&lt;mark&gt;&lt;code&gt;KV Cache 显存 = 2 (K和V) × 批次(Batch) × 层数(Layers) × 头数(Heads) × 头维度(Head_Dim) × 序列长度(Seq_Len) × 字节数(Bytes)&lt;/code&gt;&lt;/mark&gt;。&lt;/p&gt;
+&lt;p&gt;以典型的 7B 模型为例：层数 = 32，头数 = 32，头维度 = 128，FP16 占用 2 Bytes。
+代入公式：$2 \times 1 \times 32 \times 32 \times 128 \times 1024 \times 2 = 536,870,912$ bytes。
+约等于 &lt;strong&gt;0.5 GB&lt;/strong&gt;。&lt;br&gt;
+&lt;em&gt;(顺便向面试官抛出：如果并发请求量达到 Batch=32，且生成长度达到 4K，单单是 KV Cache 就会暴增到 64 GB，一张 80G 的 A100 瞬间就满了！这也是为什么要做 PagedAttention 的核心原因。)&lt;/em&gt;&lt;/p&gt;
+&lt;h3 id="-q1pagedattention-的块大小block-size设为-16-是最优的吗"&gt;❓ Q1：PagedAttention 的块大小（Block Size）设为 16 是最优的吗？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+这是一个权衡（Trade-off）问题。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;设太小（如 4）&lt;/strong&gt;：显存碎片极小，但块表管理开销大。CPU 需要频繁计算物理地址，且 GPU 做 Attention 时的访存不连续，会导致吞吐量下降。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;设太大（如 128）&lt;/strong&gt;：利于 GPU 并行计算和访存合并，但在长文本末尾或短请求场景下，会产生较严重的&lt;strong&gt;内部碎片&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;结论&lt;/strong&gt;：vLLM 经过大量实验，发现 16 是一个在“访存性能”和“显存利用率”之间最均衡的数字。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="-q2在-pagedattention-中如果不连续的物理块会导致-gpu-访存变慢vllm-是怎么解决的"&gt;❓ Q2：在 PagedAttention 中，如果不连续的物理块会导致 GPU 访存变慢，vLLM 是怎么解决的？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+这是 vLLM 团队最硬核的地方。他们手写了&lt;strong&gt;专门的 CUDA Kernel&lt;/strong&gt; 来执行 PagedAttention。
+在这个 Kernel 中，每个线程块（Thread Block）在计算注意力时，会先通过 Block Table 查找当前逻辑块对应的物理地址。虽然块与块之间不连续，但因为&lt;strong&gt;每个块内部（16个 token）是严格连续存储的&lt;/strong&gt;，Kernel 可以通过对齐内存访问，保证极高的计算效率。&lt;/p&gt;
+&lt;h3 id="-q3pagedattention-如何支持多轮对话multi-turn-chat的显存优化"&gt;❓ Q3：PagedAttention 如何支持多轮对话（Multi-turn Chat）的显存优化？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+通过 &lt;strong&gt;Prefix Caching&lt;/strong&gt;（前缀缓存）。
+在多轮对话中，前面的聊天记录（History）其实也是重复的。vLLM 会计算 History 的 Hash 值，将其 KV Cache 物理块缓存在显存中。当同一个用户的下一轮请求，或者不同用户的相同前缀请求进来时，直接复用物理块，连重新推理（Prefill）的计算量都省了。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="五-阿彪碎碎念-抱拳"&gt;五、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;学完 PagedAttention，你是不是有一种“众里寻他千百度，蓦然回首，那人却在灯火阑珊处”的感觉？
+现在的 AI 行业，天天在刷榜、在卷模型架构。但真正让大模型能像水电煤一样普及的，反而是这些扎根于&lt;strong&gt;操作系统内核思想&lt;/strong&gt;、在 &lt;strong&gt;CUDA 算子层精雕细琢&lt;/strong&gt;的底层工程。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;千万不要觉得底层技术枯燥。&lt;/strong&gt;
+当你能站在面试官面前，手绘出 Block Table 的映射逻辑，讲清楚 Copy-on-Write 的引用计数时，你才真正触碰到了 LLM 推理的脉搏。记住，在大模型时代，&lt;strong&gt;最好的算法工程师，首先必须是一个顶级的系统工程师。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;下一篇，我们将聊聊 vLLM 的大脑 —— &lt;strong&gt;连续批处理（Continuous Batching）与请求调度系统&lt;/strong&gt;。看它是如何把 GPU 压榨到最后一秒的，冲就完事了！&lt;/p&gt;</description></item><item><title>vLLM 系列(一)：破冰篇 —— 为什么我们需要 vLLM？</title><link>https://tkdwbiao.github.io/p/why-we-need-vllm-paged-attention-intro/</link><pubDate>Mon, 06 Apr 2026 17:15:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/why-we-need-vllm-paged-attention-intro/</guid><description>&lt;p&gt;在 2026 年的今天，如果你还在用 HuggingFace 原生的 &lt;code&gt;model.generate()&lt;/code&gt; 来写公司的线上推理服务，那你的简历大概率会被面试官直接丢进碎纸机。
+作为 LLM 推理界的“扛把子”，&lt;strong&gt;vLLM&lt;/strong&gt; 已经成为了工业界事实上的标准。但在学习它复杂的源码之前，我们要先弄清楚一个灵魂考问：既然原生推理能跑通，为什么我们还需要 vLLM？它到底解决了什么要命的问题？&lt;/p&gt;
+&lt;h2 id="一-知识点详解大模型推理的两大病灶"&gt;一、 知识点详解：大模型推理的“两大病灶”
+&lt;/h2&gt;&lt;p&gt;在没有 vLLM 之前，大模型推理部署面临着两个极其痛苦的瓶颈：&lt;/p&gt;
+&lt;h3 id="1-静态批处理static-batching的木桶效应"&gt;1. 静态批处理（Static Batching）的“木桶效应”
+&lt;/h3&gt;&lt;p&gt;传统的推理框架在处理并发请求时，通常采用“静态批处理”。
+假设 Batch Size 为 4，有 4 个请求同时进来。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;请求 A 需要生成 10 个词。&lt;/li&gt;
+&lt;li&gt;请求 B 需要生成 100 个词。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;在静态模式下，请求 A 在 1 秒钟就跑完了，但它不能返回！它必须在显存里干等着请求 B。因为框架要求这一批（Batch）必须同步结束。
+这就好比 4 个人组队跑步，必须等跑得最慢的那个人到了终点，全队才能领奖券。在这个过程中，GPU 的算力被白白浪费在空转和 Padding 上。&lt;/p&gt;
+&lt;h3 id="2-显存碎片化memory-fragmentation的显存墙"&gt;2. 显存碎片化（Memory Fragmentation）的“显存墙”
+&lt;/h3&gt;&lt;p&gt;在生成每一个词时，模型都要存储 KV Cache。
+因为我们事先不知道用户到底会输入多长、模型会输出多长，传统框架只能按照“最大长度（Max Seq Len）”来给每个请求预分配一块&lt;strong&gt;连续&lt;/strong&gt;的显存空间。&lt;/p&gt;
+&lt;p&gt;结果就是：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;用户只聊了 10 个字，你却给他留了 2048 个字的空间。&lt;/li&gt;
+&lt;li&gt;显存里到处都是“占着坑不拉屎”的空位。&lt;/li&gt;
+&lt;li&gt;最终由于显存碎片太多，明明还有剩余容量，却因为找不到连续大块空间而导致 OOM（显存溢出）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="二-进阶拓展vllm-的终结者方案"&gt;二、 进阶拓展：vLLM 的终结者方案
+&lt;/h2&gt;&lt;p&gt;针对上面两个病灶，vLLM 祭出了两把手术刀：&lt;/p&gt;
+&lt;h3 id="1-continuous-batching连续批处理"&gt;1. Continuous Batching（连续批处理）
+&lt;/h3&gt;&lt;p&gt;vLLM 抛弃了“等大家一起结束”的旧思路。它在 &lt;strong&gt;Iteration（迭代）级别&lt;/strong&gt;进行调度。
+一旦请求 A 跑完了，调度器立刻把 A 踢出批处理队列，并把排队中的请求 E 塞进去。GPU 的每一个计算周期都被塞得满满当当，没有任何一个请求在“陪跑”。&lt;/p&gt;
+&lt;h3 id="2-pagedattention显存分页"&gt;2. PagedAttention（显存分页）
+&lt;/h3&gt;&lt;p&gt;这是 vLLM 轰动业界的成名绝技。它借鉴了操作系统的虚拟内存管理思想：
+它不再为每个请求分配连续显存，而是把 KV Cache 切成一个个小的 &lt;strong&gt;Block（块）&lt;/strong&gt;。
+这些块散落在显存的各个角落，通过一个 &lt;strong&gt;Block Table（块表）&lt;/strong&gt; 进行映射。就像玩拼图一样，哪里有空位，KV Cache 就存到哪里。这让显存利用率从不足 30% 飙升到了 90% 以上。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="三-代码逻辑模拟静态-vs-连续批处理"&gt;三、 代码/逻辑模拟：静态 vs 连续批处理
+&lt;/h2&gt;&lt;p&gt;为了让你更直观地理解，阿彪写了一段逻辑模拟代码，看看两者在效率上的巨大差异。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;span class="lnt"&gt;24
+&lt;/span&gt;&lt;span class="lnt"&gt;25
+&lt;/span&gt;&lt;span class="lnt"&gt;26
+&lt;/span&gt;&lt;span class="lnt"&gt;27
+&lt;/span&gt;&lt;span class="lnt"&gt;28
+&lt;/span&gt;&lt;span class="lnt"&gt;29
+&lt;/span&gt;&lt;span class="lnt"&gt;30
+&lt;/span&gt;&lt;span class="lnt"&gt;31
+&lt;/span&gt;&lt;span class="lnt"&gt;32
+&lt;/span&gt;&lt;span class="lnt"&gt;33
+&lt;/span&gt;&lt;span class="lnt"&gt;34
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kn"&gt;import&lt;/span&gt; &lt;span class="nn"&gt;time&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 模拟四个请求的生成长度&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;requests&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="mi"&gt;5&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;15&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;5&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;20&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt; &lt;span class="c1"&gt;# 每个数字代表需要生成的 token 数&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;static_batching_sim&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;reqs&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="s2"&gt;&amp;#34;&amp;#34;&amp;#34;模拟静态批处理：以最长请求为准&amp;#34;&amp;#34;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;batch_size&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="nb"&gt;len&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;reqs&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;max_len&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="nb"&gt;max&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;reqs&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;【静态批处理】启动，Batch Size: &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;batch_size&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;total_cycles&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;max_len&lt;/span&gt; &lt;span class="c1"&gt;# 必须跑完最长的那位&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;wasted_cycles&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="nb"&gt;sum&lt;/span&gt;&lt;span class="p"&gt;([&lt;/span&gt;&lt;span class="n"&gt;max_len&lt;/span&gt; &lt;span class="o"&gt;-&lt;/span&gt; &lt;span class="n"&gt;r&lt;/span&gt; &lt;span class="k"&gt;for&lt;/span&gt; &lt;span class="n"&gt;r&lt;/span&gt; &lt;span class="ow"&gt;in&lt;/span&gt; &lt;span class="n"&gt;reqs&lt;/span&gt;&lt;span class="p"&gt;])&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;总计迭代次数: &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;total_cycles&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;浪费的计算资源 (空转次数): &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;wasted_cycles&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;total_cycles&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;continuous_batching_sim&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;reqs&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="s2"&gt;&amp;#34;&amp;#34;&amp;#34;模拟连续批处理逻辑（简化版）&amp;#34;&amp;#34;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="se"&gt;\n&lt;/span&gt;&lt;span class="s2"&gt;【连续批处理】启动&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 假设系统可以随时补充新请求，这里简化为看利用效率&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 实际上由于谁空出来谁就能接新活，资源利用率趋近于 100%&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;active_tokens&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="nb"&gt;sum&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;reqs&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;batch_size&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="nb"&gt;len&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;reqs&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 理想情况下，总迭代时间是平均分布的，没有无效 Padding&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;effective_cycles&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;active_tokens&lt;/span&gt; &lt;span class="o"&gt;/&lt;/span&gt; &lt;span class="n"&gt;batch_size&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;理想平均迭代深度: &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;effective_cycles&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;优势：一旦请求完成立即释放显存，不产生无效计算。&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# --- 阿彪的测试 ---&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;static_batching_sim&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;requests&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;continuous_batching_sim&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;requests&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;阿彪点评&lt;/strong&gt;：在静态批处理中，那 3 个短请求产生的 &lt;code&gt;wasted_cycles&lt;/code&gt; 就是公司白花花的银子（GPU 租金）在燃烧。vLLM 的出现，本质上是把推理从“作坊式凑单”变成了“流水线生产”。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="四-面试官会问到的问题及详细答案"&gt;四、 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;h3 id="-q1vllm-主要优化的是-latency延迟还是-throughput吞吐量"&gt;❓ Q1：vLLM 主要优化的是 Latency（延迟）还是 Throughput（吞吐量）？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+vLLM 的核心优化目标是 &lt;strong&gt;Throughput（吞吐量）&lt;/strong&gt;。
+虽然 PagedAttention 和优秀的内核实现对单次请求的 Latency 有一定帮助，但它真正强大的地方在于让单卡能够承载更多的并发请求（High Concurrency）。在相同的显存下，它能跑更多的 Batch，从而提升单位时间内处理的总 Token 数。&lt;/p&gt;
+&lt;h3 id="-q2在什么场景下vllm-的优势体现不出来"&gt;❓ Q2：在什么场景下，vLLM 的优势体现不出来？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+在 &lt;strong&gt;Batch Size = 1（极低并发）&lt;/strong&gt; 的场景下。
+当系统只有一个用户时，不需要 PagedAttention 来解决显存碎片，也不需要 Continuous Batching 来做调度。此时，推理速度完全取决于显存带宽和模型参数量。在这种“单挑”场景下，vLLM 甚至可能因为额外的调度开销，比极度精简的底层 C++ 实现慢一点点。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="五-阿彪碎碎念-抱拳"&gt;五、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;其实学习 vLLM 的过程，就是一个重新认识“工程之美”的过程。
+很多同学总是纠结于 Transformer 里的注意力公式怎么写，但到了工业界你会发现，公式大家都有，&lt;strong&gt;真正的差距在于谁能把 80G 显存压榨到最后一滴。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;PagedAttention 并不是什么新发明的黑科技，它就是把 50 年前的操作系统内存管理思想，跨界应用到了大模型上。
+&lt;strong&gt;所以，别小看你本科课本上的那些“老古董”，在大模型时代，它们全是“降维打击”的核武器。&lt;/strong&gt; 下一篇，我们将深入显存底层，手动拆解 PagedAttention 的 Block 映射机制，准备好，我们要动手术了！&lt;/p&gt;</description></item><item><title>从重复计算到记忆外挂：深度拆解大模型推理之『KV Cache』</title><link>https://tkdwbiao.github.io/p/llm-inference-kv-cache-deep-dive/</link><pubDate>Mon, 06 Apr 2026 16:20:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/llm-inference-kv-cache-deep-dive/</guid><description>&lt;p&gt;在 LeetCode 里，我们经常用“哈希表”来做空间换时间的优化（比如经典的 Two Sum）；在后端开发中，我们也常把热点数据塞进 Redis。
+而到了大模型（LLM）推理领域，这招“空间换时间”的哲学依然适用，它的终极形态就是面试中必考的硬核知识点：&lt;strong&gt;KV Cache&lt;/strong&gt;。大部分同学只知道它能加速，但今天阿彪带你扒开它的底层逻辑，并手写代码模拟它的工作机制，最后还会深度探讨工业界如何解决它带来的“显存灾难”。&lt;/p&gt;
+&lt;h2 id="一-知识点详解为什么我们需要-kv-cache"&gt;一、 知识点详解：为什么我们需要 KV Cache？
+&lt;/h2&gt;&lt;h3 id="1-笨办法自回归的灾难"&gt;1. “笨办法”：自回归的灾难
+&lt;/h3&gt;&lt;p&gt;大模型（如 Llama、GPT）生成文本的方式是&lt;strong&gt;自回归（Autoregressive）&lt;/strong&gt;，即“吃前面的字，吐下一个字”。
+假设我们要让模型输出：“我爱吃苹果”。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;第 1 步&lt;/strong&gt;：输入“我”，经过 Transformer 层层计算 $Q, K, V$，输出“爱”。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;第 2 步&lt;/strong&gt;：输入“我爱”，&lt;strong&gt;重新计算&lt;/strong&gt;“我”和“爱”的 $Q, K, V$，输出“吃”。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;第 3 步&lt;/strong&gt;：输入“我爱吃”，&lt;strong&gt;再次重新计算&lt;/strong&gt;“我”、“爱”、“吃”的 $Q, K, V$……&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这就像你每读一本书的新的一页，都要把前面所有的页数重新朗读一遍。随着文本越来越长，计算复杂度呈 $O(N^2)$ 级爆炸，GPU 的算力被白白浪费在历史 token 的重复计算上。&lt;/p&gt;
+&lt;h3 id="2-聪明办法kv-cache-的诞生"&gt;2. “聪明办法”：KV Cache 的诞生
+&lt;/h3&gt;&lt;p&gt;在 Transformer 的自注意力机制（Self-Attention）中，当前字只需要和前面字的 $K$ (Key) 和 $V$ (Value) 发生矩阵相乘（Attention）。
+而且有一个极其重要的物理特性：&lt;strong&gt;历史 token 的 $K$ 和 $V$ 一旦算出来，在后续生成新词时，它们是永远不会改变的！&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;既然不会变，我们何不把算过的 $K$ 和 $V$ 存到显存里（Cache 起来）呢？&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;第 2 步算“爱”的时候，只需算“爱”自己的 $Q, K, V$。&lt;/li&gt;
+&lt;li&gt;然后拿“爱”的 $Q$，直接去显存里找存好的“我”的 $K, V$ 进行运算。&lt;/li&gt;
+&lt;li&gt;算完后，把“爱”的 $K, V$ 也追加进显存。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这就是 &lt;strong&gt;KV Cache&lt;/strong&gt;。有了它，生成每一个新词的计算复杂度瞬间从 $O(N^2)$ 降到了 $O(N)$。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二-代码举例用-python-模拟-kv-cache-机制"&gt;二、 代码举例：用 Python 模拟 KV Cache 机制
+&lt;/h2&gt;&lt;p&gt;为了更直观，阿彪写了一段极简的 Python 代码，模拟大模型在有无 KV Cache 时的注意力计算过程：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;span class="lnt"&gt;24
+&lt;/span&gt;&lt;span class="lnt"&gt;25
+&lt;/span&gt;&lt;span class="lnt"&gt;26
+&lt;/span&gt;&lt;span class="lnt"&gt;27
+&lt;/span&gt;&lt;span class="lnt"&gt;28
+&lt;/span&gt;&lt;span class="lnt"&gt;29
+&lt;/span&gt;&lt;span class="lnt"&gt;30
+&lt;/span&gt;&lt;span class="lnt"&gt;31
+&lt;/span&gt;&lt;span class="lnt"&gt;32
+&lt;/span&gt;&lt;span class="lnt"&gt;33
+&lt;/span&gt;&lt;span class="lnt"&gt;34
+&lt;/span&gt;&lt;span class="lnt"&gt;35
+&lt;/span&gt;&lt;span class="lnt"&gt;36
+&lt;/span&gt;&lt;span class="lnt"&gt;37
+&lt;/span&gt;&lt;span class="lnt"&gt;38
+&lt;/span&gt;&lt;span class="lnt"&gt;39
+&lt;/span&gt;&lt;span class="lnt"&gt;40
+&lt;/span&gt;&lt;span class="lnt"&gt;41
+&lt;/span&gt;&lt;span class="lnt"&gt;42
+&lt;/span&gt;&lt;span class="lnt"&gt;43
+&lt;/span&gt;&lt;span class="lnt"&gt;44
+&lt;/span&gt;&lt;span class="lnt"&gt;45
+&lt;/span&gt;&lt;span class="lnt"&gt;46
+&lt;/span&gt;&lt;span class="lnt"&gt;47
+&lt;/span&gt;&lt;span class="lnt"&gt;48
+&lt;/span&gt;&lt;span class="lnt"&gt;49
+&lt;/span&gt;&lt;span class="lnt"&gt;50
+&lt;/span&gt;&lt;span class="lnt"&gt;51
+&lt;/span&gt;&lt;span class="lnt"&gt;52
+&lt;/span&gt;&lt;span class="lnt"&gt;53
+&lt;/span&gt;&lt;span class="lnt"&gt;54
+&lt;/span&gt;&lt;span class="lnt"&gt;55
+&lt;/span&gt;&lt;span class="lnt"&gt;56
+&lt;/span&gt;&lt;span class="lnt"&gt;57
+&lt;/span&gt;&lt;span class="lnt"&gt;58
+&lt;/span&gt;&lt;span class="lnt"&gt;59
+&lt;/span&gt;&lt;span class="lnt"&gt;60
+&lt;/span&gt;&lt;span class="lnt"&gt;61
+&lt;/span&gt;&lt;span class="lnt"&gt;62
+&lt;/span&gt;&lt;span class="lnt"&gt;63
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kn"&gt;import&lt;/span&gt; &lt;span class="nn"&gt;numpy&lt;/span&gt; &lt;span class="k"&gt;as&lt;/span&gt; &lt;span class="nn"&gt;np&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kn"&gt;import&lt;/span&gt; &lt;span class="nn"&gt;time&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 模拟 Transformer 维度的参数&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;dim&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="mi"&gt;64&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;seq_len&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="mi"&gt;1000&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 模拟输入序列的 Q, K, V (随机生成)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;Q&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;random&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;randn&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;seq_len&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;dim&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;K&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;random&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;randn&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;seq_len&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;dim&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;V&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;random&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;randn&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;seq_len&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;dim&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;attention_without_kv_cache&lt;/span&gt;&lt;span class="p"&gt;():&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="s2"&gt;&amp;#34;&amp;#34;&amp;#34;模拟没有 KV Cache：每次生成新词，都要重算所有历史词的 Attention&amp;#34;&amp;#34;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;start_time&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;time&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;time&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;outputs&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="p"&gt;[]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;for&lt;/span&gt; &lt;span class="n"&gt;i&lt;/span&gt; &lt;span class="ow"&gt;in&lt;/span&gt; &lt;span class="nb"&gt;range&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="mi"&gt;1&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;seq_len&lt;/span&gt; &lt;span class="o"&gt;+&lt;/span&gt; &lt;span class="mi"&gt;1&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 每次都要取前 i 个 token 的 Q, K, V 进行矩阵乘法&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;q_curr&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;Q&lt;/span&gt;&lt;span class="p"&gt;[:&lt;/span&gt;&lt;span class="n"&gt;i&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;k_curr&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;K&lt;/span&gt;&lt;span class="p"&gt;[:&lt;/span&gt;&lt;span class="n"&gt;i&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;v_curr&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;V&lt;/span&gt;&lt;span class="p"&gt;[:&lt;/span&gt;&lt;span class="n"&gt;i&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# scores = softmax(Q * K^T)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;scores&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;dot&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;q_curr&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;k_curr&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;T&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# out = scores * V&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;out&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;dot&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;scores&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;v_curr&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;outputs&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;append&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;out&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="o"&gt;-&lt;/span&gt;&lt;span class="mi"&gt;1&lt;/span&gt;&lt;span class="p"&gt;])&lt;/span&gt; &lt;span class="c1"&gt;# 只取当前生成的最后一个 token 结果&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;【无 KV Cache】耗时: &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;time&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;time&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt; &lt;span class="o"&gt;-&lt;/span&gt; &lt;span class="n"&gt;start_time&lt;/span&gt;&lt;span class="si"&gt;:&lt;/span&gt;&lt;span class="s2"&gt;.4f&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt; 秒 (时间复杂度 O(N^2))&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;outputs&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;attention_with_kv_cache&lt;/span&gt;&lt;span class="p"&gt;():&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="s2"&gt;&amp;#34;&amp;#34;&amp;#34;模拟有 KV Cache：只需算当前词的 Q，与缓存的 K, V 运算&amp;#34;&amp;#34;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;start_time&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;time&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;time&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;outputs&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="p"&gt;[]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 显存里开辟的 KV Cache 空间&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;k_cache&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;zeros&lt;/span&gt;&lt;span class="p"&gt;((&lt;/span&gt;&lt;span class="mi"&gt;0&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;dim&lt;/span&gt;&lt;span class="p"&gt;))&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;v_cache&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;zeros&lt;/span&gt;&lt;span class="p"&gt;((&lt;/span&gt;&lt;span class="mi"&gt;0&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;dim&lt;/span&gt;&lt;span class="p"&gt;))&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;for&lt;/span&gt; &lt;span class="n"&gt;i&lt;/span&gt; &lt;span class="ow"&gt;in&lt;/span&gt; &lt;span class="nb"&gt;range&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;seq_len&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 只取当前这 1 个新词的 Q, K, V&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;q_new&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;Q&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="n"&gt;i&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="n"&gt;i&lt;/span&gt;&lt;span class="o"&gt;+&lt;/span&gt;&lt;span class="mi"&gt;1&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;k_new&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;K&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="n"&gt;i&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="n"&gt;i&lt;/span&gt;&lt;span class="o"&gt;+&lt;/span&gt;&lt;span class="mi"&gt;1&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;v_new&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;V&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="n"&gt;i&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="n"&gt;i&lt;/span&gt;&lt;span class="o"&gt;+&lt;/span&gt;&lt;span class="mi"&gt;1&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 将新词的 K, V 追加到缓存中 (模拟显存写入)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;k_cache&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;vstack&lt;/span&gt;&lt;span class="p"&gt;([&lt;/span&gt;&lt;span class="n"&gt;k_cache&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;k_new&lt;/span&gt;&lt;span class="p"&gt;])&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;v_cache&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;vstack&lt;/span&gt;&lt;span class="p"&gt;([&lt;/span&gt;&lt;span class="n"&gt;v_cache&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;v_new&lt;/span&gt;&lt;span class="p"&gt;])&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 拿当前词的 Q，去和缓存里所有的 K, V 做运算&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;scores&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;dot&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;q_new&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;k_cache&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;T&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;out&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;dot&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;scores&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;v_cache&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;outputs&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;append&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;out&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="mi"&gt;0&lt;/span&gt;&lt;span class="p"&gt;])&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;【有 KV Cache】耗时: &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;time&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;time&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt; &lt;span class="o"&gt;-&lt;/span&gt; &lt;span class="n"&gt;start_time&lt;/span&gt;&lt;span class="si"&gt;:&lt;/span&gt;&lt;span class="s2"&gt;.4f&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt; 秒 (时间复杂度 O(N))&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;outputs&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# --- 阿彪的测试 ---&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;开始模拟生成 1000 个 token...&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;res1&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;attention_without_kv_cache&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;res2&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;attention_with_kv_cache&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;运行结果：&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;开始模拟生成 1000 个 token...
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;【无 KV Cache】耗时: 0.1250 秒 (时间复杂度 O(N^2))
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;【有 KV Cache】耗时: 0.0150 秒 (时间复杂度 O(N))
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;代码点评&lt;/strong&gt;：通过对比可以清晰看到，引入 KV Cache 后，我们把每次矩阵乘法的维度从 &lt;code&gt;(i, i)&lt;/code&gt; 降级成了 &lt;code&gt;(1, i)&lt;/code&gt;。虽然我们需要维护一个不断变大的 &lt;code&gt;k_cache&lt;/code&gt; 数组，但换来的速度提升是指数级的！&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="三-工业界痛点kv-cache-带来的显存灾难"&gt;三、 工业界痛点：KV Cache 带来的“显存灾难”
+&lt;/h2&gt;&lt;p&gt;天下没有免费的午餐。空间换时间，换着换着，显存就被撑爆了。
+在真实的工业场景中，如果不加干预，KV Cache 往往会比模型权重本身还要大！当并发数一上来，由于显存不够用（Out of Memory），模型只能被迫拒绝服务。&lt;/p&gt;
+&lt;p&gt;为了给大模型“续命”，工业界主要有三大杀手锏：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;模型架构重构：MQA 与 GQA&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;MHA (传统多头注意力)&lt;/strong&gt;：每个 Head 都有自己独立的 K 和 V。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;MQA (Multi-Query Attention)&lt;/strong&gt;：所有 Head 共享同一组 K 和 V。直接把 KV Cache 的体积缩小了 N 倍（N 为头数）！&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;GQA (Grouped-Query Attention)&lt;/strong&gt;：MQA 有时候会让模型泛化能力变差，所以 Llama-2/3 采用了 GQA——把 Head 分组，每 8 个头共享一组 K, V，在精度和显存之间取得完美平衡。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;系统底层重构：vLLM 与 PagedAttention&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;过去，KV Cache 在显存里是&lt;strong&gt;连续分配&lt;/strong&gt;的。但你不知道用户的话有多长，往往会预先分配一大块显存。这会导致极严重的“内存碎片化”，显存利用率不到 30%。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;PagedAttention&lt;/strong&gt; 借鉴了操作系统的“虚拟内存分页（Paging）”技术。把 KV Cache 切成一个个不连续的 Block（Page），按需分配。这让显存利用率逼近 96%，直接将模型的并发吞吐量提升了 2~4 倍！&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;量化与卸载策略&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;不仅对权重做量化，对 KV Cache 也可以做 INT8 甚至 INT4 的量化（如 KVCache Quantization）。&lt;/li&gt;
+&lt;li&gt;如果显存实在装不下，就利用 CPU 内存做 Offload，或者用 Sliding Window Attention（只保留最近的 N 个 token 的 Cache）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h2 id="四-面试官会问到的问题及详细答案"&gt;四、 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;p&gt;如果你把上面这些讲给面试官听，他大概率会通过以下几个问题来测测你的底子：&lt;/p&gt;
+&lt;h3 id="-q1请写出-kv-cache-占用显存的计算公式并估算-llama-7bfp16在-batch1seq_len1024-时的显存占用"&gt;❓ Q1：请写出 KV Cache 占用显存的计算公式，并估算 Llama-7B（FP16）在 Batch=1，Seq_Len=1024 时的显存占用。
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+&lt;strong&gt;核心公式&lt;/strong&gt;：&lt;mark&gt;&lt;code&gt;KV Cache 显存 = 2 (K和V) × 批次(Batch) × 层数(Layers) × 头数(Heads) × 头维度(Head_Dim) × 序列长度(Seq_Len) × 字节数(Bytes)&lt;/code&gt;&lt;/mark&gt;。&lt;/p&gt;
+&lt;p&gt;以典型的 7B 模型为例：层数 = 32，头数 = 32，头维度 = 128，FP16 占用 2 Bytes。
+代入公式：$2 \times 1 \times 32 \times 32 \times 128 \times 1024 \times 2 = 536,870,912$ bytes。
+约等于 &lt;strong&gt;0.5 GB&lt;/strong&gt;。
+&lt;em&gt;(顺便向面试官抛出：如果并发请求量达到 Batch=32，且生成长度达到 4K，单单是 KV Cache 就会暴增到 64 GB，一张 80G 的 A100 瞬间就满了！这也是为什么要做 PagedAttention 的核心原因。)&lt;/em&gt;&lt;/p&gt;
+&lt;h3 id="-q2在-llm-的推理中通常分为-prefill预填充和-decode解码两个阶段kv-cache-在这两个阶段有什么区别"&gt;❓ Q2：在 LLM 的推理中，通常分为 Prefill（预填充）和 Decode（解码）两个阶段，KV Cache 在这两个阶段有什么区别？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Prefill 阶段（用户刚输入 Prompt 时）&lt;/strong&gt;：模型需要一次性并行计算这段 Prompt 所有 token 的 $Q, K, V$，并将算好的 $K, V$ 全量存入 KV Cache。此阶段是&lt;strong&gt;计算密集型（Compute-Bound）&lt;/strong&gt;，瓶颈在 GPU 的张量算力。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Decode 阶段（模型逐字吐出回答时）&lt;/strong&gt;：每次只计算当前这一个新字的 $Q, K, V$，然后去显存里读取之前存好的所有 KV Cache 进行计算。此阶段是&lt;strong&gt;访存密集型（Memory-Bound）&lt;/strong&gt;，瓶颈在显存的读取带宽。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="-q3你提到-pagedattention它除了解决显存碎片还有什么额外的好处吗"&gt;❓ Q3：你提到 PagedAttention，它除了解决显存碎片，还有什么额外的好处吗？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+有的，PagedAttention 天然支持&lt;strong&gt;显存共享（Memory Sharing）&lt;/strong&gt;。
+在实际业务中，我们经常使用复杂的 Prompt（比如 System Prompt：你是一个精通翻译的助手&amp;hellip;）。对于不同的并发请求，只要它们的 System Prompt 一样，PagedAttention 就可以让这些请求的 KV Cache 指向同一个物理内存块（Page）。这在并行处理多用户的 RAG 或系统预设请求时，能节省海量显存。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="五-总结"&gt;五、 总结
+&lt;/h2&gt;&lt;p&gt;如果说大模型是一台疾驰的跑车，那么 Transformer 的数学架构就是发动机，而 KV Cache 则是决定它能跑多远、载多少人的&lt;strong&gt;油箱&lt;/strong&gt;。&lt;br&gt;
+从单纯地把变量存入内存（原始 KV Cache），到修改模型架构减小油箱负担（MQA/GQA），再到引入操作系统级别的内存页管理（vLLM PagedAttention），我们见证了 AI 推理框架如何从“粗放的数学验证”走向“极致的工程压榨”。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="六-阿彪碎碎念-抱拳"&gt;六、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;其实在复习这些底层原理时，我最大的感触是：&lt;strong&gt;计算机科学的基础课真的太重要了！&lt;/strong&gt;
+你看，vLLM 轰动业界的 PagedAttention 机制，不就是我们本科《操作系统》必修课里的“虚拟内存分页机制”吗？把 50 年前的 OS 老技术，换个马甲套在大模型的显存管理上，就成就了一家估值几十亿美金的独角兽。&lt;br&gt;
+所以，面试大模型岗位，千万别以为只会调 Prompt 就行。当你懂得了并发、显存调度、带宽瓶颈、汇编级别的算子优化，你在这个赛道才真正具有了不可替代性。兄弟们，冲就完事了！&lt;/p&gt;</description></item></channel></rss>

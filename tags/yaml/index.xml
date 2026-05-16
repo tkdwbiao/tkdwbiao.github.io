@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>YAML on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/yaml/</link><description>Recent content in YAML on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Thu, 10 Jul 2025 09:00:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/yaml/index.xml" rel="self" type="application/rss+xml"/><item><title>【Docker 系列 06】告别繁琐的长命令：Docker Compose 一键启动多服务架构</title><link>https://tkdwbiao.github.io/p/docker-series-06-compose/</link><pubDate>Thu, 10 Jul 2025 09:00:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/docker-series-06-compose/</guid><description>&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;“我的项目要连数据库、要连缓存、还要连消息队列。每次重启，我都得小心翼翼地按顺序敲 6 个长达四五行的 &lt;code&gt;docker run&lt;/code&gt; 命令，错一个字母就全盘崩溃。有没有救？”&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;通过前面五篇文章的学习，你已经掌握了 Docker 的四大神器：&lt;strong&gt;镜像、容器、Volume（数据卷）和 Network（网络）&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;但在真实的商业项目中，一个系统绝对不只有一个容器。
+以我最近正在开发的 &lt;strong&gt;“智能 OnCall AI 助手项目”&lt;/strong&gt; 为例，为了让大模型具备记忆，我需要用到 Milvus 向量数据库。但 Milvus 不是一个单体软件，它底层依赖 &lt;code&gt;Etcd&lt;/code&gt; 存元数据，依赖 &lt;code&gt;MinIO&lt;/code&gt; 存实际文件，最后还要加上我自己的 &lt;code&gt;FastAPI&lt;/code&gt; 后端服务和 &lt;code&gt;Attu&lt;/code&gt; 可视化面板。&lt;/p&gt;
+&lt;p&gt;如果纯靠 &lt;code&gt;docker run&lt;/code&gt; 命令手动启动这 5 个容器：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;你必须先建好自定义网络。&lt;/li&gt;
+&lt;li&gt;你得算准启动顺序（先起 Etcd，再起 Milvus）。&lt;/li&gt;
+&lt;li&gt;你的终端历史记录里会塞满长达几百个字符的变态命令。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;最惨的是交接&lt;/strong&gt;：当新同事入职，你要怎么教他把这套环境在本地跑起来？&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;为了消灭这种反人类的操作，Docker 官方推出了终极杀器：&lt;strong&gt;Docker Compose&lt;/strong&gt;。今天，我们就来学习如何用一份优雅的文件，一键指挥千军万马。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="一什么是-docker-compose从命令式到声明式"&gt;一、什么是 Docker Compose？（从命令式到声明式）
+&lt;/h2&gt;&lt;p&gt;&lt;code&gt;docker run&lt;/code&gt; 是一种 &lt;strong&gt;命令式（Imperative）&lt;/strong&gt; 操作：“嘿，Docker，给我用 80 端口、挂载 A 目录、连接 B 网络，跑一个 C 容器！”&lt;/p&gt;
+&lt;p&gt;而 Docker Compose 是一种 &lt;strong&gt;声明式（Declarative）&lt;/strong&gt; 操作：“嘿，Docker，这是我的架构图（一份 YAML 文件），我不管你怎么弄，反正我要 5 个容器按照这个图纸跑起来，互相能连通，你看着办吧。”&lt;/p&gt;
+&lt;p&gt;Docker Compose 的核心就只有一个名为 &lt;strong&gt;&lt;code&gt;docker-compose.yml&lt;/code&gt;&lt;/strong&gt; 的文本文件。你在这个文件里定义好所有的服务（Services）、网络（Networks）和数据卷（Volumes），然后只需要敲&lt;strong&gt;一个单词&lt;/strong&gt;，一切就会按照剧本自动上演。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二扒开-docker-composeyml-的外衣核心语法解析"&gt;二、扒开 &lt;code&gt;docker-compose.yml&lt;/code&gt; 的外衣：核心语法解析
+&lt;/h2&gt;&lt;p&gt;不要被几十行的代码吓到，&lt;code&gt;docker-compose.yml&lt;/code&gt; 的结构其实非常清晰，主要分为三大部分：&lt;code&gt;services&lt;/code&gt;（服务）、&lt;code&gt;volumes&lt;/code&gt;（数据卷声明）和 &lt;code&gt;networks&lt;/code&gt;（网络声明）。&lt;/p&gt;
+&lt;p&gt;我们直接拿一个高度简化的&lt;strong&gt;真实 AI 项目数据库架构&lt;/strong&gt;来解剖。这份图纸包含了向量数据库主体（Standalone）及其依赖（Etcd 和 MinIO）：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;span class="lnt"&gt;24
+&lt;/span&gt;&lt;span class="lnt"&gt;25
+&lt;/span&gt;&lt;span class="lnt"&gt;26
+&lt;/span&gt;&lt;span class="lnt"&gt;27
+&lt;/span&gt;&lt;span class="lnt"&gt;28
+&lt;/span&gt;&lt;span class="lnt"&gt;29
+&lt;/span&gt;&lt;span class="lnt"&gt;30
+&lt;/span&gt;&lt;span class="lnt"&gt;31
+&lt;/span&gt;&lt;span class="lnt"&gt;32
+&lt;/span&gt;&lt;span class="lnt"&gt;33
+&lt;/span&gt;&lt;span class="lnt"&gt;34
+&lt;/span&gt;&lt;span class="lnt"&gt;35
+&lt;/span&gt;&lt;span class="lnt"&gt;36
+&lt;/span&gt;&lt;span class="lnt"&gt;37
+&lt;/span&gt;&lt;span class="lnt"&gt;38
+&lt;/span&gt;&lt;span class="lnt"&gt;39
+&lt;/span&gt;&lt;span class="lnt"&gt;40
+&lt;/span&gt;&lt;span class="lnt"&gt;41
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# docker-compose.yml&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;services&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 服务1：Etcd (元数据存储)&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;etcd&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;container_name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;milvus-etcd&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;quay.io/coreos/etcd:v3.5.18&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;volumes&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="l"&gt;./volumes/etcd:/etcd&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;command&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 服务2：MinIO (底层文件存储)&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;minio&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;container_name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;milvus-minio&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;minio/minio:RELEASE.2023-03-20T20-16-18Z&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;environment&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;MINIO_ACCESS_KEY&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;minioadmin&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;MINIO_SECRET_KEY&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;minioadmin&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;ports&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="s2"&gt;&amp;#34;9001:9001&amp;#34;&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="s2"&gt;&amp;#34;9000:9000&amp;#34;&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;volumes&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="l"&gt;./volumes/minio:/minio_data&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;command&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;minio server /minio_data --console-address &amp;#34;:9001&amp;#34;&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 服务3：Milvus 主体 (依赖前两个服务)&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;standalone&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;container_name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;milvus-standalone&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;milvusdb/milvus:v2.5.10&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;ports&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="s2"&gt;&amp;#34;19530:19530&amp;#34;&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;environment&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;ETCD_ENDPOINTS&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;etcd:2379 &lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 重点：直接使用服务名通信&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;MINIO_ADDRESS&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;minio:9000 &lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 重点：直接使用服务名通信&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;depends_on&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="l"&gt;etcd&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="l"&gt;minio&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c"&gt;# 声明自定义网络&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;networks&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;default&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;name&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;milvus_network&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="核心标签大扫盲"&gt;核心标签大扫盲：
+&lt;/h3&gt;&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;services&lt;/code&gt;&lt;/strong&gt;：在这个标签下的缩进列表，每一个节点（如 &lt;code&gt;etcd&lt;/code&gt;, &lt;code&gt;minio&lt;/code&gt;, &lt;code&gt;standalone&lt;/code&gt;）就是一个容器。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;image&lt;/code&gt; vs &lt;code&gt;build&lt;/code&gt;&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;code&gt;image: nginx:latest&lt;/code&gt; 表示直接去网上拉取现成的镜像。&lt;/li&gt;
+&lt;li&gt;如果是你自己写的项目，可以用 &lt;code&gt;build: .&lt;/code&gt;，它会自动寻找当前目录的 &lt;code&gt;Dockerfile&lt;/code&gt; 现场帮你打包镜像并启动！&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;environment&lt;/code&gt;&lt;/strong&gt;：注入环境变量，相当于 &lt;code&gt;docker run -e&lt;/code&gt;。非常适合配置账号密码（如 MinIO 的密钥）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;&lt;code&gt;depends_on&lt;/code&gt;（重点！）&lt;/strong&gt;：决定了容器的&lt;strong&gt;启动顺序&lt;/strong&gt;。在上面的例子中，&lt;code&gt;standalone&lt;/code&gt; 声明了依赖 &lt;code&gt;etcd&lt;/code&gt; 和 &lt;code&gt;minio&lt;/code&gt;。所以当你按下一键启动时，Compose 会聪明地先启动存储引擎，最后再启动 Milvus 主服务。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;内置网络 DNS 魔法&lt;/strong&gt;：还记得上一篇我们大费周章创建的自定义网络吗？&lt;strong&gt;在 Compose 里，这全是自动的！&lt;/strong&gt; 它会自动创建一个以当前文件夹命名的网络，并把所有服务放进去。看 &lt;code&gt;standalone&lt;/code&gt; 的配置：它直接用 &lt;code&gt;etcd:2379&lt;/code&gt; 就能连上 Etcd 容器，省去了所有 IP 配置烦恼。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h2 id="三docker-compose-的日常四板斧命令"&gt;三、Docker Compose 的日常“四板斧”命令
+&lt;/h2&gt;&lt;p&gt;有了这份 &lt;code&gt;docker-compose.yml&lt;/code&gt;，你的命令行生活将变得极其枯燥且安逸。&lt;/p&gt;
+&lt;h3 id="1-魔法开启docker-compose-up--d"&gt;1. 魔法开启：&lt;code&gt;docker compose up -d&lt;/code&gt;
+&lt;/h3&gt;&lt;p&gt;进入 &lt;code&gt;docker-compose.yml&lt;/code&gt; 所在的目录，敲下这行命令（&lt;code&gt;-d&lt;/code&gt; 表示后台运行）。
+Docker 会自动去下载镜像、自动建网络、自动按顺序启动所有服务。&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;💡 阿彪小科普&lt;/strong&gt;：在老版本中命令是带横杠的 &lt;code&gt;docker-compose up&lt;/code&gt;。现在新版 Docker 已经把 Compose 吸收为了官方内置插件，统一使用 &lt;code&gt;docker compose&lt;/code&gt;（中间是空格）。&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;h3 id="2-查看群雄docker-compose-ps"&gt;2. 查看群雄：&lt;code&gt;docker compose ps&lt;/code&gt;
+&lt;/h3&gt;&lt;p&gt;如果你想看看这个“项目集”里所有的容器状态，不用再全局 &lt;code&gt;docker ps&lt;/code&gt; 了。
+这个命令只会列出&lt;strong&gt;当前图纸&lt;/strong&gt;管控下的容器运行状况。&lt;/p&gt;
+&lt;h3 id="3-上帝视角看日志docker-compose-logs--f"&gt;3. 上帝视角看日志：&lt;code&gt;docker compose logs -f&lt;/code&gt;
+&lt;/h3&gt;&lt;p&gt;当微服务多了，不知道错误出在哪个环节？
+敲下这个命令，你会看到一个极其壮观的画面：&lt;strong&gt;所有容器的日志交织在一起实时滚动，而且 Compose 非常贴心地给每个服务分配了不同的颜色标明前缀！&lt;/strong&gt;（例如蓝色的 &lt;code&gt;minio |&lt;/code&gt;，红色的 &lt;code&gt;etcd |&lt;/code&gt;）。排障效率瞬间提升十倍。&lt;/p&gt;
+&lt;h3 id="4-毁尸灭迹docker-compose-down"&gt;4. 毁尸灭迹：&lt;code&gt;docker compose down&lt;/code&gt;
+&lt;/h3&gt;&lt;p&gt;不想用了？不要再一个个 &lt;code&gt;docker stop&lt;/code&gt; 和 &lt;code&gt;docker rm&lt;/code&gt;。
+执行 &lt;code&gt;down&lt;/code&gt; 命令，它会：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;优雅地停止所有相关容器。&lt;/li&gt;
+&lt;li&gt;删除这些容器。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;最重要的是：它会自动清理掉为了这个项目创建的临时内部网络&lt;/strong&gt;，绝不给你的系统留下一丝垃圾。
+&lt;em&gt;(注：默认情况下，挂载的数据卷 Volumes 会被保留，保证你的数据安全)&lt;/em&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h2 id="四高阶避坑env-环境隔离大法"&gt;四、高阶避坑：&lt;code&gt;.env&lt;/code&gt; 环境隔离大法
+&lt;/h2&gt;&lt;p&gt;在真实开发中，我们绝不会把真实的数据库密码或者通义千问的 &lt;code&gt;DASHSCOPE_API_KEY&lt;/code&gt; 明文写在 &lt;code&gt;docker-compose.yml&lt;/code&gt; 里然后推送到 GitHub 上。这等同于把金库钥匙挂在菜市口。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;最佳实践是使用环境变量文件隔离。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Docker Compose 原生支持读取同目录下的 &lt;code&gt;.env&lt;/code&gt; 文本文件。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;1. 创建 &lt;code&gt;.env&lt;/code&gt; 文件（不要把它提交到 Git）：&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;MYSQL_ROOT_PASSWORD&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;SuperSecretPass_888
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nv"&gt;DOCKER_VOLUME_DIR&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;./my_data
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;2. 在 &lt;code&gt;docker-compose.yml&lt;/code&gt; 中使用 &lt;code&gt;${变量名}&lt;/code&gt; 占位：&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;span class="lnt"&gt;6
+&lt;/span&gt;&lt;span class="lnt"&gt;7
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;services&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;db&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;mysql:8.0&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;environment&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;MYSQL_ROOT_PASSWORD&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;${MYSQL_ROOT_PASSWORD}&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;volumes&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;- &lt;span class="l"&gt;${DOCKER_VOLUME_DIR}/mysql:/var/lib/mysql&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;这样，你的 YAML 文件就是一套干净的、可随意分享的架构模板，而真正的机密和本地差异化配置，全部留在了每个人电脑的 &lt;code&gt;.env&lt;/code&gt; 文件里。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="结语"&gt;结语
+&lt;/h2&gt;&lt;p&gt;从手敲 10 遍 &lt;code&gt;docker run&lt;/code&gt; 到写一份 &lt;code&gt;docker-compose.yml&lt;/code&gt; 一键启动，你完成了从“搬砖工”到“包工头”的华丽转变。&lt;/p&gt;
+&lt;p&gt;如今，无论是本地开发还是单机服务器部署，你只需把代码和这份 YAML 文件发给同事，他只要敲下 &lt;code&gt;docker compose up -d&lt;/code&gt;，他的电脑上就会完美复刻出一个包含 Nginx、Python、MySQL、Redis 且互相连通的庞大微服务帝国。这，就是容器编排的魅力。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;但是，随着我们打包的项目越来越多，你可能会发现一个尴尬的问题：&lt;/strong&gt;
+“为什么我用 Dockerfile 随便打包一个跑着简单 Web 服务的 Python 镜像，体积竟然高达 &lt;strong&gt;1.5 GB&lt;/strong&gt;？这上传和下载的速度简直要命啊！”&lt;/p&gt;
+&lt;p&gt;你的镜像里是不是塞满了编译工具、多余的缓存和根本用不到的源代码？
+如何为你的镜像做一场“抽脂手术”，把它从 1.5GB 压榨到仅仅几十 MB？&lt;/p&gt;
+&lt;p&gt;请锁定下期高阶魔法：&lt;strong&gt;【Docker 高级】镜像太大了怎么办？多阶段构建 (Multi-stage Build) 瘦身术&lt;/strong&gt;。我们下周见！&lt;/p&gt;</description></item></channel></rss>

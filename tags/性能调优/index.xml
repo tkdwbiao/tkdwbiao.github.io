@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>性能调优 on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/%E6%80%A7%E8%83%BD%E8%B0%83%E4%BC%98/</link><description>Recent content in 性能调优 on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Mon, 06 Apr 2026 19:00:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/%E6%80%A7%E8%83%BD%E8%B0%83%E4%BC%98/index.xml" rel="self" type="application/rss+xml"/><item><title>vLLM 系列(六)：终章 —— 工业级调优、监控与线上事故复盘</title><link>https://tkdwbiao.github.io/p/vllm-production-tuning-monitoring-oom-case/</link><pubDate>Mon, 06 Apr 2026 19:00:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/vllm-production-tuning-monitoring-oom-case/</guid><description>&lt;p&gt;写完了原理，拆完了代码，如果最后不会部署调优，那之前的学习只能算是“纸上谈兵”。&lt;/p&gt;
+&lt;p&gt;在 2026 年的工业界，大模型推理已经进入了 FP8 和百万上下文的深水区。今天阿彪带你完成这个系列的收官之作：如何配置出一台“稳如老狗”的 vLLM 服务器，并分享一个我亲手处理过的线上 OOM 事故。&lt;/p&gt;
+&lt;h2 id="一-核心参数避坑指南拒绝默认值陷阱"&gt;一、 核心参数避坑指南：拒绝“默认值”陷阱
+&lt;/h2&gt;&lt;p&gt;在 vLLM 的启动命令行里，有三个参数直接决定了你的服务会不会“炸”：&lt;/p&gt;
+&lt;h3 id="1-gpu_memory_utilization-默认-09"&gt;1. gpu_memory_utilization (默认 0.9)
+&lt;/h3&gt;&lt;p&gt;这决定了 KV Cache 内存池的大小。
+在 2026 年的显卡架构上，如果你使用了 QLoRA 挂载或者开启了 Medusa 投机解码，剩下的 10% 显存往往不足以支撑动态计算。
+阿彪建议：如果有外挂 Adapter 需求，这个值建议下调到 0.82 或 0.85，给系统留一点“呼吸空间”。&lt;/p&gt;
+&lt;h3 id="2-max_num_seqs-最大并发数"&gt;2. max_num_seqs (最大并发数)
+&lt;/h3&gt;&lt;p&gt;它控制同时处理的 Request 数量。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;追求低延迟（如实时对话）：设小一点（128）。&lt;/li&gt;
+&lt;li&gt;追求高吞吐（如文档批量翻译）：设大一点（512+）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="3-max_model_len-最大长度限制"&gt;3. max_model_len (最大长度限制)
+&lt;/h3&gt;&lt;p&gt;千万不要完全信任模型 Config 里的长度。
+在 2026 年，很多模型号称支持 1M 上下文。如果一个用户真的传了 100 万 token 进来，你的显存会瞬间被拉爆。必须根据你的 GPU 算力，强制设定一个业务合理的阈值。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二-监控黄金三角prometheus--grafana"&gt;二、 监控黄金三角：Prometheus + Grafana
+&lt;/h2&gt;&lt;p&gt;线上服务最怕“裸奔”。在 vLLM 的监控看板中，我只盯着三个关键指标：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;vllm:num_requests_running&lt;/strong&gt;：
+这是系统的实时负载。如果这个数字频繁触达你的 &lt;code&gt;max_num_seqs&lt;/code&gt;，说明用户正在排队，需要扩容机器了。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;vllm:gpu_cache_usage_perc&lt;/strong&gt;：
+KV Cache 利用率。如果利用率长期在 95% 以上，且 &lt;code&gt;vllm:num_requests_swapped&lt;/code&gt; 大于 0，说明系统在频繁发生“显存-内存”交换，用户端会感到严重的响应卡顿。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;vllm:request_queue_time_seconds&lt;/strong&gt;：
+请求在队列里排队的时间。这是导致用户流失的头号杀手。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h2 id="三--工程经验一次真实的线上-oom-事故复盘"&gt;三 : 工程经验：一次真实的线上 OOM 事故复盘
+&lt;/h2&gt;&lt;h3 id="1-事故现场"&gt;1. 事故现场
+&lt;/h3&gt;&lt;p&gt;2026年初，某医疗 RAG 项目上线。晚上 8 点请求高峰，多台分布式推理节点连续重启，报错 &lt;code&gt;torch.cuda.OutOfMemoryError&lt;/code&gt;。&lt;/p&gt;
+&lt;h3 id="2-排查过程"&gt;2. 排查过程
+&lt;/h3&gt;&lt;p&gt;我们观察监控发现，在事故发生前，KV Cache 利用率并没有满，但系统的非缓存显存突然飙升。
+最后定位到：业务方为了提升回答精度，临时为每个用户动态加载了一个专门的医疗 LoRA。
+由于 vLLM 的 &lt;code&gt;gpu_memory_utilization&lt;/code&gt; 设置为默认的 0.95，预留给非缓存部分的显存不到 4GB。当多个不同 LoRA 同时加载并触发计算时，显存瞬间耗尽。&lt;/p&gt;
+&lt;h3 id="3-解决对策"&gt;3. 解决对策
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;将 &lt;code&gt;gpu_memory_utilization&lt;/code&gt; 强制下调至 0.82。&lt;/li&gt;
+&lt;li&gt;引入 &lt;code&gt;enforce_eager=True&lt;/code&gt;。虽然牺牲了 CUDA Graph 的一点性能，但回收了数 GB 的固定显存占用。&lt;/li&gt;
+&lt;li&gt;严格限制 &lt;code&gt;max_loras&lt;/code&gt; 数量，防止恶意请求堆积。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="四-面试官会问到的问题及详细答案"&gt;四、 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;h3 id="-q1如果线上-ttft首字延迟太高你会如何排查"&gt;❓ Q1：如果线上 TTFT（首字延迟）太高，你会如何排查？
+&lt;/h3&gt;&lt;p&gt;答：
+我会从三个维度排查：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;看排队&lt;/strong&gt;：检查 &lt;code&gt;request_queue_time&lt;/code&gt;，如果排队严重，说明并发过高，需增加实例。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;看 Prefill&lt;/strong&gt;：是否因为单次 Prompt 太长，我会开启 Chunked Prefill 将计算平滑化。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;看带宽&lt;/strong&gt;：检查多卡通信（NCCL）是否成为瓶颈，确认 NVLink 状态是否正常。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id="-q2vllm-里的-swap交换机制是怎么回事频繁-swap-说明了什么"&gt;❓ Q2：vLLM 里的 Swap（交换）机制是怎么回事？频繁 Swap 说明了什么？
+&lt;/h3&gt;&lt;p&gt;答：
+当显存池满，且有新请求需要空间时，vLLM 会把老请求的 KV Cache 搬运到 CPU 内存里，这就是 Swap。
+频繁 Swap 说明你的 &lt;code&gt;gpu_memory_utilization&lt;/code&gt; 设得太满，或者并发数远超其硬件承受能力。这会导致严重的性能抖动。&lt;/p&gt;
+&lt;h3 id="-q3在-2026-年fp8-推理对-vllm-调优有什么影响"&gt;❓ Q3：在 2026 年，FP8 推理对 vLLM 调优有什么影响？
+&lt;/h3&gt;&lt;p&gt;答：
+FP8 极大地缓解了显存压力。由于权重和 KV Cache 体积减半，相同的显存可以容纳 2 倍的请求。但在调优时，需要注意 FP8 的量化缩放因子（Scaling factors）计算可能会占用额外的显存，需要预留足够的 Buffer。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="五-阿彪碎碎念-抱拳"&gt;五、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;到这里，《vLLM 工业级推理引擎深度剖析》系列就正式完结了。&lt;/p&gt;
+&lt;p&gt;从第一篇的“旋转寿司”比喻，到今天的线上事故复盘，我们把这个 2026 年最强大的推理框架翻了个底朝天。
+在大模型开发的面试中，面试官其实并不指望你是一个“人肉编译器”，他真正看重的是你面对复杂系统时的&lt;strong&gt;工程直觉&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;你知不知道 PagedAttention 的每一块意味着多少显存？
+你知不知道调度器的每一个决定会如何影响用户的等待感？
+你知不知道线上那一排黄绿色的监控曲线背后代表着怎样的硬件脉搏？&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;掌握工具的人会被淘汰，但理解工具灵魂的人永远会被需要。&lt;/strong&gt;
+阿彪的这套笔记只是一个起点，希望你在 2026 年的职场赛道上，不仅能跑通代码，更能镇住集群。兄弟们，全系列啃完了，面试稳了，冲就完事了！&lt;/p&gt;</description></item></channel></rss>

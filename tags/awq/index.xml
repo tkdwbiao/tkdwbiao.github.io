@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>AWQ on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/awq/</link><description>Recent content in AWQ on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Mon, 06 Apr 2026 15:30:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/awq/index.xml" rel="self" type="application/rss+xml"/><item><title>从分格子到极值保护：深度拆解大模型量化与 AWQ/GPTQ 算法</title><link>https://tkdwbiao.github.io/p/llm-quantization-awq-gptq-deep-dive/</link><pubDate>Mon, 06 Apr 2026 15:30:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/llm-quantization-awq-gptq-deep-dive/</guid><description>&lt;p&gt;在准备大模型（LLM）开发岗位的面试时，“量化（Quantization）”是一道绝对绕不过去的坎。很多同学只知道“把 FP16 变成 INT4 能省显存”，但一旦面试官追问“如何处理离群值？”、“AWQ和GPTQ的核心差异是什么？”，往往就哑口无言了。今天阿彪就带你从最基础的“分格子”理论开始，深度拆解工业界主流的量化落地方案。&lt;/p&gt;
+&lt;h2 id="一-知识点详解量化的本质与进阶"&gt;一、 知识点详解：量化的本质与进阶
+&lt;/h2&gt;&lt;h3 id="1-基础概念fp16-到-int4-到底发生了什么"&gt;1. 基础概念：FP16 到 INT4 到底发生了什么？
+&lt;/h3&gt;&lt;p&gt;大模型的权重默认通常是 &lt;strong&gt;FP16（半精度浮点数）&lt;/strong&gt;，每个参数占 16个 bit。而 &lt;strong&gt;INT4（4位整数）&lt;/strong&gt; 只有 4个 bit，最多只能表示 $2^4 = 16$ 个状态（即 0 到 15）。&lt;/p&gt;
+&lt;p&gt;量化的本质，就是&lt;strong&gt;把高精度的数据，映射到这 16 个格子里&lt;/strong&gt;。这个过程分为两步：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;量化（Quantize）&lt;/strong&gt;：先找出一组权重的最大值（Max）和最小值（Min）。计算出每个格子的步长 &lt;code&gt;Scale = (Max - Min) / 15&lt;/code&gt;。然后把 FP16 的数值除以 Scale，四舍五入放到最近的格子里，返回 0-15 的索引。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;反量化（Dequantize）&lt;/strong&gt;：GPU 在计算时，INT4 是没法直接做高精度矩阵乘法的，需要用 &lt;code&gt;索引 * Scale + Min&lt;/code&gt; 把数值还原成 FP16。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;精度损失的来源&lt;/strong&gt;：因为你做了“四舍五入”，反量化回来的数值和原来的 FP16 数值会有微小的差值，这就是量化误差。&lt;/p&gt;
+&lt;h3 id="2-为什么-llm-极难量化离群值问题"&gt;2. 为什么 LLM 极难量化？（离群值问题）
+&lt;/h3&gt;&lt;p&gt;传统的 CNN 模型很容易量化到 INT8 甚至 INT4，但大模型不行。因为大模型随着参数量增大（特别是超过 6B 以后），其 &lt;strong&gt;激活值（Activation）&lt;/strong&gt; 中会出现极少数非常大的数值，我们称为 &lt;strong&gt;Outliers（离群值）&lt;/strong&gt;。&lt;br&gt;
+如果按照常规的 Min-Max 来分格子，为了包容这些极大的 Outliers，&lt;code&gt;Scale&lt;/code&gt; 会被拉得非常大，导致 99% 正常的数值被挤压在 1-2 个格子里，丧失了区分度，模型性能直接崩溃。&lt;/p&gt;
+&lt;h3 id="3-破局之道gptq-算法思想"&gt;3. 破局之道：GPTQ 算法思想
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;GPTQ（Generalized Post-Training Quantization）&lt;/strong&gt; 的核心思想是：&lt;strong&gt;“误差补偿”&lt;/strong&gt;。
+它不是孤立地去量化每一个权重，而是把同一层的所有权重当成一个整体。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;当把权重 $W_1$ 塞进格子产生量化误差 $\Delta W_1$ 时，GPTQ 不会忽略这个误差。&lt;/li&gt;
+&lt;li&gt;它通过计算该层权重的 &lt;strong&gt;Hessian 矩阵的逆&lt;/strong&gt;，找出权重之间的相关性。&lt;/li&gt;
+&lt;li&gt;然后把 $W_1$ 的误差 $\Delta W_1$ 按照数学关系，&lt;strong&gt;平摊/补偿&lt;/strong&gt;到还没有被量化的 $W_2, W_3$ 身上。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;通俗比喻&lt;/strong&gt;：就像团队凑钱买单，A 没带够钱（产生误差），GPTQ 会精准计算出 B 和 C 应该多出多少钱（补偿），以保证总金额（最终的输出激活值）不变。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="4-破局之道awq-算法思想"&gt;4. 破局之道：AWQ 算法思想
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;AWQ（Activation-aware Weight Quantization）&lt;/strong&gt; 的视角更加独特，它认为：&lt;strong&gt;权重也是分三六九等的&lt;/strong&gt;。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;团队发现，模型里大概只有 &lt;strong&gt;1% 的权重（Salient Weights）&lt;/strong&gt; 对最终的输出起着决定性作用，这些权重往往对应着极大的激活值。&lt;/li&gt;
+&lt;li&gt;AWQ 怎么做？它在量化前，&lt;strong&gt;先把这 1% 的核心权重乘以一个放大因子 $s$ (Scale up)&lt;/strong&gt;，同时把对应的输入激活值除以 $s$（保持数学等价：$W \cdot X = (W \cdot s) \cdot (X / s)$）。&lt;/li&gt;
+&lt;li&gt;核心权重被放大后，在“分格子”时就能占据更多的刻度，量化误差相对就变小了（极值保护）。剩下的 99% 权重则正常粗糙量化。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="二-代码举例手写基础量化与-awq-核心逻辑"&gt;二、 代码举例：手写基础量化与 AWQ 核心逻辑
+&lt;/h2&gt;&lt;p&gt;为了让你更直观地理解，阿彪写了一段 Python 代码，演示基础量化以及 AWQ 是如何通过“放大核心权重”来减少误差的。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;span class="lnt"&gt;24
+&lt;/span&gt;&lt;span class="lnt"&gt;25
+&lt;/span&gt;&lt;span class="lnt"&gt;26
+&lt;/span&gt;&lt;span class="lnt"&gt;27
+&lt;/span&gt;&lt;span class="lnt"&gt;28
+&lt;/span&gt;&lt;span class="lnt"&gt;29
+&lt;/span&gt;&lt;span class="lnt"&gt;30
+&lt;/span&gt;&lt;span class="lnt"&gt;31
+&lt;/span&gt;&lt;span class="lnt"&gt;32
+&lt;/span&gt;&lt;span class="lnt"&gt;33
+&lt;/span&gt;&lt;span class="lnt"&gt;34
+&lt;/span&gt;&lt;span class="lnt"&gt;35
+&lt;/span&gt;&lt;span class="lnt"&gt;36
+&lt;/span&gt;&lt;span class="lnt"&gt;37
+&lt;/span&gt;&lt;span class="lnt"&gt;38
+&lt;/span&gt;&lt;span class="lnt"&gt;39
+&lt;/span&gt;&lt;span class="lnt"&gt;40
+&lt;/span&gt;&lt;span class="lnt"&gt;41
+&lt;/span&gt;&lt;span class="lnt"&gt;42
+&lt;/span&gt;&lt;span class="lnt"&gt;43
+&lt;/span&gt;&lt;span class="lnt"&gt;44
+&lt;/span&gt;&lt;span class="lnt"&gt;45
+&lt;/span&gt;&lt;span class="lnt"&gt;46
+&lt;/span&gt;&lt;span class="lnt"&gt;47
+&lt;/span&gt;&lt;span class="lnt"&gt;48
+&lt;/span&gt;&lt;span class="lnt"&gt;49
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kn"&gt;import&lt;/span&gt; &lt;span class="nn"&gt;numpy&lt;/span&gt; &lt;span class="k"&gt;as&lt;/span&gt; &lt;span class="nn"&gt;np&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 1. 基础的分格子（Min-Max 线性量化）&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;basic_quantize&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;weights&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;bits&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="mi"&gt;4&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;q_max&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="mi"&gt;1&lt;/span&gt; &lt;span class="o"&gt;&amp;lt;&amp;lt;&lt;/span&gt; &lt;span class="n"&gt;bits&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;-&lt;/span&gt; &lt;span class="mi"&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;min_val&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;max_val&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;min&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;weights&lt;/span&gt;&lt;span class="p"&gt;),&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;max&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;weights&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;scale&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;max_val&lt;/span&gt; &lt;span class="o"&gt;-&lt;/span&gt; &lt;span class="n"&gt;min_val&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;/&lt;/span&gt; &lt;span class="n"&gt;q_max&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;zero_point&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="nb"&gt;round&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="o"&gt;-&lt;/span&gt;&lt;span class="n"&gt;min_val&lt;/span&gt; &lt;span class="o"&gt;/&lt;/span&gt; &lt;span class="n"&gt;scale&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 放入格子并截断&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;q_weights&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;round&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;weights&lt;/span&gt; &lt;span class="o"&gt;/&lt;/span&gt; &lt;span class="n"&gt;scale&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;+&lt;/span&gt; &lt;span class="n"&gt;zero_point&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;q_weights&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;clip&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;q_weights&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;0&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;q_max&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 反量化还原&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;deq_weights&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;q_weights&lt;/span&gt; &lt;span class="o"&gt;-&lt;/span&gt; &lt;span class="n"&gt;zero_point&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt; &lt;span class="n"&gt;scale&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;deq_weights&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 2. 模拟 AWQ：保护显著权重 (Salient Weights)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;awq_mock_quantize&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;weights&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;activations&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;bits&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="mi"&gt;4&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 假设激活值最大的位置，对应的权重最重要&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;salient_idx&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;argmax&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;abs&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;activations&lt;/span&gt;&lt;span class="p"&gt;))&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 将显著权重放大 (这里假设放大因子为 2)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;s&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="mf"&gt;2.0&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;weights_scaled&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;weights&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;copy&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;weights_scaled&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="n"&gt;salient_idx&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt; &lt;span class="o"&gt;*=&lt;/span&gt; &lt;span class="n"&gt;s&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 对放大后的权重进行基础量化&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;deq_weights_scaled&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;basic_quantize&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;weights_scaled&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;bits&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 反量化后，把之前放大的权重缩放回来&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;deq_weights_scaled&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="n"&gt;salient_idx&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt; &lt;span class="o"&gt;/=&lt;/span&gt; &lt;span class="n"&gt;s&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;deq_weights_scaled&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# --- 阿彪的测试 ---&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 假设我们有一组权重，其中 0.5 是极其重要的权重（对应的激活值很大）&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;weights&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;array&lt;/span&gt;&lt;span class="p"&gt;([&lt;/span&gt;&lt;span class="mf"&gt;0.1&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mf"&gt;0.2&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mf"&gt;0.5&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mf"&gt;3.0&lt;/span&gt;&lt;span class="p"&gt;])&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;activations&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;np&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;array&lt;/span&gt;&lt;span class="p"&gt;([&lt;/span&gt;&lt;span class="mf"&gt;1.0&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mf"&gt;1.0&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mf"&gt;10.0&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mf"&gt;1.0&lt;/span&gt;&lt;span class="p"&gt;])&lt;/span&gt; &lt;span class="c1"&gt;# 0.5 对应的激活值是 10.0，是离群值&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;原始权重: &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;weights&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 使用基础量化&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;deq_basic&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;basic_quantize&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;weights&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;基础量化后: &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;deq_basic&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt; (核心权重 0.5 变成了 &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;deq_basic&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="mi"&gt;2&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;&lt;span class="si"&gt;:&lt;/span&gt;&lt;span class="s2"&gt;.3f&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;)&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 使用模拟 AWQ量化&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;deq_awq&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;awq_mock_quantize&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;weights&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;activations&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;AWQ模拟量化后: &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;deq_awq&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt; (核心权重 0.5 变成了 &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;deq_awq&lt;/span&gt;&lt;span class="p"&gt;[&lt;/span&gt;&lt;span class="mi"&gt;2&lt;/span&gt;&lt;span class="p"&gt;]&lt;/span&gt;&lt;span class="si"&gt;:&lt;/span&gt;&lt;span class="s2"&gt;.3f&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;)&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;代码点评&lt;/strong&gt;：你可以看到，在基础量化中，因为有了 &lt;code&gt;3.0&lt;/code&gt; 这个大值，导致 &lt;code&gt;0.5&lt;/code&gt; 的精度损失很大。而在 AWQ 模拟中，我们提前放大了核心权重，使得反量化后它的精度得到了更好的保留。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="三-工业界的一些做法"&gt;三、 工业界的一些做法
+&lt;/h2&gt;&lt;p&gt;在真正的企业落地中，量化绝不仅仅是跑个脚本那么简单。工业界通常有以下几种成熟的做法：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;PTQ (Post-Training Quantization) 训练后量化&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;这是目前最主流的做法（AWQ和GPTQ都属于此类）。模型训练完后，只需要少量的高质量校准数据（Calibration Data，比如 128 条维基百科文本），跑个几十分钟就能量化完毕，成本极低。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;Weight-Only (仅权重量化) vs W8A8&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;Weight-Only (如 W4A16)&lt;/strong&gt;：权重存为 INT4，计算时激活值是 FP16。它解决的是 &lt;strong&gt;“显存墙”&lt;/strong&gt; 和 &lt;strong&gt;“内存带宽”&lt;/strong&gt; 问题。因为推理时大部分时间花在把权重从显存搬到 GPU 计算单元上。体积缩小 4 倍，搬运速度就快 4 倍。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;W8A8 (权重和激活值同量化)&lt;/strong&gt;：主要解决 &lt;strong&gt;“计算墙”&lt;/strong&gt; 问题。利用 GPU 的 Tensor Core 进行纯 INT8 矩阵相乘，算力直接翻倍。目前 SmoothQuant 是 W8A8 的主流方案。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;推理框架的适配&lt;/strong&gt;：
+&lt;ul&gt;
+&lt;li&gt;工业界通常使用 &lt;strong&gt;vLLM&lt;/strong&gt; 或 &lt;strong&gt;TensorRT-LLM&lt;/strong&gt; 来部署量化模型。目前 vLLM 对 AWQ 的支持非常好，因为它不需要像 GPTQ 那样在推理时做复杂的反向补偿计算，算子（Kernel）实现起来更高效。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h2 id="四-面试官会问到的问题及详细答案"&gt;四、 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;p&gt;作为研二的学生，面试官往往会通过以下问题来深挖你的底层基本功：&lt;/p&gt;
+&lt;h3 id="-q1为什么现在大厂部署-llm-首选-awq-而不是-gptq"&gt;❓ Q1：为什么现在大厂部署 LLM 首选 AWQ 而不是 GPTQ？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+主要有三个维度的考量：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;重构成本&lt;/strong&gt;：GPTQ 依赖 Hessian 矩阵的计算，校准时间较长。而 AWQ 只需要分析 Activation 的分布，量化速度更快。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;硬件友好度（核心）&lt;/strong&gt;：GPTQ 的误差补偿机制会导致在写 CUDA Kernel 时存在一定的访存开销（Mixed-precision overhead）。而 AWQ 本质上是对权重做了一次 Scaling 预处理，它保留了纯粹的 Weight-Only 结构，在 vLLM 等框架中可以直接复用高效的 W4A16 算子，因此 &lt;strong&gt;AWQ 的实际推理吞吐量（Throughput）通常比 GPTQ 更高&lt;/strong&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;精度保留&lt;/strong&gt;：在极低比特（如 3-bit）或小参数模型下，AWQ 对上下文连贯性的保护通常优于 GPTQ。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id="-q2如果在推理时用户输入的-prompt-非常长weight-only-量化如-int4还能起到加速作用吗"&gt;❓ Q2：如果在推理时，用户输入的 Prompt 非常长，Weight-Only 量化（如 INT4）还能起到加速作用吗？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+&lt;strong&gt;不能，甚至可能变慢。&lt;/strong&gt;
+这是一个非常经典的“Memory Bound vs Compute Bound”问题。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;当批量较小（Batch Size=1）或处于 Decode 阶段（逐字生成）时，系统瓶颈在于把权重从显存读出来的速度（Memory Bound），此时 INT4 因为体积小，能大幅加速。&lt;/li&gt;
+&lt;li&gt;但是，当输入 Prompt 极长（Prefill 阶段），或者 Batch Size 极大时，计算量呈平方级暴增，系统瓶颈转变为 GPU 的矩阵乘法算力（Compute Bound）。此时 Weight-Only 模型在计算前必须先执行“Dequantize（反量化转回 FP16）”，这额外增加了反量化的开销，导致速度反而不如纯 FP16。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="-q3算力评估部署一个-llama-3-8b-模型fp16-和-int4-分别需要多大的显存"&gt;❓ Q3：算力评估：部署一个 Llama-3-8B 模型，FP16 和 INT4 分别需要多大的显存？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;FP16&lt;/strong&gt;：8 Billion 参数 × 2 Bytes/参数 ≈ 16 GB 显存。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;INT4&lt;/strong&gt;：8 Billion 参数 × 0.5 Bytes/参数 ≈ 4 GB 显存。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;实际部署&lt;/strong&gt;：还需要考虑 KV Cache 和系统上下文的开销，通常 INT4 部署 8B 模型需要至少 6-8GB 显存（如 RTX 4060），而 FP16 则需要 20-24GB 显存（如 RTX 3090 / 4090）。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="五-总结"&gt;五、 总结
+&lt;/h2&gt;&lt;p&gt;量化技术是大模型从“实验室”走向“千行百业”的基石。从最基础的 &lt;strong&gt;Min-Max 分格子&lt;/strong&gt;，到 GPTQ 的 &lt;strong&gt;Hessian 矩阵误差补偿&lt;/strong&gt;，再到 AWQ 的 &lt;strong&gt;激活感知极值保护&lt;/strong&gt;，这本质上是一场&lt;strong&gt;数学与计算机体系结构&lt;/strong&gt;的博弈。&lt;br&gt;
+对于面试而言，掌握“术”（如何调用 transformers/AutoAWQ 库）是基础，但理解其“道”（Outliers 的分布、Memory Bound 的转换、精度与速度的 Trade-off）才是让你在众多候选人中脱颖而出的关键。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="六-阿彪碎碎念-抱拳"&gt;六、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;其实在研究这些底层算法时，我总是会惊叹于大牛们的脑洞。
+面对那 1% 捣乱的离群值，平庸的做法是“消灭它”（比如直接截断，导致模型变傻）；数学家的做法是“分摊它”（GPTQ的思路，精妙但有计算代价）；而工程师的做法则是“捧高它”（AWQ的思路，顺着它的脾气把它放大，反而解决了问题）。&lt;br&gt;
+&lt;strong&gt;算法的最高境界，有时并不是推导多么复杂的公式，而是对数据物理意义的深刻洞察。&lt;/strong&gt; 希望这篇笔记能帮你打通大模型量化的任督二脉，面试顺利，拿下大厂 Offer！&lt;/p&gt;</description></item></channel></rss>

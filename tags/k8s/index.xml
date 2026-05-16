@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>K8s on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/k8s/</link><description>Recent content in K8s on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Thu, 07 Aug 2025 09:00:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/k8s/index.xml" rel="self" type="application/rss+xml"/><item><title>【Docker 系列 10 终章】生产环境部署方案：从 Docker 到 K8s 的过渡准备</title><link>https://tkdwbiao.github.io/p/docker-series-10-k8s-transition/</link><pubDate>Thu, 07 Aug 2025 09:00:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/docker-series-10-k8s-transition/</guid><description>&lt;blockquote&gt;
+&lt;p&gt;&lt;strong&gt;“我的项目用 Docker Compose 跑得很稳，直到有一天，服务器的主板烧了。那一刻我才明白，单机的完美，在硬件级灾难面前不堪一击。”&lt;/strong&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;时间过得真快，这是我们《Docker 从入门到完全掌控》系列的第 10 篇文章，也是本系列的最终章。&lt;/p&gt;
+&lt;p&gt;回顾过去的旅程，我们从一行青涩的 &lt;code&gt;docker run hello-world&lt;/code&gt; 开始，写出了定制化的 &lt;code&gt;Dockerfile&lt;/code&gt;，攻克了 &lt;code&gt;Volumes&lt;/code&gt; 的权限陷阱，理清了内部 &lt;code&gt;Network&lt;/code&gt; 的迷宫，最后甚至用 &lt;code&gt;GitHub Actions&lt;/code&gt; 打造了全自动的 CI/CD 工业级流水线。&lt;/p&gt;
+&lt;p&gt;对于一个百万日活以下的中小型项目，你现在的技术储备已经可以用“游刃有余”来形容。&lt;/p&gt;
+&lt;p&gt;但是，技术演进的脚步永远不会停止。当你的产品日活突破千万，当你从单台服务器扩展到拥有上百台服务器的机房时，单机的 Docker 会暴露出致命的缺陷。今天，我们将站上更高的山峰，俯瞰容器编排的终极霸主——&lt;strong&gt;Kubernetes (K8s)&lt;/strong&gt;，并教你在跳入 K8s 之前，如何榨干 Docker 单机的最后一丝生产力。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="一盛世危言docker-单机部署的三大死穴"&gt;一、盛世危言：Docker 单机部署的三大死穴
+&lt;/h2&gt;&lt;p&gt;在单台服务器上使用 &lt;code&gt;docker-compose up -d&lt;/code&gt; 部署，是小公司的最爱。但当业务增长到一定体量，这套方案会面临三大无法逾越的鸿沟：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;单点故障（SPOF，Single Point of Failure）&lt;/strong&gt;：
+你把所有的鸡蛋（Web服务、Milvus 向量库、MySQL 数据库）都放在了一台 64 核 128G 的高配服务器上。如果这台服务器电源坏了、网线断了，你的产品将面临 100% 的不可用。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;资源瓶颈与无法横向扩容&lt;/strong&gt;：
+双十一大促来了，你的 FastAPI 接口瞬间涌入几万个请求，CPU 狂飙到 100%。在单机时代，你只能咬牙花几倍的价格去升级服务器硬件（纵向扩容）。你无法做到“临时拉 10 台便宜的机器过来共同分担请求”（横向扩容）。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;做不到真正的“零宕机发布”&lt;/strong&gt;：
+虽然我们在 CI/CD 中使用了重拉镜像，但在新容器启动、旧容器销毁的那几秒钟里，如果有用户发起请求，依然会看到 &lt;code&gt;502 Bad Gateway&lt;/code&gt;。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;我们需要一个更强大的“上帝”，来管理一堆服务器（集群），而不仅仅是管理一台服务器上的几个容器。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二降维打击为什么-kubernetes-k8s-是终极答案"&gt;二、降维打击：为什么 Kubernetes (K8s) 是终极答案？
+&lt;/h2&gt;&lt;p&gt;Kubernetes（简称 K8s）是由 Google 开源的容器集群管理系统。&lt;/p&gt;
+&lt;p&gt;如果说 &lt;strong&gt;Docker Compose 是一个小乐队的指挥家&lt;/strong&gt;（指挥一台电脑上的几个容器协调工作），那么 &lt;strong&gt;K8s 就是一家全球性的演艺经纪公司&lt;/strong&gt;（指挥几百台电脑上的几万个容器同时工作）。&lt;/p&gt;
+&lt;p&gt;当你把 Docker 架构迁移到 K8s 后，世界会变成这样：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;自动容灾恢复&lt;/strong&gt;：你告诉 K8s “我需要 5 个后端容器同时活着”。如果其中 1 台服务器突然断电爆炸，K8s 会瞬间感知到，并在另外 4 台健康的服务器上&lt;strong&gt;自动再启动&lt;/strong&gt;新的容器，补齐 5 个的数量。用户完全无感。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;极致的负载均衡&lt;/strong&gt;：用户的请求来到 K8s，K8s 会自动根据每台服务器的 CPU 闲忙程度，把请求分发给最轻松的那台机器。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;无感知的滚动更新&lt;/strong&gt;：发布新版本时，K8s 会先启动 1 个 V2 版本的容器，确认它能正常工作后，再杀掉 1 个 V1 版本的容器。如此交替循环，实现真正的 &lt;strong&gt;零秒宕机（Zero-downtime）更新&lt;/strong&gt;。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="三在跳进-k8s-前docker-的生产级保命配置"&gt;三、在跳进 K8s 前：Docker 的生产级“保命”配置
+&lt;/h2&gt;&lt;p&gt;K8s 虽然美好，但它的学习曲线极其陡峭，维护成本极高（业界戏称 K8s = 烧钱）。
+如果你公司目前只有 1-2 台服务器，强行上 K8s 纯属“大炮打蚊子”。&lt;/p&gt;
+&lt;p&gt;在我们还没准备好全面拥抱 K8s 之前，&lt;strong&gt;如何让目前的 Docker Compose 架构达到生产级的稳定性？&lt;/strong&gt;
+请务必在你的 &lt;code&gt;docker-compose.yml&lt;/code&gt; 中加上这三大保命配置：&lt;/p&gt;
+&lt;h3 id="1-资源限制防止同归于尽"&gt;1. 资源限制：防止“同归于尽”
+&lt;/h3&gt;&lt;p&gt;如果你的应用存在内存泄漏，或者你的向量数据库吃光了所有 CPU，会导致同一台机器上的其他容器全部卡死。
+必须给每个服务加上“紧箍咒”：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;services&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;web_api&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;my-fastapi:latest&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;deploy&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;resources&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;limits&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;cpus&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s1"&gt;&amp;#39;2.0&amp;#39;&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 最多只能使用 2 个 CPU 核心&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;memory&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;2G &lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 内存绝对不能超过 2GB，超了直接被 OOM 杀掉&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;reservations&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;cpus&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s1"&gt;&amp;#39;0.5&amp;#39;&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;memory&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;512M&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="2-日志切割防止磁盘爆炸"&gt;2. 日志切割：防止“磁盘爆炸”
+&lt;/h3&gt;&lt;p&gt;这是无数新手甚至老鸟都会踩的坑！Docker 默认会把容器的标准输出一直存入宿主机的 JSON 文件中。如果你的程序每天打印海量日志，几个月后，&lt;code&gt;/var/lib/docker&lt;/code&gt; 会被一个高达 50GB 的日志文件塞满，导致整个系统磁盘 100% 崩溃宕机。
+&lt;strong&gt;必须配置日志轮转：&lt;/strong&gt;&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;span class="lnt"&gt;6
+&lt;/span&gt;&lt;span class="lnt"&gt;7
+&lt;/span&gt;&lt;span class="lnt"&gt;8
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;services&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;web_api&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;my-fastapi:latest&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;logging&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;driver&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;json-file&amp;#34;&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;options&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;max-size&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;100m&amp;#34;&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 每个日志文件最大 100MB&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;max-file&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;5&amp;#34;&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 最多保留最新的 5 个文件，旧的自动删除&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;h3 id="3-重启策略打不死的小强"&gt;3. 重启策略：打不死的小强
+&lt;/h3&gt;&lt;p&gt;程序因为 &lt;code&gt;Unhandled Exception&lt;/code&gt; 崩溃退出怎么办？让 Docker 自动把它拉起来：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-yaml" data-lang="yaml"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nt"&gt;services&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;web_api&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;image&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;my-fastapi:latest&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="c"&gt;# 除非是我手动敲了 docker stop 让你停，否则哪怕机器重启了、程序报错了，你都要自动拉起&lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="nt"&gt;restart&lt;/span&gt;&lt;span class="p"&gt;:&lt;/span&gt;&lt;span class="w"&gt; &lt;/span&gt;&lt;span class="l"&gt;unless-stopped &lt;/span&gt;&lt;span class="w"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;hr&gt;
+&lt;h2 id="四未来展望普通人该如何走向云原生"&gt;四、未来展望：普通人该如何走向云原生？
+&lt;/h2&gt;&lt;p&gt;如果你已经按捺不住对集群和 K8s 的向往，想要规划未来的技术演进，我给你三个阶段的建议：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;第一阶段：夯实 Docker Compose（现在）&lt;/strong&gt;
+确保你的业务代码是&lt;strong&gt;无状态的（Stateless）&lt;/strong&gt;。任何上传的文件都存入对象存储（如 MinIO / 阿里云 OSS），所有数据写入独立的数据库服务。这样你的后端容器才可以随时被毁灭、随时被克隆。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;第二阶段：尝试轻量级集群（K3s 或 Docker Swarm）&lt;/strong&gt;
+当你有 2~3 台服务器，想要把它们连成一片时。不要去碰原生 K8s！先试试 Docker 自带的 &lt;code&gt;Docker Swarm&lt;/code&gt;，或者 Rancher 出品的轻量级 K8s 发行版 —— &lt;code&gt;K3s&lt;/code&gt;。它们的用法和理念与 K8s 极其相似，但安装只需要 5 分钟。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;第三阶段：全面拥抱托管云原生（云厂商 ACK/TKE）&lt;/strong&gt;
+当业务真正达到爆发期，&lt;strong&gt;永远不要自己去安装和维护原生的 Kubernetes 集群底座&lt;/strong&gt;（那需要专门的底层运维团队）。直接花钱使用阿里云的 ACK、腾讯云的 TKE 或 AWS 的 EKS。你只需要关心如何写 Deployment 配置文件，把集群的稳定性交给云厂商的顶级专家。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;hr&gt;
+&lt;h2 id="全系列结语"&gt;全系列结语
+&lt;/h2&gt;&lt;p&gt;敲下这行字的时候，这个包含了 10 篇文章的连载也迎来了尾声。&lt;/p&gt;
+&lt;p&gt;回忆初衷，我们常常被繁杂的环境配置折磨得痛不欲生。而 Docker 的出现，就像是在混沌的软件工程世界中，建立了一套精密的“标准化物流系统”。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;我们用 &lt;code&gt;Dockerfile&lt;/code&gt; 定义了集装箱的制造工艺。&lt;/li&gt;
+&lt;li&gt;用 &lt;code&gt;Volumes&lt;/code&gt; 保留了弥足珍贵的货物。&lt;/li&gt;
+&lt;li&gt;用 &lt;code&gt;Networks&lt;/code&gt; 修建了集装箱之间的通讯桥梁。&lt;/li&gt;
+&lt;li&gt;用 &lt;code&gt;Docker Compose&lt;/code&gt; 画出了整个港口的调度蓝图。&lt;/li&gt;
+&lt;li&gt;最后，用 &lt;code&gt;GitHub Actions&lt;/code&gt; 让整个港口实现了全自动化运转。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;技术终有更迭，但工程师解决问题、将复杂事物标准化的工程思维永不过时。&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;希望这套《Docker 从入门到完全掌控》系列，能成为你开发生涯中一份踏实的底气。以后遇到任何环境报错，愿你不再慌张，而是从容地敲下一句：&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;&lt;code&gt;docker logs -f my_container&lt;/code&gt;&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;感谢你一路的陪伴与阅读。我是阿彪，我们在下一个技术专栏，顶峰相见！&lt;/p&gt;</description></item></channel></rss>

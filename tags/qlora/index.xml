@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>QLoRA on 阿彪的秘密空间</title><link>https://tkdwbiao.github.io/tags/qlora/</link><description>Recent content in QLoRA on 阿彪的秘密空间</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><copyright>阿彪</copyright><lastBuildDate>Mon, 06 Apr 2026 16:44:00 +0800</lastBuildDate><atom:link href="https://tkdwbiao.github.io/tags/qlora/index.xml" rel="self" type="application/rss+xml"/><item><title>从全量重写到贴便利贴：深度拆解 LoRA 与 QLoRA 微调的降维魔法</title><link>https://tkdwbiao.github.io/p/llm-finetuning-lora-qlora-deep-dive/</link><pubDate>Mon, 06 Apr 2026 16:44:00 +0800</pubDate><guid>https://tkdwbiao.github.io/p/llm-finetuning-lora-qlora-deep-dive/</guid><description>&lt;p&gt;在 AI 圈有句黑话：“预训练是炼丹，微调是点石成金”。企业想要给 Llama 注入私有知识，全量微调（Full Fine-Tuning）的显存成本高得吓人。于是，&lt;strong&gt;LoRA（低秩微调）&lt;/strong&gt; 和 &lt;strong&gt;QLoRA&lt;/strong&gt; 成为了工业界的绝对主力方案。
+很多同学在面试时，只知道 LoRA 能省显存，但一旦被问到“低秩是怎么分解的？”、“初始化有什么玄机？”或者极其细节的“Transformer里的 7层 是怎么挂载的？”，往往就原形毕露。今天阿彪带你从矩阵底层拆解，彻底搞透大模型微调的降维魔法！&lt;/p&gt;
+&lt;h2 id="一-知识点详解什么是-lora-与-qlora"&gt;一、 知识点详解：什么是 LoRA 与 QLoRA？
+&lt;/h2&gt;&lt;h3 id="1-通俗理解给字典贴便利贴"&gt;1. 通俗理解：给字典贴“便利贴”
+&lt;/h3&gt;&lt;p&gt;假设 Llama-3 是一本 &lt;strong&gt;《新华字典》&lt;/strong&gt;，里面包含了全人类的通用知识。现在公司要求你把它改造成一本 &lt;strong&gt;《医疗专业词典》&lt;/strong&gt;。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;全量微调（笨办法）&lt;/strong&gt;：把整本字典的每一页都撕下来，用笔重新修改里面的每一个字，然后再重新装订。你需要一张比操场还大的桌子（极其庞大的 GPU 显存）。&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;strong&gt;LoRA（聪明办法）&lt;/strong&gt;：买一沓&lt;strong&gt;便利贴（Post-it Notes）&lt;/strong&gt;。字典本身一字不改（冻结基础权重），你只需要把医疗相关的知识写在便利贴上，贴在对应的页码旁边。用的时候，把字典上的原话和便利贴上的话结合起来看就行了。这就叫 LoRA（Low-Rank Adaptation）。&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id="2-数学视角的降维打击"&gt;2. 数学视角的“降维打击”
+&lt;/h3&gt;&lt;p&gt;在神经网络中，每一层本质上是一个巨大的参数矩阵 $W$。假设 $W$ 是 $10000 \times 10000$ 的矩阵（包含 1 亿个参数）。如果是全量微调，我们需要训练一个同样庞大的更新矩阵 $\Delta W$。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;LoRA 的天才想法：利用线性代数的低秩分解！&lt;/strong&gt;
+它假设这个庞大的更新矩阵 $\Delta W$，可以近似等价于两个&lt;strong&gt;极其瘦长&lt;/strong&gt;的小矩阵相乘：$\Delta W = A \times B$。&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;矩阵 $A$ 的维度是 $10000 \times r$（$r$ 叫作秩 Rank，通常非常小，比如 $r=8$）。&lt;/li&gt;
+&lt;li&gt;矩阵 $B$ 的维度是 $r \times 10000$。&lt;/li&gt;
+&lt;li&gt;现在，我们要训练的参数变成了：$10000 \times 8 + 8 \times 10000 = 16万$。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;strong&gt;参数量直接从 1 亿骤降到 16 万，缩减了 99.8%！&lt;/strong&gt; 显存占用自然断崖式下跌。&lt;/p&gt;
+&lt;h3 id="3-qlora工业界的究极形态"&gt;3. QLoRA：工业界的究极形态
+&lt;/h3&gt;&lt;p&gt;即使使用了 LoRA，一个 7B 模型的基础权重（FP16）依然需要 14GB 的显存，许多普通开发卡还是跑不起来。&lt;/p&gt;
+&lt;p&gt;于是，华盛顿大学的团队提出了 &lt;strong&gt;QLoRA&lt;/strong&gt;。它的核心是：&lt;strong&gt;先把那本《新华字典》（基础权重）用极其极致的技术压缩成 4-bit（NF4 格式）冻结在显存里，然后再贴上高精度（FP16）的 LoRA 便利贴进行训练。&lt;/strong&gt; 这一招，让单张消费级显卡（比如 24G 显存的 RTX 3090/4090）微调 7B 甚至 13B 模型成为了工业界的标准操作。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="二-代码举例用-pytorch-手写-lora-前向传播与初始化机制"&gt;二、 代码举例：用 PyTorch 手写 LoRA 前向传播与初始化机制
+&lt;/h2&gt;&lt;p&gt;光说不练假把式，我们来看看 LoRA 在代码层面是怎么做到“平滑起步”的。&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;span class="lnt"&gt;12
+&lt;/span&gt;&lt;span class="lnt"&gt;13
+&lt;/span&gt;&lt;span class="lnt"&gt;14
+&lt;/span&gt;&lt;span class="lnt"&gt;15
+&lt;/span&gt;&lt;span class="lnt"&gt;16
+&lt;/span&gt;&lt;span class="lnt"&gt;17
+&lt;/span&gt;&lt;span class="lnt"&gt;18
+&lt;/span&gt;&lt;span class="lnt"&gt;19
+&lt;/span&gt;&lt;span class="lnt"&gt;20
+&lt;/span&gt;&lt;span class="lnt"&gt;21
+&lt;/span&gt;&lt;span class="lnt"&gt;22
+&lt;/span&gt;&lt;span class="lnt"&gt;23
+&lt;/span&gt;&lt;span class="lnt"&gt;24
+&lt;/span&gt;&lt;span class="lnt"&gt;25
+&lt;/span&gt;&lt;span class="lnt"&gt;26
+&lt;/span&gt;&lt;span class="lnt"&gt;27
+&lt;/span&gt;&lt;span class="lnt"&gt;28
+&lt;/span&gt;&lt;span class="lnt"&gt;29
+&lt;/span&gt;&lt;span class="lnt"&gt;30
+&lt;/span&gt;&lt;span class="lnt"&gt;31
+&lt;/span&gt;&lt;span class="lnt"&gt;32
+&lt;/span&gt;&lt;span class="lnt"&gt;33
+&lt;/span&gt;&lt;span class="lnt"&gt;34
+&lt;/span&gt;&lt;span class="lnt"&gt;35
+&lt;/span&gt;&lt;span class="lnt"&gt;36
+&lt;/span&gt;&lt;span class="lnt"&gt;37
+&lt;/span&gt;&lt;span class="lnt"&gt;38
+&lt;/span&gt;&lt;span class="lnt"&gt;39
+&lt;/span&gt;&lt;span class="lnt"&gt;40
+&lt;/span&gt;&lt;span class="lnt"&gt;41
+&lt;/span&gt;&lt;span class="lnt"&gt;42
+&lt;/span&gt;&lt;span class="lnt"&gt;43
+&lt;/span&gt;&lt;span class="lnt"&gt;44
+&lt;/span&gt;&lt;span class="lnt"&gt;45
+&lt;/span&gt;&lt;span class="lnt"&gt;46
+&lt;/span&gt;&lt;span class="lnt"&gt;47
+&lt;/span&gt;&lt;span class="lnt"&gt;48
+&lt;/span&gt;&lt;span class="lnt"&gt;49
+&lt;/span&gt;&lt;span class="lnt"&gt;50
+&lt;/span&gt;&lt;span class="lnt"&gt;51
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-python" data-lang="python"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kn"&gt;import&lt;/span&gt; &lt;span class="nn"&gt;torch&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="kn"&gt;import&lt;/span&gt; &lt;span class="nn"&gt;torch.nn&lt;/span&gt; &lt;span class="k"&gt;as&lt;/span&gt; &lt;span class="nn"&gt;nn&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="k"&gt;class&lt;/span&gt; &lt;span class="nc"&gt;LoRALinear&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;nn&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;Module&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="fm"&gt;__init__&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;in_features&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;out_features&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;rank&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="mi"&gt;8&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;alpha&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="mi"&gt;16&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="nb"&gt;super&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="fm"&gt;__init__&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 1. 冻结的基础权重 (字典)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;W&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;nn&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;Linear&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;in_features&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;out_features&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;bias&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="kc"&gt;False&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;W&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;weight&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;requires_grad&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="kc"&gt;False&lt;/span&gt; &lt;span class="c1"&gt;# 冻结！&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 2. LoRA 的两个小矩阵 (便利贴 A 和 B)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;A&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;nn&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;Linear&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;in_features&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;rank&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;bias&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="kc"&gt;False&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;B&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;nn&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;Linear&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;rank&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;out_features&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;bias&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="kc"&gt;False&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 缩放因子&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;scaling&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;alpha&lt;/span&gt; &lt;span class="o"&gt;/&lt;/span&gt; &lt;span class="n"&gt;rank&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 3. 极其巧妙的初始化机制 (面试必考)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;reset_parameters&lt;/span&gt;&lt;span class="p"&gt;()&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;reset_parameters&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="s2"&gt;&amp;#34;&amp;#34;&amp;#34;
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s2"&gt; 初始化策略：
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s2"&gt; 将 A 用高斯分布随机初始化，将 B 全部初始化为 0。
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s2"&gt; 这样在训练刚开始时 (Step 0)，A * B = 0。
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s2"&gt; 保证了微调起步时，模型的输出和预训练模型一模一样，不会被破坏！
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="s2"&gt; &amp;#34;&amp;#34;&amp;#34;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;nn&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;init&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;normal_&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;A&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;weight&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;nn&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;init&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;zeros_&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;B&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;weight&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;def&lt;/span&gt; &lt;span class="nf"&gt;forward&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;x&lt;/span&gt;&lt;span class="p"&gt;):&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 原模型的输出: W * x&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;base_output&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;W&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;x&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# LoRA 的输出: (B * A) * x * scaling&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="n"&gt;lora_output&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;B&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;A&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;x&lt;/span&gt;&lt;span class="p"&gt;))&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt; &lt;span class="bp"&gt;self&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;scaling&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="c1"&gt;# 两者相加&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; &lt;span class="k"&gt;return&lt;/span&gt; &lt;span class="n"&gt;base_output&lt;/span&gt; &lt;span class="o"&gt;+&lt;/span&gt; &lt;span class="n"&gt;lora_output&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# --- 阿彪的测试 ---&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 假设输入维度 1024，输出维度 1024，秩 r=8&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;layer&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;LoRALinear&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;in_features&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="mi"&gt;1024&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;out_features&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="mi"&gt;1024&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="n"&gt;rank&lt;/span&gt;&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="mi"&gt;8&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;x&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;torch&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;randn&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="mi"&gt;1&lt;/span&gt;&lt;span class="p"&gt;,&lt;/span&gt; &lt;span class="mi"&gt;1024&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;原始线性层需要训练的参数量: &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="mi"&gt;1024&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt; &lt;span class="mi"&gt;1024&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;LoRA 层需要训练的参数量: &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="mi"&gt;1024&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt; &lt;span class="mi"&gt;8&lt;/span&gt; &lt;span class="o"&gt;+&lt;/span&gt; &lt;span class="mi"&gt;8&lt;/span&gt; &lt;span class="o"&gt;*&lt;/span&gt; &lt;span class="mi"&gt;1024&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt; (省了 98.4%！)&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 前向传播&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="n"&gt;out&lt;/span&gt; &lt;span class="o"&gt;=&lt;/span&gt; &lt;span class="n"&gt;layer&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="n"&gt;x&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;print&lt;/span&gt;&lt;span class="p"&gt;(&lt;/span&gt;&lt;span class="sa"&gt;f&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;输出维度: &lt;/span&gt;&lt;span class="si"&gt;{&lt;/span&gt;&lt;span class="n"&gt;out&lt;/span&gt;&lt;span class="o"&gt;.&lt;/span&gt;&lt;span class="n"&gt;shape&lt;/span&gt;&lt;span class="si"&gt;}&lt;/span&gt;&lt;span class="s2"&gt;&amp;#34;&lt;/span&gt;&lt;span class="p"&gt;)&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;strong&gt;阿彪点评&lt;/strong&gt;：注意看 &lt;code&gt;reset_parameters&lt;/code&gt; 里的神来之笔。如果 A 和 B 都随机初始化，那么刚开始训练时，模型会输出一堆垃圾，把预训练的聪明脑袋给搞傻了。&lt;strong&gt;让 B=0，是 LoRA 平滑起步的核心灵魂。&lt;/strong&gt;&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="三-工业界进阶打法transformer-里的7层奥秘"&gt;三、 工业界进阶打法：Transformer 里的“7层”奥秘
+&lt;/h2&gt;&lt;p&gt;在工业界落地微调时，有一个极其关键的参数：&lt;strong&gt;&lt;code&gt;target_modules&lt;/code&gt;（挂载目标层）&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;面试官常常会问：LoRA 到底贴在 Transformer 的哪几层上？这就涉及到了大模型的底层架构。以 Llama 为例，它的每一个 Transformer Block 里，实际上包含了 &lt;strong&gt;7个可以微调的线性投影层&lt;/strong&gt;：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;&lt;strong&gt;Attention 模块（4层）&lt;/strong&gt;：&lt;code&gt;q_proj&lt;/code&gt;, &lt;code&gt;k_proj&lt;/code&gt;, &lt;code&gt;v_proj&lt;/code&gt;, &lt;code&gt;o_proj&lt;/code&gt;。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;MLP 模块（3层）&lt;/strong&gt;：&lt;code&gt;gate_proj&lt;/code&gt;, &lt;code&gt;up_proj&lt;/code&gt;, &lt;code&gt;down_proj&lt;/code&gt;（SwiGLU 结构）。&lt;/li&gt;
+&lt;/ol&gt;
+&lt;ul&gt;
+&lt;li&gt;&lt;strong&gt;早期的抠门做法&lt;/strong&gt;：在 2021 年最初的 LoRA 论文中，为了极致省显存，只建议挂载在 &lt;code&gt;q_proj&lt;/code&gt; 和 &lt;code&gt;v_proj&lt;/code&gt; 2个层上。&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;目前的工业界标配（满血版）&lt;/strong&gt;：QLoRA 论文通过大量实验证明，&lt;strong&gt;要想微调效果媲美全量微调，必须在所有的 7 个线性层上全部挂载 LoRA！&lt;/strong&gt; 在框架中通常配置为 &lt;code&gt;target_modules: &amp;quot;all&amp;quot;&lt;/code&gt; 或 &lt;code&gt;all-linear&lt;/code&gt;。由于秩 $r$ 很小，即使 7 层全挂，参数量也只是增加了几十兆，对于显存来说完全是九牛一毛。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;h2 id="四-面试官会问到的问题及详细答案"&gt;四、 面试官会问到的问题及详细答案
+&lt;/h2&gt;&lt;h3 id="-q1为什么-lora-能大幅节省显存仅仅是因为它减少了模型的参数量吗"&gt;❓ Q1：为什么 LoRA 能大幅节省显存？仅仅是因为它减少了模型的参数量吗？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+不仅是因为减少了模型本身的参数量，更核心的原因是它&lt;strong&gt;极大地减少了“优化器状态（Optimizer States）”的显存占用&lt;/strong&gt;！&lt;/p&gt;
+&lt;p&gt;在大模型训练中，我们通常使用 AdamW 优化器，它需要为每一个“可训练的参数”保存动量（Momentum）和方差（Variance），而且必须是 FP32 高精度。这意味着一个参数会额外消耗 8 Bytes 的显存。
+LoRA 把可训练参数量降低了 99%，也就把这部分极其庞大、动辄几十 GB 的优化器显存彻底砍掉了。这才是 LoRA 能在单卡跑起来的核心原因。&lt;/p&gt;
+&lt;h3 id="-q2如果在真实业务中部署-lora-模型推理会变慢吗推理零延迟"&gt;❓ Q2：如果在真实业务中部署 LoRA 模型，推理会变慢吗？（推理零延迟）
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+&lt;strong&gt;完全不会变慢。&lt;/strong&gt;
+虽然在训练时，我们有原权重 $W$ 和 LoRA 权重 $A$、$B$ 两条支路。但是在训练完成后准备部署推理时，我们可以利用矩阵乘法的分配律：$W_{new} = W + (A \times B) \times scaling$。&lt;/p&gt;
+&lt;p&gt;我们可以提前把 $(A \times B)$ 的结果计算出来，直接&lt;strong&gt;加到（Merge）&lt;strong&gt;原来的基础权重 $W$ 里面。这样在推理阶段，模型依然只有一个巨大的矩阵 $W_{new}$，没有任何额外的网络结构，因此做到了&lt;/strong&gt;推理零延迟（Zero Inference Latency）&lt;/strong&gt;。&lt;/p&gt;
+&lt;h3 id="-q3lora-的秩rank-越大效果越好吗如果我把--设为-256-会怎样"&gt;❓ Q3：LoRA 的秩（Rank $r$）越大效果越好吗？如果我把 $r$ 设为 256 会怎样？
+&lt;/h3&gt;&lt;p&gt;&lt;strong&gt;答：&lt;/strong&gt;
+&lt;strong&gt;并非越大越好。&lt;/strong&gt;
+大模型本身就是一个具有极强表征能力的系统，下游特定任务的更新信息往往处于一个“极低维度的内在子空间（Intrinsic Dimension）”中。
+实践证明，对于普通的业务微调（如文本分类、问答），$r=4$ 或 $r=8$ 已经完全足够捕捉有效特征。如果强行增大 $r$（比如 $r=256$），不仅增加了不必要的计算开销，还极容易导致模型&lt;strong&gt;过拟合（Overfitting）&lt;/strong&gt;，从而破坏基础模型的通用泛化能力（即产生灾难性遗忘）。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="五-总结"&gt;五、 总结
+&lt;/h2&gt;&lt;p&gt;大模型的微调，本质上是一场在“算力资源”和“模型精度”之间寻找纳什均衡的游戏。
+从单纯的全量训练，到矩阵降维的 &lt;strong&gt;LoRA&lt;/strong&gt;，再到极致压缩显存的 &lt;strong&gt;QLoRA&lt;/strong&gt;，甚至细致到对 Transformer 内部 &lt;strong&gt;7 个线性层的全量覆盖（all-linear）&lt;/strong&gt;。这不仅展示了数学矩阵分解的优美，更体现了工程师们为了压榨算力而爆改系统的极致追求。&lt;/p&gt;
+&lt;hr&gt;
+&lt;h2 id="六-阿彪碎碎念-抱拳"&gt;六、 阿彪碎碎念 [抱拳]
+&lt;/h2&gt;&lt;p&gt;写到这里，阿彪真的忍不住想感慨两句。
+很多初学大模型的同学，一上来就用 LLaMA-Factory 或者 PEFT 的脚手架，改个 YAML 文件，点个开始按钮，看着 loss 下降就觉得自己掌握了“大模型算法”。&lt;/p&gt;
+&lt;p&gt;但在面试中，面试官真正看重的，是你知不知道那个按钮按下去之后，显存里到底发生了什么？你知不知道 &lt;code&gt;A&lt;/code&gt; 为什么高斯初始化而 &lt;code&gt;B&lt;/code&gt; 必须是零？你知不知道那 &lt;code&gt;target_modules&lt;/code&gt; 填个 &lt;code&gt;all&lt;/code&gt; 背后其实涵盖了 Attention 和 MLP 的 7 个精密齿轮？&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;拒绝做调包侠，从搞懂每一个矩阵的 Shape 开始。&lt;/strong&gt; 只有懂了底层的数学和内存调度，你才能在面对 OOM（显存溢出）和模型坍塌时，像个真正的老司机一样从容调优。兄弟们，这才是核心竞争力，冲就完事了！&lt;/p&gt;</description></item></channel></rss>
