@@ -1,0 +1,972 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="前面两篇文章里，我们已经开始频繁使用这样的写法：\n1 chain = prompt | model | parser 上一篇讲 Output Parser 时，我们也看到 Parser 本身可以接在模型后面，成为链路的一部分。\n如果只从表面看，LCEL 像是一种“管道语法”；但如果继续深入，你会发现真正支撑它的核心不是 | 这个符号，而是 LangChain 里的 Runnable 机制。\n可以说，理解 Runnable，才算真正理解了 LCEL 为什么能组合 Prompt、Model、Parser、Retriever、函数、并行分支和重试逻辑。\n这一篇，我们专门深入 Runnable。\n"><title>LangChain Runnable 机制详解：理解 LCEL 的核心抽象</title><link rel=canonical href=https://tkdwbiao.github.io/p/langchain-runnable-deep-dive/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="LangChain Runnable 机制详解：理解 LCEL 的核心抽象"><meta property='og:description' content="前面两篇文章里，我们已经开始频繁使用这样的写法：\n1 chain = prompt | model | parser 上一篇讲 Output Parser 时，我们也看到 Parser 本身可以接在模型后面，成为链路的一部分。\n如果只从表面看，LCEL 像是一种“管道语法”；但如果继续深入，你会发现真正支撑它的核心不是 | 这个符号，而是 LangChain 里的 Runnable 机制。\n可以说，理解 Runnable，才算真正理解了 LCEL 为什么能组合 Prompt、Model、Parser、Retriever、函数、并行分支和重试逻辑。\n这一篇，我们专门深入 Runnable。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/langchain-runnable-deep-dive/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='LangChain'><meta property='article:tag' content='Runnable'><meta property='article:tag' content='LCEL'><meta property='article:tag' content='Chain'><meta property='article:published_time' content='2025-09-13T10:00:00+08:00'><meta property='article:modified_time' content='2025-09-13T10:00:00+08:00'><meta name=twitter:title content="LangChain Runnable 机制详解：理解 LCEL 的核心抽象"><meta name=twitter:description content="前面两篇文章里，我们已经开始频繁使用这样的写法：\n1 chain = prompt | model | parser 上一篇讲 Output Parser 时，我们也看到 Parser 本身可以接在模型后面，成为链路的一部分。\n如果只从表面看，LCEL 像是一种“管道语法”；但如果继续深入，你会发现真正支撑它的核心不是 | 这个符号，而是 LangChain 里的 Runnable 机制。\n可以说，理解 Runnable，才算真正理解了 LCEL 为什么能组合 Prompt、Model、Parser、Retriever、函数、并行分支和重试逻辑。\n这一篇，我们专门深入 Runnable。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二为什么需要-runnable>二、为什么需要 Runnable？</a><ol><li><a href=#1-大模型应用不是一次函数调用>1. 大模型应用不是一次函数调用</a></li><li><a href=#2-统一接口让组合成为可能>2. 统一接口让组合成为可能</a></li><li><a href=#3-runnable-让工程能力可以统一叠加>3. Runnable 让工程能力可以统一叠加</a></li></ol></li><li><a href=#三runnable-的核心接口>三、Runnable 的核心接口</a><ol><li><a href=#1-invoke单次调用>1. invoke：单次调用</a></li><li><a href=#2-stream流式调用>2. stream：流式调用</a></li><li><a href=#3-batch批量调用>3. batch：批量调用</a></li></ol></li><li><a href=#四输入输出思维写-runnable-前先想清楚类型>四、输入输出思维：写 Runnable 前先想清楚类型</a><ol><li><a href=#一个常见错误>一个常见错误</a></li></ol></li><li><a href=#五runnablesequence顺序组合>五、RunnableSequence：顺序组合</a><ol><li><a href=#1-最小示例>1. 最小示例</a></li><li><a href=#2-手动理解执行过程>2. 手动理解执行过程</a></li><li><a href=#3-命名子链比写长链更重要>3. 命名子链比写长链更重要</a></li></ol></li><li><a href=#六runnableparallel并行组合>六、RunnableParallel：并行组合</a><ol><li><a href=#1-基础示例>1. 基础示例</a></li><li><a href=#2-字典为什么能表示并行>2. 字典为什么能表示并行？</a></li><li><a href=#3-runnableparallel-不一定更省钱>3. RunnableParallel 不一定更省钱</a></li></ol></li><li><a href=#七runnablelambda把普通函数放进链路>七、RunnableLambda：把普通函数放进链路</a><ol><li><a href=#1-输入预处理>1. 输入预处理</a></li><li><a href=#2-输出后处理>2. 输出后处理</a></li><li><a href=#3-不要把复杂业务都塞进-lambda>3. 不要把复杂业务都塞进 Lambda</a></li></ol></li><li><a href=#八runnablepassthrough保留原始输入>八、RunnablePassthrough：保留原始输入</a></li><li><a href=#九assign在链路中追加字段>九、assign：在链路中追加字段</a><ol><li><a href=#1-一个博客选题例子>1. 一个博客选题例子</a></li><li><a href=#2-assign-适合什么场景>2. assign 适合什么场景？</a></li><li><a href=#3-assign-的思维方式>3. assign 的思维方式</a></li></ol></li><li><a href=#十bind给-runnable-绑定参数>十、bind：给 Runnable 绑定参数</a><ol><li><a href=#1-绑定-stop-参数>1. 绑定 stop 参数</a></li><li><a href=#2-绑定模型响应格式>2. 绑定模型响应格式</a></li><li><a href=#3-bind-适合什么场景>3. bind 适合什么场景？</a></li></ol></li><li><a href=#十一with_config给链路增加运行配置>十一、with_config：给链路增加运行配置</a><ol><li><a href=#1-给链路命名>1. 给链路命名</a></li><li><a href=#2-添加标签和元数据>2. 添加标签和元数据</a></li><li><a href=#3-调用时传入-config>3. 调用时传入 config</a></li><li><a href=#4-控制-batch-并发>4. 控制 batch 并发</a></li></ol></li><li><a href=#十二with_retry给链路增加重试>十二、with_retry：给链路增加重试</a><ol><li><a href=#1-基础示例-1>1. 基础示例</a></li><li><a href=#2-给结构化输出加重试>2. 给结构化输出加重试</a></li><li><a href=#3-重试要有边界>3. 重试要有边界</a></li></ol></li><li><a href=#十三一个完整实战博客选题-runnable-链路>十三、一个完整实战：博客选题 Runnable 链路</a><ol><li><a href=#链路结构图>链路结构图</a></li></ol></li><li><a href=#十四调试-runnable-链路的方法>十四、调试 Runnable 链路的方法</a><ol><li><a href=#1-拆开每一步运行>1. 拆开每一步运行</a></li><li><a href=#2-打印中间结果>2. 打印中间结果</a></li><li><a href=#3-给链路命名>3. 给链路命名</a></li><li><a href=#4-关注输入输出类型>4. 关注输入输出类型</a></li></ol></li><li><a href=#十五常见问题>十五、常见问题</a><ol><li><a href=#1-runnable-和-chain-是什么关系>1. Runnable 和 Chain 是什么关系？</a></li><li><a href=#2--是不是只能连接-langchain-组件>2. <code>|</code> 是不是只能连接 LangChain 组件？</a></li><li><a href=#3-runnableparallel-会不会自动加速>3. RunnableParallel 会不会自动加速？</a></li><li><a href=#4-assign-和-runnableparallel-有什么区别>4. assign 和 RunnableParallel 有什么区别？</a></li><li><a href=#5-bind-和-partial-有什么区别>5. bind 和 partial 有什么区别？</a></li><li><a href=#6-with_retry-能解决所有失败吗>6. with_retry 能解决所有失败吗？</a></li></ol></li><li><a href=#十六最佳实践>十六、最佳实践</a><ol><li><a href=#1-每个-runnable-都要有清晰职责>1. 每个 Runnable 都要有清晰职责</a></li><li><a href=#2-复杂链路要给子链命名>2. 复杂链路要给子链命名</a></li><li><a href=#3-始终关注输入输出类型>3. 始终关注输入输出类型</a></li><li><a href=#4-并行要考虑成本和限流>4. 并行要考虑成本和限流</a></li><li><a href=#5-重试要配合日志>5. 重试要配合日志</a></li><li><a href=#6-配置和观测要尽早加>6. 配置和观测要尽早加</a></li></ol></li><li><a href=#十七总结>十七、总结</a></li><li><a href=#参考资料>参考资料</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/agent-%E7%B3%BB%E5%88%97/ style=background-color:#beefe2;color:#0f3d32>Agent 系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/langchain-runnable-deep-dive/>LangChain Runnable 机制详解：理解 LCEL 的核心抽象</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2025-09-13T10:00:00+08:00>2025-09-13 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 17 分钟</time></div></footer></div></header><section class=article-content><p>前面两篇文章里，我们已经开始频繁使用这样的写法：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>上一篇讲 Output Parser 时，我们也看到 Parser 本身可以接在模型后面，成为链路的一部分。</p><p>如果只从表面看，LCEL 像是一种“管道语法”；但如果继续深入，你会发现真正支撑它的核心不是 <code>|</code> 这个符号，而是 LangChain 里的 <strong>Runnable</strong> 机制。</p><p>可以说，理解 Runnable，才算真正理解了 LCEL 为什么能组合 Prompt、Model、Parser、Retriever、函数、并行分支和重试逻辑。</p><p>这一篇，我们专门深入 Runnable。</p><h2 id=一前言>一、前言</h2><p>很多人学习 LangChain 时，会先记住几个常见组件：</p><ul><li><code>ChatPromptTemplate</code></li><li><code>ChatOpenAI</code></li><li><code>StrOutputParser</code></li><li><code>JsonOutputParser</code></li><li><code>RunnableParallel</code></li><li><code>RunnableLambda</code></li></ul><p>但如果只记 API，很容易遇到两个问题。</p><p>第一个问题是：代码稍微复杂就不知道怎么组合。</p><p>比如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>你知道它能跑，但不一定清楚：</p><ul><li>为什么 <code>prompt</code> 可以接 <code>model</code>？</li><li>为什么 <code>model</code> 可以接 <code>parser</code>？</li><li>为什么组合后的 <code>chain</code> 还能继续 <code>invoke</code>？</li><li>为什么字典可以变成并行分支？</li><li>为什么普通 Python 函数也能放进链里？</li></ul><p>第二个问题是：遇到更复杂链路时容易写乱。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户输入
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>预处理
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>并行生成摘要、标题、标签
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>合并结果
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>模型二次润色
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>结构化输出
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>失败时重试
+</span></span></code></pre></td></tr></table></div></div><p>这已经不是单纯 <code>prompt | model | parser</code> 能讲清楚的了。</p><p>这时就必须理解 Runnable 的底层思维：</p><blockquote><p>LangChain 把应用中的每一步都抽象成一个可运行单元，每个单元有统一接口，并且可以顺序组合、并行组合、配置、绑定参数和重试。</p></blockquote><p>本文会重点讲：</p><ol><li>Runnable 到底是什么。</li><li>Runnable 的输入输出思维。</li><li>RunnableSequence 如何顺序组合。</li><li>RunnableParallel 如何并行执行。</li><li>RunnableLambda 如何接入普通函数。</li><li><code>assign</code> 如何在链路中追加字段。</li><li><code>bind</code> 如何绑定模型参数。</li><li><code>with_config</code> 如何增加运行配置。</li><li><code>with_retry</code> 如何提高链路稳定性。</li><li>真实项目中如何组织 Runnable 链路。</li></ol><h2 id=二为什么需要-runnable>二、为什么需要 Runnable？</h2><h3 id=1-大模型应用不是一次函数调用>1. 大模型应用不是一次函数调用</h3><p>如果你只是调用一次模型，代码可以很简单：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>response</span> <span class=o>=</span> <span class=n>model</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=s2>&#34;请解释 LangChain&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>response</span><span class=o>.</span><span class=n>content</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>但真实应用往往不是这样。</p><p>一个内容生成工具可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>输入主题
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>生成候选标题
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>生成摘要
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>生成标签
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>合并成 JSON
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>保存到数据库
+</span></span></code></pre></td></tr></table></div></div><p>一个 RAG 问答系统可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户问题
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>问题改写
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>检索文档
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>拼接上下文
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>模型回答
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>输出引用来源
+</span></span></code></pre></td></tr></table></div></div><p>一个 Agent 系统可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户任务
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>模型判断是否需要工具
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>调用工具
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>读取工具结果
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>继续推理
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>给出最终答案
+</span></span></code></pre></td></tr></table></div></div><p>这些场景的共同点是：应用由很多步骤组成。</p><p>如果每一步都是完全不同的调用方式，代码会很难维护。</p><h3 id=2-统一接口让组合成为可能>2. 统一接口让组合成为可能</h3><p>Runnable 的核心价值，是把各种组件统一成类似这样的接口：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>runnable</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=nb>input</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>runnable</span><span class=o>.</span><span class=n>stream</span><span class=p>(</span><span class=nb>input</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>runnable</span><span class=o>.</span><span class=n>batch</span><span class=p>(</span><span class=n>inputs</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这意味着：</p><ul><li>Prompt 可以是 Runnable。</li><li>Model 可以是 Runnable。</li><li>Parser 可以是 Runnable。</li><li>Retriever 可以是 Runnable。</li><li>普通函数也可以包装成 Runnable。</li><li>多个 Runnable 可以组合成新的 Runnable。</li></ul><p>所以我们才能写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>并且组合后的 <code>chain</code> 仍然可以：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=nb>input</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>chain</span><span class=o>.</span><span class=n>stream</span><span class=p>(</span><span class=nb>input</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>chain</span><span class=o>.</span><span class=n>batch</span><span class=p>(</span><span class=n>inputs</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这就是 Runnable 的关键设计：</p><blockquote><p>小组件是 Runnable，大链路也是 Runnable。</p></blockquote><h3 id=3-runnable-让工程能力可以统一叠加>3. Runnable 让工程能力可以统一叠加</h3><p>一旦组件都有统一接口，很多工程能力就可以统一加上去。</p><p>比如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>with_retry</span><span class=p>(</span><span class=n>stop_after_attempt</span><span class=o>=</span><span class=mi>3</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>或者：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>with_config</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;run_name&#34;</span><span class=p>:</span> <span class=s2>&#34;blog_idea_chain&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;tags&#34;</span><span class=p>:</span> <span class=p>[</span><span class=s2>&#34;blog&#34;</span><span class=p>,</span> <span class=s2>&#34;langchain&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span></code></pre></td></tr></table></div></div><p>再比如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>results</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>batch</span><span class=p>(</span><span class=n>inputs</span><span class=p>,</span> <span class=n>config</span><span class=o>=</span><span class=p>{</span><span class=s2>&#34;max_concurrency&#34;</span><span class=p>:</span> <span class=mi>5</span><span class=p>})</span>
+</span></span></code></pre></td></tr></table></div></div><p>这些能力如果用纯手写函数实现，每个项目都要重新造一遍。</p><p>Runnable 的意义不只是“更优雅”，而是让链路编排、并发、流式、配置、重试、观测这些能力有了统一基础。</p><h2 id=三runnable-的核心接口>三、Runnable 的核心接口</h2><p>Runnable 可以理解为：</p><blockquote><p>一个接收输入、产生输出、并且遵循统一调用协议的对象。</p></blockquote><p>最常用的三个同步方法是：</p><div class=table-wrapper><table><thead><tr><th>方法</th><th>作用</th></tr></thead><tbody><tr><td><code>invoke</code></td><td>处理单个输入，返回单个结果</td></tr><tr><td><code>stream</code></td><td>处理单个输入，流式返回多个片段</td></tr><tr><td><code>batch</code></td><td>处理多个输入，返回多个结果</td></tr></tbody></table></div><p>还有对应的异步版本：</p><div class=table-wrapper><table><thead><tr><th>方法</th><th>作用</th></tr></thead><tbody><tr><td><code>ainvoke</code></td><td>异步处理单个输入</td></tr><tr><td><code>astream</code></td><td>异步流式输出</td></tr><tr><td><code>abatch</code></td><td>异步批量处理</td></tr></tbody></table></div><p>对于入门阶段，先掌握同步版本就够了。</p><h3 id=1-invoke单次调用>1. invoke：单次调用</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;Runnable&#34;</span><span class=p>})</span>
+</span></span></code></pre></td></tr></table></div></div><p><code>invoke</code> 是最常见的调用方式。</p><p>它适合：</p><ul><li>单次问答</li><li>单次摘要</li><li>单次分类</li><li>单次结构化输出</li><li>调试链路</li></ul><h3 id=2-stream流式调用>2. stream：流式调用</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>for</span> <span class=n>chunk</span> <span class=ow>in</span> <span class=n>chain</span><span class=o>.</span><span class=n>stream</span><span class=p>({</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;Runnable&#34;</span><span class=p>}):</span>
+</span></span><span class=line><span class=cl>    <span class=nb>print</span><span class=p>(</span><span class=n>chunk</span><span class=p>,</span> <span class=n>end</span><span class=o>=</span><span class=s2>&#34;&#34;</span><span class=p>,</span> <span class=n>flush</span><span class=o>=</span><span class=kc>True</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p><code>stream</code> 适合用户需要实时看到输出的场景，比如聊天机器人、写作助手、长文本生成。</p><p>不过要注意：不是所有链路都适合流式输出。</p><p>如果最后一步是 <code>JsonOutputParser</code> 或 <code>PydanticOutputParser</code>，通常要等完整内容生成后才能稳定解析。</p><h3 id=3-batch批量调用>3. batch：批量调用</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>inputs</span> <span class=o>=</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;PromptTemplate&#34;</span><span class=p>},</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LCEL&#34;</span><span class=p>},</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;Runnable&#34;</span><span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>results</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>batch</span><span class=p>(</span><span class=n>inputs</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p><code>batch</code> 适合批量处理多个输入。</p><p>比如：</p><ul><li>批量生成标题</li><li>批量总结文章</li><li>批量分类用户反馈</li><li>批量抽取结构化信息</li></ul><p>还可以结合并发配置：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>results</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>batch</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>inputs</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>config</span><span class=o>=</span><span class=p>{</span><span class=s2>&#34;max_concurrency&#34;</span><span class=p>:</span> <span class=mi>3</span><span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这比自己手写线程池更符合 LangChain 的组合方式。</p><h2 id=四输入输出思维写-runnable-前先想清楚类型>四、输入输出思维：写 Runnable 前先想清楚类型</h2><p>学习 Runnable 最重要的不是记 API，而是建立输入输出意识。</p><p>每个 Runnable 都可以看成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Input -&gt; Runnable -&gt; Output
+</span></span></code></pre></td></tr></table></div></div><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;请解释 </span><span class=si>{topic}</span><span class=s2>&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>它的输入是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LCEL&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>输出是消息对象。</p><p>再看模型：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>model</span> <span class=o>=</span> <span class=n>ChatOpenAI</span><span class=p>(</span><span class=n>model</span><span class=o>=</span><span class=s2>&#34;gpt-4o-mini&#34;</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>它的输入可以是消息对象，输出是模型消息。</p><p>再看 parser：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>parser</span> <span class=o>=</span> <span class=n>StrOutputParser</span><span class=p>()</span>
+</span></span></code></pre></td></tr></table></div></div><p>它的输入是模型消息，输出是字符串。</p><p>所以这三者能组合：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>因为它们的输入输出能接上：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>dict
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>ChatPromptTemplate
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>messages
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>ChatOpenAI
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>AIMessage
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>StrOutputParser
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>string
+</span></span></code></pre></td></tr></table></div></div><p>如果你写 LCEL 时经常报错，很多时候不是 API 错了，而是前后步骤的输入输出类型没接上。</p><h3 id=一个常见错误>一个常见错误</h3><p>比如你写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>model</span> <span class=o>|</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>这通常就不合理。</p><p>因为模型输出的是 AIMessage，而 PromptTemplate 通常期待的是变量字典。</p><p>正确顺序应该是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>写复杂链路时，要反复问自己：</p><ol><li>当前步骤输出什么？</li><li>下一个步骤接收什么？</li><li>中间是否需要转换？</li></ol><p>如果需要转换，就可以用后面会讲的 <code>RunnableLambda</code>。</p><h2 id=五runnablesequence顺序组合>五、RunnableSequence：顺序组合</h2><p>当我们写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>LangChain 会把它组合成一个顺序执行的 Runnable，也就是 <code>RunnableSequence</code>。</p><p>顺序组合的含义是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>A 的输出 -&gt; B 的输入 -&gt; C 的输入
+</span></span></code></pre></td></tr></table></div></div><h3 id=1-最小示例>1. 最小示例</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>os</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dotenv</span> <span class=kn>import</span> <span class=n>load_dotenv</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_openai</span> <span class=kn>import</span> <span class=n>ChatOpenAI</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.prompts</span> <span class=kn>import</span> <span class=n>ChatPromptTemplate</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.output_parsers</span> <span class=kn>import</span> <span class=n>StrOutputParser</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>load_dotenv</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;system&#34;</span><span class=p>,</span> <span class=s2>&#34;你是一名专业的 AI 应用开发讲师。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;请用三句话解释：</span><span class=si>{topic}</span><span class=s2>&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>model</span> <span class=o>=</span> <span class=n>ChatOpenAI</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>model</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;MODEL_NAME&#34;</span><span class=p>,</span> <span class=s2>&#34;gpt-4o-mini&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>api_key</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_API_KEY&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>base_url</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_BASE_URL&#34;</span><span class=p>)</span> <span class=ow>or</span> <span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>temperature</span><span class=o>=</span><span class=mf>0.3</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>parser</span> <span class=o>=</span> <span class=n>StrOutputParser</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LangChain Runnable&#34;</span><span class=p>})</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这条链就是一个典型的 RunnableSequence。</p><h3 id=2-手动理解执行过程>2. 手动理解执行过程</h3><p>它大致等价于：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>messages</span> <span class=o>=</span> <span class=n>prompt</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LangChain Runnable&#34;</span><span class=p>})</span>
+</span></span><span class=line><span class=cl><span class=n>response</span> <span class=o>=</span> <span class=n>model</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=n>messages</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>parser</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=n>response</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>但是 LCEL 的好处是：</p><ul><li>链路结构更清晰。</li><li>组合后的链还能继续组合。</li><li>可以统一使用 <code>stream</code>、<code>batch</code>。</li><li>可以统一加配置、重试和追踪。</li></ul><h3 id=3-命名子链比写长链更重要>3. 命名子链比写长链更重要</h3><p>不要把所有步骤都写成一行：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>a</span> <span class=o>|</span> <span class=n>b</span> <span class=o>|</span> <span class=n>c</span> <span class=o>|</span> <span class=n>d</span> <span class=o>|</span> <span class=n>e</span> <span class=o>|</span> <span class=n>f</span> <span class=o>|</span> <span class=n>g</span>
+</span></span></code></pre></td></tr></table></div></div><p>这种代码短，但不一定清晰。</p><p>更推荐给子链命名：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>rewrite_chain</span> <span class=o>=</span> <span class=n>rewrite_prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl><span class=n>answer_chain</span> <span class=o>=</span> <span class=n>answer_prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>final_chain</span> <span class=o>=</span> <span class=n>rewrite_chain</span> <span class=o>|</span> <span class=n>retriever</span> <span class=o>|</span> <span class=n>answer_chain</span>
+</span></span></code></pre></td></tr></table></div></div><p>在大模型应用里，命名本身就是文档。</p><h2 id=六runnableparallel并行组合>六、RunnableParallel：并行组合</h2><p>顺序组合适合前后依赖的任务。</p><p>但有些任务之间没有依赖，可以并行执行。</p><p>比如输入一个主题，同时生成：</p><ul><li>标题</li><li>摘要</li><li>标签</li></ul><p>这三个任务互不依赖，就可以用 <code>RunnableParallel</code>。</p><h3 id=1-基础示例>1. 基础示例</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>os</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dotenv</span> <span class=kn>import</span> <span class=n>load_dotenv</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_openai</span> <span class=kn>import</span> <span class=n>ChatOpenAI</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.prompts</span> <span class=kn>import</span> <span class=n>ChatPromptTemplate</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.output_parsers</span> <span class=kn>import</span> <span class=n>StrOutputParser</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.runnables</span> <span class=kn>import</span> <span class=n>RunnableParallel</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>load_dotenv</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>model</span> <span class=o>=</span> <span class=n>ChatOpenAI</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>model</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;MODEL_NAME&#34;</span><span class=p>,</span> <span class=s2>&#34;gpt-4o-mini&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>api_key</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_API_KEY&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>base_url</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_BASE_URL&#34;</span><span class=p>)</span> <span class=ow>or</span> <span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>temperature</span><span class=o>=</span><span class=mf>0.5</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>parser</span> <span class=o>=</span> <span class=n>StrOutputParser</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>title_prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;请为主题《</span><span class=si>{topic}</span><span class=s2>》生成 5 个技术博客标题。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>summary_prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;请为主题《</span><span class=si>{topic}</span><span class=s2>》写一段 100 字以内摘要。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>tags_prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;请为主题《</span><span class=si>{topic}</span><span class=s2>》生成 5 个标签，用逗号分隔。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>title_chain</span> <span class=o>=</span> <span class=n>title_prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl><span class=n>summary_chain</span> <span class=o>=</span> <span class=n>summary_prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl><span class=n>tags_chain</span> <span class=o>=</span> <span class=n>tags_prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>parallel_chain</span> <span class=o>=</span> <span class=n>RunnableParallel</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;titles&#34;</span><span class=p>:</span> <span class=n>title_chain</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;summary&#34;</span><span class=p>:</span> <span class=n>summary_chain</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;tags&#34;</span><span class=p>:</span> <span class=n>tags_chain</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>parallel_chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LangChain Runnable&#34;</span><span class=p>})</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>输出大概是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;titles&#34;</span><span class=p>:</span> <span class=s2>&#34;...&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;summary&#34;</span><span class=p>:</span> <span class=s2>&#34;...&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;tags&#34;</span><span class=p>:</span> <span class=s2>&#34;...&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=2-字典为什么能表示并行>2. 字典为什么能表示并行？</h3><p>在 LCEL 中，字典形式经常会被转换成并行 Runnable。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>parallel_chain</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;titles&#34;</span><span class=p>:</span> <span class=n>title_chain</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;summary&#34;</span><span class=p>:</span> <span class=n>summary_chain</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;tags&#34;</span><span class=p>:</span> <span class=n>tags_chain</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>它表达的是：同一个输入，同时交给多个分支处理，然后把结果合并成一个字典。</p><p>直观流程是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>              -&gt; title_chain   -&gt; titles
+</span></span><span class=line><span class=cl>input topic   -&gt; summary_chain -&gt; summary
+</span></span><span class=line><span class=cl>              -&gt; tags_chain    -&gt; tags
+</span></span></code></pre></td></tr></table></div></div><p>这种模式在 RAG 里也很常见。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>rag_inputs</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;context&#34;</span><span class=p>:</span> <span class=n>retriever</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=n>RunnablePassthrough</span><span class=p>(),</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>意思是：</p><ul><li><code>context</code> 由 retriever 根据问题检索得到。</li><li><code>question</code> 保留原始问题。</li></ul><p>然后再把两个字段交给 Prompt。</p><h3 id=3-runnableparallel-不一定更省钱>3. RunnableParallel 不一定更省钱</h3><p>并行的好处是可能更快。</p><p>但要注意，如果三个分支都调用模型，那么就是三次模型调用。</p><p>也就是说：</p><ul><li>延迟可能降低。</li><li>成本可能增加。</li><li>token 消耗可能增加。</li><li>触发限流的风险可能增加。</li></ul><p>所以 RunnableParallel 适合独立任务并行，但不要为了“看起来高级”而滥用。</p><h2 id=七runnablelambda把普通函数放进链路>七、RunnableLambda：把普通函数放进链路</h2><p>很多时候，链路中间需要一点普通 Python 逻辑。</p><p>比如：</p><ul><li>清洗用户输入</li><li>提取模型输出字段</li><li>把字符串变成字典</li><li>把检索文档格式化成上下文</li><li>对结果做简单后处理</li></ul><p>这时可以用 <code>RunnableLambda</code>。</p><h3 id=1-输入预处理>1. 输入预处理</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.runnables</span> <span class=kn>import</span> <span class=n>RunnableLambda</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>normalize_topic</span><span class=p>(</span><span class=n>topic</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>dict</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=n>topic</span><span class=o>.</span><span class=n>strip</span><span class=p>()}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>preprocess</span> <span class=o>=</span> <span class=n>RunnableLambda</span><span class=p>(</span><span class=n>normalize_topic</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>preprocess</span> <span class=o>|</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=s2>&#34;  LangChain Runnable  &#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里链路变成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>string
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>normalize_topic
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>{&#34;topic&#34;: &#34;LangChain Runnable&#34;}
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>prompt
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>model
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>parser
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>string
+</span></span></code></pre></td></tr></table></div></div><p><code>RunnableLambda</code> 的作用，就是把普通函数接入 Runnable 体系。</p><h3 id=2-输出后处理>2. 输出后处理</h3><p>比如模型输出了逗号分隔的标签：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LangChain, Runnable, LCEL, Agent, Python
+</span></span></code></pre></td></tr></table></div></div><p>你想把它变成列表：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.runnables</span> <span class=kn>import</span> <span class=n>RunnableLambda</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>split_tags</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>[</span><span class=n>item</span><span class=o>.</span><span class=n>strip</span><span class=p>()</span> <span class=k>for</span> <span class=n>item</span> <span class=ow>in</span> <span class=n>text</span><span class=o>.</span><span class=n>split</span><span class=p>(</span><span class=s2>&#34;,&#34;</span><span class=p>)</span> <span class=k>if</span> <span class=n>item</span><span class=o>.</span><span class=n>strip</span><span class=p>()]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>tags_chain</span> <span class=o>=</span> <span class=n>tags_prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span> <span class=o>|</span> <span class=n>RunnableLambda</span><span class=p>(</span><span class=n>split_tags</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>tags_chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LangChain Runnable&#34;</span><span class=p>})</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>输出：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>[</span><span class=s2>&#34;LangChain&#34;</span><span class=p>,</span> <span class=s2>&#34;Runnable&#34;</span><span class=p>,</span> <span class=s2>&#34;LCEL&#34;</span><span class=p>,</span> <span class=s2>&#34;Agent&#34;</span><span class=p>,</span> <span class=s2>&#34;Python&#34;</span><span class=p>]</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=3-不要把复杂业务都塞进-lambda>3. 不要把复杂业务都塞进 Lambda</h3><p><code>RunnableLambda</code> 很方便，但不要滥用。</p><p>不推荐：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>RunnableLambda</span><span class=p>(</span><span class=k>lambda</span> <span class=n>x</span><span class=p>:</span> <span class=n>very_complex_logic</span><span class=p>(</span><span class=n>x</span><span class=p>))</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>更推荐：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>build_blog_context</span><span class=p>(</span><span class=n>input_data</span><span class=p>:</span> <span class=nb>dict</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>dict</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=o>...</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>preprocess</span> <span class=o>=</span> <span class=n>RunnableLambda</span><span class=p>(</span><span class=n>build_blog_context</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>如果逻辑越来越复杂，就应该拆成普通函数、类或模块，而不是把所有东西都挤在链路表达式里。</p><p>LCEL 负责编排，不应该替代所有业务代码。</p><h2 id=八runnablepassthrough保留原始输入>八、RunnablePassthrough：保留原始输入</h2><p>在复杂链路中，有时我们既要处理输入，又要保留原始输入。</p><p>这时常用 <code>RunnablePassthrough</code>。</p><p>最典型的 RAG 输入结构是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.runnables</span> <span class=kn>import</span> <span class=n>RunnablePassthrough</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>rag_chain</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;context&#34;</span><span class=p>:</span> <span class=n>retriever</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=n>RunnablePassthrough</span><span class=p>(),</span>
+</span></span><span class=line><span class=cl><span class=p>}</span> <span class=o>|</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里用户输入是一个问题字符串。</p><ul><li><code>retriever</code> 接收问题，返回相关文档，作为 <code>context</code>。</li><li><code>RunnablePassthrough()</code> 原样保留问题，作为 <code>question</code>。</li></ul><p>最终 Prompt 会收到：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;context&#34;</span><span class=p>:</span> <span class=p>[</span><span class=o>...</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=s2>&#34;用户原始问题&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p><code>RunnablePassthrough</code> 的价值是：</p><blockquote><p>在链路分支中保留原始输入，避免信息在中间步骤丢失。</p></blockquote><p>这在 RAG、并行生成、调试链路里都很常见。</p><h2 id=九assign在链路中追加字段>九、assign：在链路中追加字段</h2><p><code>assign</code> 可以在已有字典结果上追加新字段。</p><p>它很适合这种场景：先得到基础字段，再基于基础字段继续生成更多字段。</p><h3 id=1-一个博客选题例子>1. 一个博客选题例子</h3><p>假设我们输入一个主题，先生成摘要，再基于摘要生成标题。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>os</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dotenv</span> <span class=kn>import</span> <span class=n>load_dotenv</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_openai</span> <span class=kn>import</span> <span class=n>ChatOpenAI</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.prompts</span> <span class=kn>import</span> <span class=n>ChatPromptTemplate</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.output_parsers</span> <span class=kn>import</span> <span class=n>StrOutputParser</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.runnables</span> <span class=kn>import</span> <span class=n>RunnableParallel</span><span class=p>,</span> <span class=n>RunnablePassthrough</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>load_dotenv</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>model</span> <span class=o>=</span> <span class=n>ChatOpenAI</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>model</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;MODEL_NAME&#34;</span><span class=p>,</span> <span class=s2>&#34;gpt-4o-mini&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>api_key</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_API_KEY&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>base_url</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_BASE_URL&#34;</span><span class=p>)</span> <span class=ow>or</span> <span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>temperature</span><span class=o>=</span><span class=mf>0.4</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>parser</span> <span class=o>=</span> <span class=n>StrOutputParser</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>summary_prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;请为主题《</span><span class=si>{topic}</span><span class=s2>》写一段 100 字以内技术博客摘要。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>title_prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;请根据主题《</span><span class=si>{topic}</span><span class=s2>》和摘要《</span><span class=si>{summary}</span><span class=s2>》生成 3 个博客标题。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>summary_chain</span> <span class=o>=</span> <span class=n>summary_prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl><span class=n>title_chain</span> <span class=o>=</span> <span class=n>title_prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>base_chain</span> <span class=o>=</span> <span class=n>RunnableParallel</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=n>RunnablePassthrough</span><span class=p>(),</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;summary&#34;</span><span class=p>:</span> <span class=n>summary_chain</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>blog_chain</span> <span class=o>=</span> <span class=n>base_chain</span> <span class=o>|</span> <span class=n>RunnablePassthrough</span><span class=o>.</span><span class=n>assign</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>titles</span><span class=o>=</span><span class=n>title_chain</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>blog_chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=s2>&#34;LangChain Runnable 机制&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>输出大概是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LangChain Runnable 机制&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;summary&#34;</span><span class=p>:</span> <span class=s2>&#34;...&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;titles&#34;</span><span class=p>:</span> <span class=s2>&#34;...&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里的关键是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>blog_chain</span> <span class=o>=</span> <span class=n>base_chain</span> <span class=o>|</span> <span class=n>RunnablePassthrough</span><span class=o>.</span><span class=n>assign</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>titles</span><span class=o>=</span><span class=n>title_chain</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p><code>base_chain</code> 先产生：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LangChain Runnable 机制&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;summary&#34;</span><span class=p>:</span> <span class=s2>&#34;...&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>然后 <code>assign</code> 在这个字典基础上追加：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=s2>&#34;titles&#34;</span><span class=p>:</span> <span class=n>title_chain</span>
+</span></span></code></pre></td></tr></table></div></div><p>并且 <code>title_chain</code> 可以读取已有字段 <code>{topic}</code> 和 <code>{summary}</code>。</p><h3 id=2-assign-适合什么场景>2. assign 适合什么场景？</h3><p>适合：</p><ul><li>在已有结果上追加派生字段。</li><li>保留中间结果，方便后续使用。</li><li>构造更复杂的 Prompt 输入。</li><li>RAG 中同时保留问题、上下文、来源。</li><li>内容生成中逐步生成摘要、标题、标签、slug。</li></ul><h3 id=3-assign-的思维方式>3. assign 的思维方式</h3><p>可以把 <code>assign</code> 理解成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>已有字典
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>计算新字段
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>返回扩展后的字典
+</span></span></code></pre></td></tr></table></div></div><p>它不会替换整个结果，而是在原有字典上增加字段。</p><p>这对复杂链路很有用，因为我们经常需要保留中间信息。</p><h2 id=十bind给-runnable-绑定参数>十、bind：给 Runnable 绑定参数</h2><p><code>bind</code> 用于给 Runnable 绑定额外参数。</p><p>最常见的是给模型绑定调用参数。</p><h3 id=1-绑定-stop-参数>1. 绑定 stop 参数</h3><p>比如你希望模型遇到某个停止符就停止生成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>model_with_stop</span> <span class=o>=</span> <span class=n>model</span><span class=o>.</span><span class=n>bind</span><span class=p>(</span><span class=n>stop</span><span class=o>=</span><span class=p>[</span><span class=s2>&#34;</span><span class=se>\n</span><span class=s2>观察：&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model_with_stop</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>这样 <code>stop</code> 参数会在调用模型时传入。</p><h3 id=2-绑定模型响应格式>2. 绑定模型响应格式</h3><p>如果底层模型支持某些额外参数，也可以通过 <code>bind</code> 绑定。</p><p>例如某些 OpenAI 兼容接口支持响应格式参数：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>json_model</span> <span class=o>=</span> <span class=n>model</span><span class=o>.</span><span class=n>bind</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>response_format</span><span class=o>=</span><span class=p>{</span><span class=s2>&#34;type&#34;</span><span class=p>:</span> <span class=s2>&#34;json_object&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>json_model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>实际能否生效，取决于你使用的模型和服务商是否支持对应参数。</p><h3 id=3-bind-适合什么场景>3. bind 适合什么场景？</h3><p>适合：</p><ul><li>给模型绑定 stop words。</li><li>给模型绑定输出格式参数。</li><li>给工具或模型绑定固定调用参数。</li><li>在不重新创建对象的情况下，派生一个带额外参数的 Runnable。</li></ul><p>可以把它理解成：</p><blockquote><p>基于已有 Runnable，创建一个“预设了部分调用参数”的新 Runnable。</p></blockquote><p>这和 Prompt 的 <code>partial</code> 有点像。</p><ul><li><code>partial</code> 常用于 Prompt 变量。</li><li><code>bind</code> 常用于 Runnable 调用参数。</li></ul><h2 id=十一with_config给链路增加运行配置>十一、with_config：给链路增加运行配置</h2><p><code>with_config</code> 用于给 Runnable 增加运行配置。</p><p>常见配置包括：</p><ul><li><code>run_name</code></li><li><code>tags</code></li><li><code>metadata</code></li><li><code>max_concurrency</code></li></ul><p>这些配置在调试、追踪、观测时很有用。</p><h3 id=1-给链路命名>1. 给链路命名</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=p>(</span><span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span><span class=p>)</span><span class=o>.</span><span class=n>with_config</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;run_name&#34;</span><span class=p>:</span> <span class=s2>&#34;explain_runnable_chain&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span></code></pre></td></tr></table></div></div><p>这样在 LangSmith 等观测工具里，更容易看出这条链的作用。</p><p>如果所有链都叫默认名字，排查问题会很痛苦。</p><h3 id=2-添加标签和元数据>2. 添加标签和元数据</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>with_config</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;tags&#34;</span><span class=p>:</span> <span class=p>[</span><span class=s2>&#34;blog&#34;</span><span class=p>,</span> <span class=s2>&#34;langchain&#34;</span><span class=p>,</span> <span class=s2>&#34;runnable&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;metadata&#34;</span><span class=p>:</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;feature&#34;</span><span class=p>:</span> <span class=s2>&#34;blog_idea_generator&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;version&#34;</span><span class=p>:</span> <span class=s2>&#34;v1&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span></code></pre></td></tr></table></div></div><p>标签和元数据适合记录：</p><ul><li>功能模块</li><li>业务场景</li><li>Prompt 版本</li><li>模型版本</li><li>实验分组</li></ul><p>后续做日志分析、性能分析、效果评估时会很有价值。</p><h3 id=3-调用时传入-config>3. 调用时传入 config</h3><p>除了在链路上固定配置，也可以调用时传入：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LangChain Runnable&#34;</span><span class=p>},</span>
+</span></span><span class=line><span class=cl>    <span class=n>config</span><span class=o>=</span><span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;tags&#34;</span><span class=p>:</span> <span class=p>[</span><span class=s2>&#34;debug&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;metadata&#34;</span><span class=p>:</span> <span class=p>{</span><span class=s2>&#34;request_id&#34;</span><span class=p>:</span> <span class=s2>&#34;demo-001&#34;</span><span class=p>},</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这适合请求级别的信息，比如：</p><ul><li>request_id</li><li>user_id</li><li>session_id</li><li>当前实验组</li></ul><p>注意：如果涉及用户隐私或敏感信息，不要直接写入可外传的追踪系统。</p><h3 id=4-控制-batch-并发>4. 控制 batch 并发</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>results</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>batch</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>inputs</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>config</span><span class=o>=</span><span class=p>{</span><span class=s2>&#34;max_concurrency&#34;</span><span class=p>:</span> <span class=mi>5</span><span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这能控制批量调用时的并发数量。</p><p>并发不是越大越好，要考虑：</p><ul><li>模型服务限流</li><li>本地网络</li><li>token 成本</li><li>下游系统压力</li><li>错误重试带来的放大效应</li></ul><h2 id=十二with_retry给链路增加重试>十二、with_retry：给链路增加重试</h2><p>大模型应用经常会遇到临时失败。</p><p>比如：</p><ul><li>网络抖动</li><li>模型服务超时</li><li>限流</li><li>临时 5xx 错误</li><li>结构化输出偶发解析失败</li></ul><p>如果每个地方都手写重试，代码会很乱。</p><p>Runnable 提供了 <code>with_retry</code>。</p><h3 id=1-基础示例-1>1. 基础示例</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>reliable_chain</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>with_retry</span><span class=p>(</span><span class=n>stop_after_attempt</span><span class=o>=</span><span class=mi>3</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>reliable_chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LangChain Runnable&#34;</span><span class=p>})</span>
+</span></span></code></pre></td></tr></table></div></div><p>这表示失败时最多尝试 3 次。</p><h3 id=2-给结构化输出加重试>2. 给结构化输出加重试</h3><p>结构化输出场景尤其适合重试。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>pydantic</span> <span class=kn>import</span> <span class=n>BaseModel</span><span class=p>,</span> <span class=n>Field</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.output_parsers</span> <span class=kn>import</span> <span class=n>PydanticOutputParser</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>BlogIdea</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>title</span><span class=p>:</span> <span class=nb>str</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>description</span><span class=o>=</span><span class=s2>&#34;文章标题&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>summary</span><span class=p>:</span> <span class=nb>str</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>description</span><span class=o>=</span><span class=s2>&#34;100 字以内摘要&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>tags</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>description</span><span class=o>=</span><span class=s2>&#34;文章标签&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>parser</span> <span class=o>=</span> <span class=n>PydanticOutputParser</span><span class=p>(</span><span class=n>pydantic_object</span><span class=o>=</span><span class=n>BlogIdea</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>with_retry</span><span class=p>(</span><span class=n>stop_after_attempt</span><span class=o>=</span><span class=mi>3</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;Runnable 机制&#34;</span><span class=p>})</span>
+</span></span></code></pre></td></tr></table></div></div><p>如果模型偶尔输出格式不符合 Pydantic 要求，重试有机会恢复。</p><p>但要注意：重试不是万能药。</p><p>如果 Prompt 写错了、schema 设计不合理、模型根本不支持某种输出，重试只会把同样的错误重复几次。</p><h3 id=3-重试要有边界>3. 重试要有边界</h3><p>不要无限重试。</p><p>原因很简单：</p><ul><li>会增加成本。</li><li>会增加延迟。</li><li>可能触发更多限流。</li><li>可能掩盖真实问题。</li></ul><p>建议：</p><ul><li>普通模型调用：2 到 3 次。</li><li>关键结构化输出：可以配合错误日志和降级策略。</li><li>明确的参数错误：不要重试，直接修代码。</li></ul><h2 id=十三一个完整实战博客选题-runnable-链路>十三、一个完整实战：博客选题 Runnable 链路</h2><p>下面我们把前面的能力组合起来，写一个稍微完整的例子。</p><p>目标：输入一个技术主题，生成结构化博客选题信息。</p><p>文件：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>runnable_blog_idea.py
+</span></span></code></pre></td></tr></table></div></div><p>代码：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span><span class=lnt>46
+</span><span class=lnt>47
+</span><span class=lnt>48
+</span><span class=lnt>49
+</span><span class=lnt>50
+</span><span class=lnt>51
+</span><span class=lnt>52
+</span><span class=lnt>53
+</span><span class=lnt>54
+</span><span class=lnt>55
+</span><span class=lnt>56
+</span><span class=lnt>57
+</span><span class=lnt>58
+</span><span class=lnt>59
+</span><span class=lnt>60
+</span><span class=lnt>61
+</span><span class=lnt>62
+</span><span class=lnt>63
+</span><span class=lnt>64
+</span><span class=lnt>65
+</span><span class=lnt>66
+</span><span class=lnt>67
+</span><span class=lnt>68
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>os</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dotenv</span> <span class=kn>import</span> <span class=n>load_dotenv</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_openai</span> <span class=kn>import</span> <span class=n>ChatOpenAI</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.prompts</span> <span class=kn>import</span> <span class=n>ChatPromptTemplate</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.output_parsers</span> <span class=kn>import</span> <span class=n>StrOutputParser</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.runnables</span> <span class=kn>import</span> <span class=n>RunnableLambda</span><span class=p>,</span> <span class=n>RunnableParallel</span><span class=p>,</span> <span class=n>RunnablePassthrough</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>load_dotenv</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>model</span> <span class=o>=</span> <span class=n>ChatOpenAI</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>model</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;MODEL_NAME&#34;</span><span class=p>,</span> <span class=s2>&#34;gpt-4o-mini&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>api_key</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_API_KEY&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>base_url</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_BASE_URL&#34;</span><span class=p>)</span> <span class=ow>or</span> <span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>temperature</span><span class=o>=</span><span class=mf>0.4</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>parser</span> <span class=o>=</span> <span class=n>StrOutputParser</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>normalize_input</span><span class=p>(</span><span class=n>topic</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>dict</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=n>topic</span><span class=o>.</span><span class=n>strip</span><span class=p>()}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>preprocess</span> <span class=o>=</span> <span class=n>RunnableLambda</span><span class=p>(</span><span class=n>normalize_input</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>summary_prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;system&#34;</span><span class=p>,</span> <span class=s2>&#34;你是一名专业的技术博客编辑。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;请为主题《</span><span class=si>{topic}</span><span class=s2>》写一段 100 字以内摘要，说明文章解决什么问题。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>tags_prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;system&#34;</span><span class=p>,</span> <span class=s2>&#34;你是一名技术内容分类助手。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;请为主题《</span><span class=si>{topic}</span><span class=s2>》生成 5 个 Hugo 博客标签，用逗号分隔。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>title_prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;system&#34;</span><span class=p>,</span> <span class=s2>&#34;你是一名技术博客标题编辑，标题要清晰，不要标题党。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;请根据主题《</span><span class=si>{topic}</span><span class=s2>》和摘要《</span><span class=si>{summary}</span><span class=s2>》生成 3 个中文标题。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>summary_chain</span> <span class=o>=</span> <span class=n>summary_prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl><span class=n>tags_chain</span> <span class=o>=</span> <span class=n>tags_prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl><span class=n>title_chain</span> <span class=o>=</span> <span class=n>title_prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>base_chain</span> <span class=o>=</span> <span class=n>preprocess</span> <span class=o>|</span> <span class=n>RunnableParallel</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=k>lambda</span> <span class=n>x</span><span class=p>:</span> <span class=n>x</span><span class=p>[</span><span class=s2>&#34;topic&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;summary&#34;</span><span class=p>:</span> <span class=n>summary_chain</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;tags&#34;</span><span class=p>:</span> <span class=n>tags_chain</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>blog_chain</span> <span class=o>=</span> <span class=n>base_chain</span> <span class=o>|</span> <span class=n>RunnablePassthrough</span><span class=o>.</span><span class=n>assign</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>titles</span><span class=o>=</span><span class=n>title_chain</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>blog_chain</span> <span class=o>=</span> <span class=n>blog_chain</span><span class=o>.</span><span class=n>with_config</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;run_name&#34;</span><span class=p>:</span> <span class=s2>&#34;blog_idea_runnable_chain&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;tags&#34;</span><span class=p>:</span> <span class=p>[</span><span class=s2>&#34;blog&#34;</span><span class=p>,</span> <span class=s2>&#34;langchain&#34;</span><span class=p>,</span> <span class=s2>&#34;runnable&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>blog_chain</span> <span class=o>=</span> <span class=n>blog_chain</span><span class=o>.</span><span class=n>with_retry</span><span class=p>(</span><span class=n>stop_after_attempt</span><span class=o>=</span><span class=mi>3</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>if</span> <span class=vm>__name__</span> <span class=o>==</span> <span class=s2>&#34;__main__&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>result</span> <span class=o>=</span> <span class=n>blog_chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=s2>&#34; LangChain Runnable 机制详解 &#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=nb>print</span><span class=p>(</span><span class=s2>&#34;主题：&#34;</span><span class=p>,</span> <span class=n>result</span><span class=p>[</span><span class=s2>&#34;topic&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>    <span class=nb>print</span><span class=p>(</span><span class=s2>&#34;摘要：&#34;</span><span class=p>,</span> <span class=n>result</span><span class=p>[</span><span class=s2>&#34;summary&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>    <span class=nb>print</span><span class=p>(</span><span class=s2>&#34;标签：&#34;</span><span class=p>,</span> <span class=n>result</span><span class=p>[</span><span class=s2>&#34;tags&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>    <span class=nb>print</span><span class=p>(</span><span class=s2>&#34;标题：&#34;</span><span class=p>,</span> <span class=n>result</span><span class=p>[</span><span class=s2>&#34;titles&#34;</span><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个例子包含了：</p><ul><li><code>RunnableLambda</code>：预处理输入。</li><li><code>RunnableParallel</code>：并行生成摘要和标签。</li><li><code>RunnablePassthrough.assign</code>：追加标题字段。</li><li><code>with_config</code>：给链路增加可观测信息。</li><li><code>with_retry</code>：提高调用稳定性。</li></ul><h3 id=链路结构图>链路结构图</h3><p>可以把它理解成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>原始 topic 字符串
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>RunnableLambda 预处理
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>{&#34;topic&#34;: &#34;LangChain Runnable 机制详解&#34;}
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>RunnableParallel
+</span></span><span class=line><span class=cl>  ├─ 保留 topic
+</span></span><span class=line><span class=cl>  ├─ 生成 summary
+</span></span><span class=line><span class=cl>  └─ 生成 tags
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>assign 追加 titles
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>最终结果 dict
+</span></span></code></pre></td></tr></table></div></div><p>这个例子已经接近真实项目中的链路组织方式。</p><h2 id=十四调试-runnable-链路的方法>十四、调试 Runnable 链路的方法</h2><p>Runnable 很强大，但链路复杂后，也会更难调试。</p><p>下面是几个实用方法。</p><h3 id=1-拆开每一步运行>1. 拆开每一步运行</h3><p>不要一上来就调试整条链。</p><p>可以先拆开：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>input_data</span> <span class=o>=</span> <span class=p>{</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LangChain Runnable&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>messages</span> <span class=o>=</span> <span class=n>prompt</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=n>input_data</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>messages</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>response</span> <span class=o>=</span> <span class=n>model</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=n>messages</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>response</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>text</span> <span class=o>=</span> <span class=n>parser</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=n>response</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>确认每一步正常后，再组合。</p><h3 id=2-打印中间结果>2. 打印中间结果</h3><p>可以用 <code>RunnableLambda</code> 临时打印：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.runnables</span> <span class=kn>import</span> <span class=n>RunnableLambda</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>debug_print</span><span class=p>(</span><span class=n>value</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=nb>print</span><span class=p>(</span><span class=s2>&#34;DEBUG:&#34;</span><span class=p>,</span> <span class=n>value</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>value</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>RunnableLambda</span><span class=p>(</span><span class=n>debug_print</span><span class=p>)</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>调试完再移除。</p><h3 id=3-给链路命名>3. 给链路命名</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>with_config</span><span class=p>({</span><span class=s2>&#34;run_name&#34;</span><span class=p>:</span> <span class=s2>&#34;answer_generation_chain&#34;</span><span class=p>})</span>
+</span></span></code></pre></td></tr></table></div></div><p>链路越多，命名越重要。</p><p>否则你在日志和追踪工具里只能看到一堆默认名称，很难定位问题。</p><h3 id=4-关注输入输出类型>4. 关注输入输出类型</h3><p>如果链路报错，优先检查：</p><ul><li>当前 Runnable 输出是什么？</li><li>下一个 Runnable 期待什么？</li><li>是字符串、字典、消息对象，还是 Pydantic 对象？</li><li>是否需要用 <code>RunnableLambda</code> 转换？</li></ul><p>大多数 LCEL 错误都和类型衔接有关。</p><h2 id=十五常见问题>十五、常见问题</h2><h3 id=1-runnable-和-chain-是什么关系>1. Runnable 和 Chain 是什么关系？</h3><p>可以简单理解为：Runnable 是更底层、更统一的抽象。</p><p>传统 Chain 往往是框架预先封装好的流程，而 Runnable 允许你把 Prompt、Model、Parser、Retriever、函数、并行分支自由组合。</p><p>在现代 LangChain 实践中，LCEL + Runnable 是非常核心的组合方式。</p><h3 id=2--是不是只能连接-langchain-组件>2. <code>|</code> 是不是只能连接 LangChain 组件？</h3><p>不是。</p><p>只要是 Runnable，或者能被 LangChain 自动转换成 Runnable 的对象，就可以参与组合。</p><p>例如：</p><ul><li>Prompt 是 Runnable。</li><li>Model 是 Runnable。</li><li>Parser 是 Runnable。</li><li><code>RunnableLambda</code> 可以包装普通函数。</li><li>字典可以表示并行分支。</li></ul><h3 id=3-runnableparallel-会不会自动加速>3. RunnableParallel 会不会自动加速？</h3><p>它可以并行执行独立分支，所以有机会降低总延迟。</p><p>但如果每个分支都调用模型，成本也会增加。</p><p>如果模型服务有严格限流，并行过多还可能导致更多失败。</p><h3 id=4-assign-和-runnableparallel-有什么区别>4. assign 和 RunnableParallel 有什么区别？</h3><p><code>RunnableParallel</code> 更像“从同一个输入同时生成多个字段”。</p><p><code>assign</code> 更像“在已有字典结果上继续追加字段”。</p><p>简单说：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>RunnableParallel：从输入生成一个结果字典
+</span></span><span class=line><span class=cl>assign：在已有结果字典上增加字段
+</span></span></code></pre></td></tr></table></div></div><h3 id=5-bind-和-partial-有什么区别>5. bind 和 partial 有什么区别？</h3><p><code>partial</code> 常用于 PromptTemplate，固定模板变量。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>prompt</span> <span class=o>=</span> <span class=n>prompt</span><span class=o>.</span><span class=n>partial</span><span class=p>(</span><span class=n>language</span><span class=o>=</span><span class=s2>&#34;中文&#34;</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p><code>bind</code> 常用于 Runnable，固定调用参数。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>model</span> <span class=o>=</span> <span class=n>model</span><span class=o>.</span><span class=n>bind</span><span class=p>(</span><span class=n>stop</span><span class=o>=</span><span class=p>[</span><span class=s2>&#34;</span><span class=se>\n</span><span class=s2>Observation:&#34;</span><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>两者都像“预先绑定一部分信息”，但作用层不同。</p><h3 id=6-with_retry-能解决所有失败吗>6. with_retry 能解决所有失败吗？</h3><p>不能。</p><p>它适合临时性失败，比如网络抖动、服务超时、偶发解析失败。</p><p>它不适合解决确定性错误，比如：</p><ul><li>Prompt 变量缺失。</li><li>schema 写错。</li><li>模型参数不支持。</li><li>API Key 错误。</li><li>输入输出类型接不上。</li></ul><p>确定性错误应该直接修代码。</p><h2 id=十六最佳实践>十六、最佳实践</h2><h3 id=1-每个-runnable-都要有清晰职责>1. 每个 Runnable 都要有清晰职责</h3><p>不要让一个 Runnable 做太多事。</p><p>推荐：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>输入清洗 Runnable
+</span></span><span class=line><span class=cl>Prompt Runnable
+</span></span><span class=line><span class=cl>Model Runnable
+</span></span><span class=line><span class=cl>Parser Runnable
+</span></span><span class=line><span class=cl>后处理 Runnable
+</span></span></code></pre></td></tr></table></div></div><p>不推荐把所有逻辑塞进一个巨大的函数。</p><h3 id=2-复杂链路要给子链命名>2. 复杂链路要给子链命名</h3><p>推荐：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>summary_chain</span> <span class=o>=</span> <span class=n>summary_prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl><span class=n>tags_chain</span> <span class=o>=</span> <span class=n>tags_prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span><span class=line><span class=cl><span class=n>blog_chain</span> <span class=o>=</span> <span class=o>...</span>
+</span></span></code></pre></td></tr></table></div></div><p>不推荐：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>a</span> <span class=o>|</span> <span class=n>b</span> <span class=o>|</span> <span class=n>c</span> <span class=o>|</span> <span class=n>d</span> <span class=o>|</span> <span class=n>e</span> <span class=o>|</span> <span class=n>f</span>
+</span></span></code></pre></td></tr></table></div></div><p>命名能降低后续维护成本。</p><h3 id=3-始终关注输入输出类型>3. 始终关注输入输出类型</h3><p>写链路时要习惯画出：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>输入类型 -&gt; 输出类型 -&gt; 下一个输入类型
+</span></span></code></pre></td></tr></table></div></div><p>尤其是混合使用字符串、字典、消息对象、Pydantic 对象时，更要小心。</p><h3 id=4-并行要考虑成本和限流>4. 并行要考虑成本和限流</h3><p>RunnableParallel 很方便，但多个模型分支意味着多个模型请求。</p><p>在生产环境中，要考虑：</p><ul><li>单次请求成本</li><li>QPS 限制</li><li>最大并发数</li><li>超时设置</li><li>重试放大效应</li></ul><h3 id=5-重试要配合日志>5. 重试要配合日志</h3><p>不要只加重试，不记录失败。</p><p>关键链路至少要记录：</p><ul><li>输入</li><li>模型名称</li><li>Prompt 版本</li><li>错误类型</li><li>重试次数</li><li>最终是否成功</li></ul><p>否则你只知道“偶尔慢”“偶尔失败”，但不知道为什么。</p><h3 id=6-配置和观测要尽早加>6. 配置和观测要尽早加</h3><p>即使是 demo，也可以习惯性给重要链路加：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>with_config</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;run_name&#34;</span><span class=p>:</span> <span class=s2>&#34;xxx_chain&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;tags&#34;</span><span class=p>:</span> <span class=p>[</span><span class=s2>&#34;feature_x&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span></code></pre></td></tr></table></div></div><p>等项目复杂后，这些信息会非常有用。</p><h2 id=十七总结>十七、总结</h2><p>本文我们深入讲了 LangChain 的 Runnable 机制。</p><p>如果说 LCEL 的表层是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>那么 Runnable 就是支撑这行代码背后的核心抽象。</p><p>本文重点包括：</p><ul><li>Runnable 是 LangChain 中统一的可运行组件抽象。</li><li><code>invoke</code>、<code>stream</code>、<code>batch</code> 是最常用的调用方式。</li><li>写 Runnable 链路时，最重要的是理解每一步输入输出。</li><li><code>RunnableSequence</code> 表示顺序组合。</li><li><code>RunnableParallel</code> 表示并行组合。</li><li><code>RunnableLambda</code> 可以把普通 Python 函数接入链路。</li><li><code>RunnablePassthrough</code> 可以保留原始输入。</li><li><code>assign</code> 可以在已有字典上追加字段。</li><li><code>bind</code> 可以绑定 Runnable 调用参数。</li><li><code>with_config</code> 可以增加运行配置，方便追踪和观测。</li><li><code>with_retry</code> 可以提升临时失败场景下的稳定性。</li></ul><p>到这里，我们已经不只是会写 <code>prompt | model | parser</code>，而是理解了 LangChain 如何把复杂应用拆成可组合、可配置、可观测的执行单元。</p><p>下一篇文章，我们会进入 LangChain 的 Memory 机制。因为在真实聊天应用里，模型不能只回答当前这一句话，还要理解历史对话、用户上下文和多轮交互状态。</p><h2 id=参考资料>参考资料</h2><ul><li><a class=link href=https://api.python.langchain.com/en/latest/core/runnables/langchain_core.runnables.base.Runnable.html target=_blank rel=noopener>Runnable — LangChain Python API reference</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/core/runnables/langchain_core.runnables.base.RunnableSequence.html target=_blank rel=noopener>RunnableSequence — LangChain Python API reference</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/core/runnables/langchain_core.runnables.base.RunnableParallel.html target=_blank rel=noopener>RunnableParallel — LangChain Python API reference</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/core/runnables/langchain_core.runnables.base.RunnableLambda.html target=_blank rel=noopener>RunnableLambda — LangChain Python API reference</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/core/runnables/langchain_core.runnables.base.RunnableBinding.html target=_blank rel=noopener>RunnableBinding — LangChain Python API reference</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/core/runnables/langchain_core.runnables.retry.RunnableRetry.html target=_blank rel=noopener>RunnableRetry — LangChain Python API reference</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/core/runnables/langchain_core.runnables.passthrough.RunnableAssign.html target=_blank rel=noopener>RunnableAssign — LangChain Python API reference</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/core/runnables/langchain_core.runnables.passthrough.RunnablePassthrough.html target=_blank rel=noopener>RunnablePassthrough — LangChain Python API reference</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/core/runnables.html target=_blank rel=noopener>Runnables module index — LangChain Python API reference</a></li><li><a class=link href=https://docs.langchain.com/langsmith/trace-with-langchain target=_blank rel=noopener>Trace LangChain applications — LangSmith docs</a></li></ul></section><footer class=article-footer><section class=article-tags><a href=/tags/langchain/>LangChain</a>
+<a href=/tags/runnable/>Runnable</a>
+<a href=/tags/lcel/>LCEL</a>
+<a href=/tags/chain/>Chain</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/langchain-lcel-introduction/><div class=article-details><h2 class=article-title>LangChain LCEL 入门：用管道语法编排大模型应用</h2></div></a></article><article><a href=/p/langchain-core-modules-overview/><div class=article-details><h2 class=article-title>LangChain 核心模块总览：从 Prompt 到 Agent 的完整链路</h2></div></a></article><article><a href=/p/langchain-output-parser-json/><div class=article-details><h2 class=article-title>LangChain Output Parser：如何让大模型稳定输出 JSON？</h2></div></a></article><article><a href=/p/langchain-prompt-template-guide/><div class=article-details><h2 class=article-title>LangChain PromptTemplate 详解：让提示词变得可维护</h2></div></a></article><article><a href=/p/langchain-quickstart-first-llm-app/><div class=article-details><h2 class=article-title>LangChain 快速开始：搭建你的第一个大模型应用</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>
