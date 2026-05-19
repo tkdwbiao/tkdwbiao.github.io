@@ -1,0 +1,586 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="前面几篇文章里，我们已经掌握了 LangChain 应用链路里的几个关键能力：\n1 chain = prompt | model | parser 我们知道了 Prompt 如何组织任务，LCEL 如何编排链路，Output Parser 如何解析模型输出，Runnable 如何支撑更复杂的组合。\n但到目前为止，我们的大多数示例都有一个共同特点：每次调用都是独立的。\n用户问一句，模型答一句。下一次再问，模型并不知道前面发生了什么。\n这在真实聊天应用里显然不够。\n"><title>LangChain Memory 机制：构建有上下文的多轮对话应用</title><link rel=canonical href=https://tkdwbiao.github.io/p/langchain-memory-conversation/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="LangChain Memory 机制：构建有上下文的多轮对话应用"><meta property='og:description' content="前面几篇文章里，我们已经掌握了 LangChain 应用链路里的几个关键能力：\n1 chain = prompt | model | parser 我们知道了 Prompt 如何组织任务，LCEL 如何编排链路，Output Parser 如何解析模型输出，Runnable 如何支撑更复杂的组合。\n但到目前为止，我们的大多数示例都有一个共同特点：每次调用都是独立的。\n用户问一句，模型答一句。下一次再问，模型并不知道前面发生了什么。\n这在真实聊天应用里显然不够。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/langchain-memory-conversation/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='LangChain'><meta property='article:tag' content='Memory'><meta property='article:tag' content='Chat History'><meta property='article:tag' content='多轮对话'><meta property='article:published_time' content='2025-09-15T10:00:00+08:00'><meta property='article:modified_time' content='2025-09-15T10:00:00+08:00'><meta name=twitter:title content="LangChain Memory 机制：构建有上下文的多轮对话应用"><meta name=twitter:description content="前面几篇文章里，我们已经掌握了 LangChain 应用链路里的几个关键能力：\n1 chain = prompt | model | parser 我们知道了 Prompt 如何组织任务，LCEL 如何编排链路，Output Parser 如何解析模型输出，Runnable 如何支撑更复杂的组合。\n但到目前为止，我们的大多数示例都有一个共同特点：每次调用都是独立的。\n用户问一句，模型答一句。下一次再问，模型并不知道前面发生了什么。\n这在真实聊天应用里显然不够。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二为什么需要-memory>二、为什么需要 Memory？</a><ol><li><a href=#1-模型不会自动记住上一次调用>1. 模型不会自动记住上一次调用</a></li><li><a href=#2-多轮对话依赖历史消息>2. 多轮对话依赖历史消息</a></li><li><a href=#3-memory-不等于模型内部真的长记性>3. Memory 不等于模型内部真的长记性</a></li></ol></li><li><a href=#三memory-的核心概念>三、Memory 的核心概念</a><ol><li><a href=#1-message聊天消息的基本单位>1. Message：聊天消息的基本单位</a></li><li><a href=#2-chat-history保存历史消息>2. Chat History：保存历史消息</a></li><li><a href=#3-messagesplaceholder把历史消息放进-prompt>3. MessagesPlaceholder：把历史消息放进 Prompt</a></li></ol></li><li><a href=#四最小示例手动管理历史消息>四、最小示例：手动管理历史消息</a><ol><li><a href=#手动管理的问题>手动管理的问题</a></li></ol></li><li><a href=#五runnablewithmessagehistory给链路加上消息历史>五、RunnableWithMessageHistory：给链路加上消息历史</a><ol><li><a href=#1-基础示例>1. 基础示例</a></li><li><a href=#2-get_session_history>2. get_session_history</a></li><li><a href=#3-input_messages_key>3. input_messages_key</a></li><li><a href=#4-history_messages_key>4. history_messages_key</a></li><li><a href=#5-config-里的-session_id>5. config 里的 session_id</a></li></ol></li><li><a href=#六session-id多用户对话的关键>六、Session ID：多用户对话的关键</a><ol><li><a href=#1-每个会话必须独立>1. 每个会话必须独立</a></li><li><a href=#2-用户-id-不一定等于会话-id>2. 用户 ID 不一定等于会话 ID</a></li><li><a href=#3-session_id-要从可信边界生成>3. session_id 要从可信边界生成</a></li></ol></li><li><a href=#七旧式-memory-类为什么还会看到-conversationbuffermemory>七、旧式 Memory 类：为什么还会看到 ConversationBufferMemory？</a><ol><li><a href=#旧式-memory-和新式方式的区别>旧式 Memory 和新式方式的区别</a></li></ol></li><li><a href=#八memory-和-prompt-的关系>八、Memory 和 Prompt 的关系</a><ol><li><a href=#1-历史消息放在哪里>1. 历史消息放在哪里？</a></li><li><a href=#2-system-message-不要放进普通历史>2. system message 不要放进普通历史</a></li><li><a href=#3-历史越多不一定越好>3. 历史越多不一定越好</a></li></ol></li><li><a href=#九token-限制历史消息不能无限增长>九、Token 限制：历史消息不能无限增长</a><ol><li><a href=#1-最近-n-轮策略>1. 最近 N 轮策略</a></li><li><a href=#2-摘要策略>2. 摘要策略</a></li><li><a href=#3-基于重要性的记忆>3. 基于重要性的记忆</a></li><li><a href=#4-rag-与-memory-的边界>4. RAG 与 Memory 的边界</a></li></ol></li><li><a href=#十一个完整实战多轮-langchain-学习助手>十、一个完整实战：多轮 LangChain 学习助手</a><ol><li><a href=#这个例子还缺什么>这个例子还缺什么？</a></li></ol></li><li><a href=#十一生产环境中的-memory-设计>十一、生产环境中的 Memory 设计</a><ol><li><a href=#1-存储层选择>1. 存储层选择</a></li><li><a href=#2-会话生命周期>2. 会话生命周期</a></li><li><a href=#3-隐私和权限>3. 隐私和权限</a></li><li><a href=#4-清空和重置会话>4. 清空和重置会话</a></li></ol></li><li><a href=#十二常见问题>十二、常见问题</a><ol><li><a href=#1-memory-会让模型永久记住用户吗>1. Memory 会让模型永久记住用户吗？</a></li><li><a href=#2-为什么我用了同一个-model-对象模型还是不记得>2. 为什么我用了同一个 model 对象，模型还是不记得？</a></li><li><a href=#3-messagesplaceholder-是-memory-吗>3. MessagesPlaceholder 是 Memory 吗？</a></li><li><a href=#4-runnablewithmessagehistory-会自动持久化到数据库吗>4. RunnableWithMessageHistory 会自动持久化到数据库吗？</a></li><li><a href=#5-是否应该把所有历史都传给模型>5. 是否应该把所有历史都传给模型？</a></li><li><a href=#6-memory-和-rag-能不能一起用>6. Memory 和 RAG 能不能一起用？</a></li></ol></li><li><a href=#十三最佳实践>十三、最佳实践</a><ol><li><a href=#1-先用手动历史理解原理>1. 先用手动历史理解原理</a></li><li><a href=#2-每个会话必须有独立-session_id>2. 每个会话必须有独立 session_id</a></li><li><a href=#3-不要无限追加历史>3. 不要无限追加历史</a></li><li><a href=#4-prompt-中明确区分历史和当前问题>4. Prompt 中明确区分历史和当前问题</a></li><li><a href=#5-不要把敏感信息随意写入长期记忆>5. 不要把敏感信息随意写入长期记忆</a></li><li><a href=#6-新项目优先理解-runnablewithmessagehistory-和-langgraph-memory>6. 新项目优先理解 RunnableWithMessageHistory 和 LangGraph memory</a></li></ol></li><li><a href=#十四总结>十四、总结</a></li><li><a href=#参考资料>参考资料</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/agent-%E7%B3%BB%E5%88%97/ style=background-color:#beefe2;color:#0f3d32>Agent 系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/langchain-memory-conversation/>LangChain Memory 机制：构建有上下文的多轮对话应用</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2025-09-15T10:00:00+08:00>2025-09-15 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 16 分钟</time></div></footer></div></header><section class=article-content><p>前面几篇文章里，我们已经掌握了 LangChain 应用链路里的几个关键能力：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>parser</span>
+</span></span></code></pre></td></tr></table></div></div><p>我们知道了 Prompt 如何组织任务，LCEL 如何编排链路，Output Parser 如何解析模型输出，Runnable 如何支撑更复杂的组合。</p><p>但到目前为止，我们的大多数示例都有一个共同特点：<strong>每次调用都是独立的</strong>。</p><p>用户问一句，模型答一句。下一次再问，模型并不知道前面发生了什么。</p><p>这在真实聊天应用里显然不够。</p><h2 id=一前言>一、前言</h2><p>假设你正在做一个 AI 学习助手。</p><p>第一轮用户问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>我想学习 LangChain。
+</span></span></code></pre></td></tr></table></div></div><p>模型回答：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>可以先从 Model、Prompt、LCEL 和 Runnable 开始。
+</span></span></code></pre></td></tr></table></div></div><p>第二轮用户接着问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>那它和直接调用 OpenAI API 有什么区别？
+</span></span></code></pre></td></tr></table></div></div><p>如果模型没有记住上一轮对话，它看到的只有：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>那它和直接调用 OpenAI API 有什么区别？
+</span></span></code></pre></td></tr></table></div></div><p>这里的“它”指什么？</p><p>人类知道是 LangChain，但模型如果没有历史上下文，就不一定知道。</p><p>所以，多轮对话应用必须解决一个核心问题：</p><blockquote><p>如何把历史对话作为上下文传给模型，让模型知道前面聊过什么？</p></blockquote><p>这就是 Memory 要解决的问题。</p><p>需要先说明一点：在 LangChain 新版本实践中，很多旧的 memory class，例如 <code>ConversationBufferMemory</code>、<code>ConversationSummaryMemory</code> 等，仍然能在资料里看到，但更推荐理解底层的 <strong>messages / chat history / RunnableWithMessageHistory</strong> 思路。尤其是配合 LCEL 和 Runnable 时，基于消息历史的方式更清晰，也更符合现代 LangChain 的用法。</p><p>本文会重点讲：</p><ol><li>大模型为什么本身没有“记忆”。</li><li>LangChain 中 Memory 的本质是什么。</li><li>Chat History 和 MessagesPlaceholder 怎么配合。</li><li>如何用 <code>RunnableWithMessageHistory</code> 构建多轮对话。</li><li>Session ID 为什么重要。</li><li>旧式 Memory 类和新式 Runnable 方式有什么区别。</li><li>Token 限制下如何管理历史消息。</li><li>生产环境中 Memory 应该怎么落地。</li></ol><h2 id=二为什么需要-memory>二、为什么需要 Memory？</h2><h3 id=1-模型不会自动记住上一次调用>1. 模型不会自动记住上一次调用</h3><p>很多初学者会误以为：只要使用同一个模型对象，模型就会记住前面的对话。</p><p>比如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>model</span> <span class=o>=</span> <span class=n>ChatOpenAI</span><span class=p>(</span><span class=n>model</span><span class=o>=</span><span class=s2>&#34;gpt-4o-mini&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>model</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=s2>&#34;我叫阿彪。&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>model</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=s2>&#34;我叫什么？&#34;</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>直觉上你可能希望第二次模型回答“你叫阿彪”。</p><p>但实际上，第二次调用只把这一句话发给了模型：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>我叫什么？
+</span></span></code></pre></td></tr></table></div></div><p>模型不会自动知道第一次调用内容。</p><p>原因很简单：大模型 API 通常是无状态的。</p><p>每次请求都像是一次新的调用。模型能看到什么，取决于你本次请求传了什么。</p><h3 id=2-多轮对话依赖历史消息>2. 多轮对话依赖历史消息</h3><p>聊天产品之所以能连续对话，是因为每次请求都会带上部分历史消息。</p><p>例如第二轮请求时，真正发给模型的可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>System: 你是一名学习助手。
+</span></span><span class=line><span class=cl>Human: 我想学习 LangChain。
+</span></span><span class=line><span class=cl>AI: 可以先从 Model、Prompt、LCEL 和 Runnable 开始。
+</span></span><span class=line><span class=cl>Human: 那它和直接调用 OpenAI API 有什么区别？
+</span></span></code></pre></td></tr></table></div></div><p>这样模型才知道“它”指的是 LangChain。</p><p>所以 Memory 的第一层含义是：</p><blockquote><p>保存历史消息，并在下一次调用时把相关历史消息重新放回 Prompt。</p></blockquote><h3 id=3-memory-不等于模型内部真的长记性>3. Memory 不等于模型内部真的长记性</h3><p>这里要特别强调：Memory 不是让模型参数发生变化。</p><p>它不是微调，也不是把信息写进模型大脑。</p><p>更准确地说，Memory 是应用层能力：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>保存历史上下文
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>下次调用时取出历史上下文
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>放入 Prompt
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>模型基于上下文生成回答
+</span></span></code></pre></td></tr></table></div></div><p>所以 Memory 的本质不是“模型记住了”，而是“应用帮模型带上了历史”。</p><h2 id=三memory-的核心概念>三、Memory 的核心概念</h2><p>在 LangChain 里，和多轮对话 Memory 相关的核心概念主要有几个。</p><div class=table-wrapper><table><thead><tr><th>概念</th><th>作用</th></tr></thead><tbody><tr><td>Message</td><td>表示一条聊天消息，例如 HumanMessage、AIMessage、SystemMessage</td></tr><tr><td>Chat History</td><td>保存一组历史消息</td></tr><tr><td>MessagesPlaceholder</td><td>在 Prompt 中插入历史消息列表</td></tr><tr><td>RunnableWithMessageHistory</td><td>给 Runnable 包装消息历史能力</td></tr><tr><td>Session ID</td><td>区分不同用户或不同会话</td></tr><tr><td>Short-term memory</td><td>当前会话内的短期上下文</td></tr><tr><td>Long-term memory</td><td>跨会话长期保存的用户偏好、资料或事实</td></tr></tbody></table></div><p>本文主要关注短期记忆，也就是多轮对话上下文。</p><h3 id=1-message聊天消息的基本单位>1. Message：聊天消息的基本单位</h3><p>LangChain 使用消息对象表示对话。</p><p>常见消息类型包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.messages</span> <span class=kn>import</span> <span class=n>HumanMessage</span><span class=p>,</span> <span class=n>AIMessage</span><span class=p>,</span> <span class=n>SystemMessage</span>
+</span></span></code></pre></td></tr></table></div></div><p>示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>messages</span> <span class=o>=</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=n>SystemMessage</span><span class=p>(</span><span class=n>content</span><span class=o>=</span><span class=s2>&#34;你是一名耐心的学习助手。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>HumanMessage</span><span class=p>(</span><span class=n>content</span><span class=o>=</span><span class=s2>&#34;我想学习 LangChain。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>AIMessage</span><span class=p>(</span><span class=n>content</span><span class=o>=</span><span class=s2>&#34;可以先从 Prompt、LCEL 和 Runnable 开始。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>HumanMessage</span><span class=p>(</span><span class=n>content</span><span class=o>=</span><span class=s2>&#34;那 Runnable 是什么？&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>]</span>
+</span></span></code></pre></td></tr></table></div></div><p>这些消息会一起传给模型。</p><h3 id=2-chat-history保存历史消息>2. Chat History：保存历史消息</h3><p>Chat History 可以理解为一个消息列表的存储容器。</p><p>开发阶段可以用内存保存：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.chat_history</span> <span class=kn>import</span> <span class=n>InMemoryChatMessageHistory</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>history</span> <span class=o>=</span> <span class=n>InMemoryChatMessageHistory</span><span class=p>()</span>
+</span></span><span class=line><span class=cl><span class=n>history</span><span class=o>.</span><span class=n>add_user_message</span><span class=p>(</span><span class=s2>&#34;我想学习 LangChain。&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>history</span><span class=o>.</span><span class=n>add_ai_message</span><span class=p>(</span><span class=s2>&#34;可以先从 Prompt、LCEL 和 Runnable 开始。&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>history</span><span class=o>.</span><span class=n>messages</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>真实项目中，历史消息通常要放到：</p><ul><li>Redis</li><li>PostgreSQL</li><li>MongoDB</li><li>文件存储</li><li>业务数据库</li><li>LangGraph checkpoint</li></ul><p>内存只适合本地演示和单进程测试。</p><h3 id=3-messagesplaceholder把历史消息放进-prompt>3. MessagesPlaceholder：把历史消息放进 Prompt</h3><p>PromptTemplate 里不能只写当前问题，还要留一个位置放历史消息。</p><p>这就需要 <code>MessagesPlaceholder</code>。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.prompts</span> <span class=kn>import</span> <span class=n>ChatPromptTemplate</span><span class=p>,</span> <span class=n>MessagesPlaceholder</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;system&#34;</span><span class=p>,</span> <span class=s2>&#34;你是一名耐心的 AI 应用开发学习助手。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>MessagesPlaceholder</span><span class=p>(</span><span class=s2>&#34;chat_history&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;</span><span class=si>{question}</span><span class=s2>&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里的关键是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>MessagesPlaceholder</span><span class=p>(</span><span class=s2>&#34;chat_history&#34;</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>它表示：调用 Prompt 时，可以把一组历史消息插入到这个位置。</p><p>调用示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.messages</span> <span class=kn>import</span> <span class=n>HumanMessage</span><span class=p>,</span> <span class=n>AIMessage</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>messages</span> <span class=o>=</span> <span class=n>prompt</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;chat_history&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>        <span class=n>HumanMessage</span><span class=p>(</span><span class=n>content</span><span class=o>=</span><span class=s2>&#34;我想学习 LangChain。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>        <span class=n>AIMessage</span><span class=p>(</span><span class=n>content</span><span class=o>=</span><span class=s2>&#34;可以先从 Prompt 和 LCEL 开始。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>],</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=s2>&#34;那 Runnable 是什么？&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span></code></pre></td></tr></table></div></div><p>最终模型看到的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>System: 你是一名耐心的 AI 应用开发学习助手。
+</span></span><span class=line><span class=cl>Human: 我想学习 LangChain。
+</span></span><span class=line><span class=cl>AI: 可以先从 Prompt 和 LCEL 开始。
+</span></span><span class=line><span class=cl>Human: 那 Runnable 是什么？
+</span></span></code></pre></td></tr></table></div></div><h2 id=四最小示例手动管理历史消息>四、最小示例：手动管理历史消息</h2><p>在使用 LangChain 的自动历史管理之前，我们先手写一个最小版本。</p><p>这样更容易理解 Memory 的本质。</p><p>文件：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>manual_chat_history.py
+</span></span></code></pre></td></tr></table></div></div><p>代码：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>os</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dotenv</span> <span class=kn>import</span> <span class=n>load_dotenv</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_openai</span> <span class=kn>import</span> <span class=n>ChatOpenAI</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.prompts</span> <span class=kn>import</span> <span class=n>ChatPromptTemplate</span><span class=p>,</span> <span class=n>MessagesPlaceholder</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.output_parsers</span> <span class=kn>import</span> <span class=n>StrOutputParser</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.messages</span> <span class=kn>import</span> <span class=n>HumanMessage</span><span class=p>,</span> <span class=n>AIMessage</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>load_dotenv</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;system&#34;</span><span class=p>,</span> <span class=s2>&#34;你是一名耐心的 LangChain 学习助手。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>MessagesPlaceholder</span><span class=p>(</span><span class=s2>&#34;chat_history&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;</span><span class=si>{question}</span><span class=s2>&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>model</span> <span class=o>=</span> <span class=n>ChatOpenAI</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>model</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;MODEL_NAME&#34;</span><span class=p>,</span> <span class=s2>&#34;gpt-4o-mini&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>api_key</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_API_KEY&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>base_url</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_BASE_URL&#34;</span><span class=p>)</span> <span class=ow>or</span> <span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>temperature</span><span class=o>=</span><span class=mf>0.5</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>StrOutputParser</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>chat_history</span> <span class=o>=</span> <span class=p>[]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>question1</span> <span class=o>=</span> <span class=s2>&#34;我想学习 LangChain，应该从哪里开始？&#34;</span>
+</span></span><span class=line><span class=cl><span class=n>answer1</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;chat_history&#34;</span><span class=p>:</span> <span class=n>chat_history</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=n>question1</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=s2>&#34;AI:&#34;</span><span class=p>,</span> <span class=n>answer1</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>chat_history</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=n>HumanMessage</span><span class=p>(</span><span class=n>content</span><span class=o>=</span><span class=n>question1</span><span class=p>))</span>
+</span></span><span class=line><span class=cl><span class=n>chat_history</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=n>AIMessage</span><span class=p>(</span><span class=n>content</span><span class=o>=</span><span class=n>answer1</span><span class=p>))</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>question2</span> <span class=o>=</span> <span class=s2>&#34;那它和直接调用模型 API 有什么区别？&#34;</span>
+</span></span><span class=line><span class=cl><span class=n>answer2</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;chat_history&#34;</span><span class=p>:</span> <span class=n>chat_history</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=n>question2</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=s2>&#34;AI:&#34;</span><span class=p>,</span> <span class=n>answer2</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这段代码做了几件事：</p><ol><li>Prompt 中预留 <code>chat_history</code>。</li><li>第一次调用时历史为空。</li><li>得到回答后，把用户问题和 AI 回答加入历史。</li><li>第二次调用时，把历史一起传给模型。</li></ol><p>这就是最朴素的 Memory。</p><h3 id=手动管理的问题>手动管理的问题</h3><p>手动管理历史消息可以帮助理解原理，但真实项目里会有很多麻烦：</p><ul><li>每次都要手动 append。</li><li>多个用户的历史容易混在一起。</li><li>需要处理 session。</li><li>需要控制历史长度。</li><li>需要持久化到数据库。</li><li>需要考虑并发读写。</li></ul><p>所以我们需要更系统的方式。</p><h2 id=五runnablewithmessagehistory给链路加上消息历史>五、RunnableWithMessageHistory：给链路加上消息历史</h2><p>在 LCEL 和 Runnable 体系中，更推荐使用 <code>RunnableWithMessageHistory</code> 来给链路加上历史消息能力。</p><p>它的作用是：</p><blockquote><p>包装一个 Runnable，让它在调用前自动读取历史消息，在调用后自动写入本轮对话消息。</p></blockquote><h3 id=1-基础示例>1. 基础示例</h3><p>文件：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>runnable_with_history_demo.py
+</span></span></code></pre></td></tr></table></div></div><p>代码：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span><span class=lnt>46
+</span><span class=lnt>47
+</span><span class=lnt>48
+</span><span class=lnt>49
+</span><span class=lnt>50
+</span><span class=lnt>51
+</span><span class=lnt>52
+</span><span class=lnt>53
+</span><span class=lnt>54
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>os</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dotenv</span> <span class=kn>import</span> <span class=n>load_dotenv</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_openai</span> <span class=kn>import</span> <span class=n>ChatOpenAI</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.prompts</span> <span class=kn>import</span> <span class=n>ChatPromptTemplate</span><span class=p>,</span> <span class=n>MessagesPlaceholder</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.output_parsers</span> <span class=kn>import</span> <span class=n>StrOutputParser</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.chat_history</span> <span class=kn>import</span> <span class=n>InMemoryChatMessageHistory</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.runnables.history</span> <span class=kn>import</span> <span class=n>RunnableWithMessageHistory</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>load_dotenv</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;system&#34;</span><span class=p>,</span> <span class=s2>&#34;你是一名耐心、清晰的 LangChain 学习助手。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>MessagesPlaceholder</span><span class=p>(</span><span class=s2>&#34;chat_history&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;</span><span class=si>{question}</span><span class=s2>&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>model</span> <span class=o>=</span> <span class=n>ChatOpenAI</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>model</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;MODEL_NAME&#34;</span><span class=p>,</span> <span class=s2>&#34;gpt-4o-mini&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>api_key</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_API_KEY&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>base_url</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_BASE_URL&#34;</span><span class=p>)</span> <span class=ow>or</span> <span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>temperature</span><span class=o>=</span><span class=mf>0.5</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>StrOutputParser</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>store</span> <span class=o>=</span> <span class=p>{}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>get_session_history</span><span class=p>(</span><span class=n>session_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>session_id</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>store</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>store</span><span class=p>[</span><span class=n>session_id</span><span class=p>]</span> <span class=o>=</span> <span class=n>InMemoryChatMessageHistory</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>store</span><span class=p>[</span><span class=n>session_id</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>chain_with_history</span> <span class=o>=</span> <span class=n>RunnableWithMessageHistory</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>chain</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>get_session_history</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>input_messages_key</span><span class=o>=</span><span class=s2>&#34;question&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>history_messages_key</span><span class=o>=</span><span class=s2>&#34;chat_history&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>config</span> <span class=o>=</span> <span class=p>{</span><span class=s2>&#34;configurable&#34;</span><span class=p>:</span> <span class=p>{</span><span class=s2>&#34;session_id&#34;</span><span class=p>:</span> <span class=s2>&#34;user-001&#34;</span><span class=p>}}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>answer1</span> <span class=o>=</span> <span class=n>chain_with_history</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span><span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=s2>&#34;我想学习 LangChain，应该从哪里开始？&#34;</span><span class=p>},</span>
+</span></span><span class=line><span class=cl>    <span class=n>config</span><span class=o>=</span><span class=n>config</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=s2>&#34;AI:&#34;</span><span class=p>,</span> <span class=n>answer1</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>answer2</span> <span class=o>=</span> <span class=n>chain_with_history</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span><span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=s2>&#34;那 Runnable 在里面起什么作用？&#34;</span><span class=p>},</span>
+</span></span><span class=line><span class=cl>    <span class=n>config</span><span class=o>=</span><span class=n>config</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=s2>&#34;AI:&#34;</span><span class=p>,</span> <span class=n>answer2</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里有几个关键点。</p><h3 id=2-get_session_history>2. get_session_history</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>get_session_history</span><span class=p>(</span><span class=n>session_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>session_id</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>store</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>store</span><span class=p>[</span><span class=n>session_id</span><span class=p>]</span> <span class=o>=</span> <span class=n>InMemoryChatMessageHistory</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>store</span><span class=p>[</span><span class=n>session_id</span><span class=p>]</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个函数根据 <code>session_id</code> 返回对应的历史消息。</p><p>也就是说，不同 session 有不同的历史。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>user-001 -&gt; history A
+</span></span><span class=line><span class=cl>user-002 -&gt; history B
+</span></span><span class=line><span class=cl>user-003 -&gt; history C
+</span></span></code></pre></td></tr></table></div></div><p>这样不同用户的对话就不会混在一起。</p><h3 id=3-input_messages_key>3. input_messages_key</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>input_messages_key</span><span class=o>=</span><span class=s2>&#34;question&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>它告诉 LangChain：本次用户输入在哪个字段里。</p><p>因为我们调用时传的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span><span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=s2>&#34;我想学习 LangChain，应该从哪里开始？&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>所以这里写 <code>question</code>。</p><h3 id=4-history_messages_key>4. history_messages_key</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>history_messages_key</span><span class=o>=</span><span class=s2>&#34;chat_history&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>它告诉 LangChain：Prompt 中历史消息占位符叫什么。</p><p>因为 Prompt 里写的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>MessagesPlaceholder</span><span class=p>(</span><span class=s2>&#34;chat_history&#34;</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>所以这里也要写 <code>chat_history</code>。</p><h3 id=5-config-里的-session_id>5. config 里的 session_id</h3><p>调用时必须传入 session_id：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>config</span> <span class=o>=</span> <span class=p>{</span><span class=s2>&#34;configurable&#34;</span><span class=p>:</span> <span class=p>{</span><span class=s2>&#34;session_id&#34;</span><span class=p>:</span> <span class=s2>&#34;user-001&#34;</span><span class=p>}}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这就是告诉链路：当前这次调用属于哪个会话。</p><p>如果你换成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>config</span> <span class=o>=</span> <span class=p>{</span><span class=s2>&#34;configurable&#34;</span><span class=p>:</span> <span class=p>{</span><span class=s2>&#34;session_id&#34;</span><span class=p>:</span> <span class=s2>&#34;user-002&#34;</span><span class=p>}}</span>
+</span></span></code></pre></td></tr></table></div></div><p>那就是另一个独立会话。</p><h2 id=六session-id多用户对话的关键>六、Session ID：多用户对话的关键</h2><p>Memory 最容易踩坑的地方，就是 session 管理。</p><p>如果你只有一个全局 <code>chat_history</code>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chat_history</span> <span class=o>=</span> <span class=p>[]</span>
+</span></span></code></pre></td></tr></table></div></div><p>那所有用户都会共享同一份历史。</p><p>这在真实产品里是严重问题。</p><p>用户 A 说：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>我叫张三。
+</span></span></code></pre></td></tr></table></div></div><p>用户 B 问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>我叫什么？
+</span></span></code></pre></td></tr></table></div></div><p>如果历史混在一起，模型可能回答：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你叫张三。
+</span></span></code></pre></td></tr></table></div></div><p>这不仅是功能错误，也是隐私问题。</p><h3 id=1-每个会话必须独立>1. 每个会话必须独立</h3><p>至少要做到：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户 A 的 session_id -&gt; 用户 A 的历史
+</span></span><span class=line><span class=cl>用户 B 的 session_id -&gt; 用户 B 的历史
+</span></span></code></pre></td></tr></table></div></div><p>在 Web 应用中，session_id 可能来自：</p><ul><li>登录用户 ID</li><li>浏览器会话 ID</li><li>对话 ID</li><li>业务侧 conversation_id</li><li>移动端设备生成的临时 ID</li></ul><h3 id=2-用户-id-不一定等于会话-id>2. 用户 ID 不一定等于会话 ID</h3><p>一个用户可能有多个对话。</p><p>比如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>user-001 / conversation-001：学习 LangChain
+</span></span><span class=line><span class=cl>user-001 / conversation-002：准备面试
+</span></span><span class=line><span class=cl>user-001 / conversation-003：写技术博客
+</span></span></code></pre></td></tr></table></div></div><p>如果只按 user_id 存历史，不同主题会混在一起。</p><p>更合理的是使用 conversation_id 或 thread_id。</p><h3 id=3-session_id-要从可信边界生成>3. session_id 要从可信边界生成</h3><p>不要让用户随便传别人的 session_id。</p><p>如果外部用户可以指定任意 session_id，就可能读取或污染别人的对话历史。</p><p>真实系统中，session_id 应该由后端生成、鉴权，并和当前用户绑定。</p><h2 id=七旧式-memory-类为什么还会看到-conversationbuffermemory>七、旧式 Memory 类：为什么还会看到 ConversationBufferMemory？</h2><p>如果你看旧教程，经常会看到这些类：</p><ul><li><code>ConversationBufferMemory</code></li><li><code>ConversationBufferWindowMemory</code></li><li><code>ConversationSummaryMemory</code></li><li><code>ConversationTokenBufferMemory</code></li></ul><p>它们的思路大致是：帮你保存和注入对话历史。</p><p>例如旧式写法里可能会出现：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain.memory</span> <span class=kn>import</span> <span class=n>ConversationBufferMemory</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>memory</span> <span class=o>=</span> <span class=n>ConversationBufferMemory</span><span class=p>(</span><span class=n>return_messages</span><span class=o>=</span><span class=kc>True</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这些类在早期 LangChain Chain 体系里很常见。</p><p>但随着 LCEL 和 Runnable 成为更推荐的组合方式，新项目更应该优先理解：</p><ul><li><code>MessagesPlaceholder</code></li><li><code>ChatMessageHistory</code></li><li><code>RunnableWithMessageHistory</code></li><li>LangGraph 的 short-term memory / checkpoint</li></ul><h3 id=旧式-memory-和新式方式的区别>旧式 Memory 和新式方式的区别</h3><div class=table-wrapper><table><thead><tr><th>对比项</th><th>旧式 Memory 类</th><th>RunnableWithMessageHistory</th></tr></thead><tbody><tr><td>常见搭配</td><td>传统 Chain</td><td>LCEL / Runnable</td></tr><tr><td>历史注入</td><td>由 memory 对象配合 chain</td><td>由 MessagesPlaceholder 明确注入</td></tr><tr><td>会话隔离</td><td>需要额外处理</td><td>通过 session_id 更清晰</td></tr><tr><td>可组合性</td><td>依赖具体 Chain</td><td>更符合 Runnable 体系</td></tr><tr><td>新项目推荐</td><td>需要谨慎看版本</td><td>更推荐掌握</td></tr></tbody></table></div><p>不是说旧式 Memory 完全不能用，而是学习新版本 LangChain 时，不应该只停留在旧 API 上。</p><h2 id=八memory-和-prompt-的关系>八、Memory 和 Prompt 的关系</h2><p>Memory 最终一定会影响 Prompt。</p><p>因为模型本身只能看到当前请求里的消息。</p><p>所以 Memory 的过程可以理解为：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>读取历史消息
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>插入 Prompt
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>发送给模型
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>保存本轮输入和输出
+</span></span></code></pre></td></tr></table></div></div><p>因此，Prompt 设计对 Memory 很重要。</p><h3 id=1-历史消息放在哪里>1. 历史消息放在哪里？</h3><p>常见写法是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;system&#34;</span><span class=p>,</span> <span class=s2>&#34;你是一名学习助手。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>MessagesPlaceholder</span><span class=p>(</span><span class=s2>&#34;chat_history&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;</span><span class=si>{question}</span><span class=s2>&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>这表示：</p><ol><li>先给系统规则。</li><li>再放历史对话。</li><li>最后放当前用户问题。</li></ol><p>这种顺序通常比较自然。</p><h3 id=2-system-message-不要放进普通历史>2. system message 不要放进普通历史</h3><p>系统规则应该由应用控制，不应该被用户历史覆盖。</p><p>不推荐把 system message 和普通聊天记录混在一起随便存取。</p><p>更清晰的做法是：</p><ul><li>system message 固定写在 Prompt 模板里。</li><li>用户和 AI 历史放在 <code>chat_history</code>。</li><li>当前问题单独放在 <code>{question}</code>。</li></ul><h3 id=3-历史越多不一定越好>3. 历史越多不一定越好</h3><p>很多人会想：既然要记忆，那是不是把所有历史都传给模型最好？</p><p>不一定。</p><p>历史太多会带来问题：</p><ul><li>token 成本增加。</li><li>请求变慢。</li><li>超出上下文窗口。</li><li>旧信息干扰当前问题。</li><li>无关内容降低回答质量。</li></ul><p>所以 Memory 不只是“保存”，还包括“选择”和“压缩”。</p><h2 id=九token-限制历史消息不能无限增长>九、Token 限制：历史消息不能无限增长</h2><p>大模型有上下文窗口限制。</p><p>如果你不断把完整历史都塞进去，迟早会超过限制。</p><p>例如一个用户聊了 100 轮，每轮都比较长，再加上系统 Prompt、检索上下文、工具结果，很容易超出模型上下文。</p><p>所以 Memory 需要管理策略。</p><h3 id=1-最近-n-轮策略>1. 最近 N 轮策略</h3><p>最简单的策略是只保留最近 N 轮。</p><p>例如只保留最近 10 条消息：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>trim_messages</span><span class=p>(</span><span class=n>messages</span><span class=p>,</span> <span class=n>max_messages</span><span class=o>=</span><span class=mi>10</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>messages</span><span class=p>[</span><span class=o>-</span><span class=n>max_messages</span><span class=p>:]</span>
+</span></span></code></pre></td></tr></table></div></div><p>优点：简单。</p><p>缺点：早期重要信息可能丢失。</p><p>适合：普通闲聊、客服初版、学习 demo。</p><h3 id=2-摘要策略>2. 摘要策略</h3><p>当历史变长时，可以把旧历史总结成一段摘要。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户正在学习 LangChain，已经了解了 PromptTemplate、LCEL 和 Runnable，目前想继续学习 Memory。
+</span></span></code></pre></td></tr></table></div></div><p>然后 Prompt 中放：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>对话摘要：...
+</span></span><span class=line><span class=cl>最近几轮消息：...
+</span></span><span class=line><span class=cl>当前问题：...
+</span></span></code></pre></td></tr></table></div></div><p>优点：保留长期上下文。</p><p>缺点：摘要可能丢细节，也会引入额外模型调用。</p><p>适合：长对话、学习助手、写作助手。</p><h3 id=3-基于重要性的记忆>3. 基于重要性的记忆</h3><p>不是所有对话都值得长期保存。</p><p>比如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你好
+</span></span><span class=line><span class=cl>好的
+</span></span><span class=line><span class=cl>继续
+</span></span><span class=line><span class=cl>再详细点
+</span></span></code></pre></td></tr></table></div></div><p>这些通常不需要长期记住。</p><p>但下面这类信息可能有价值：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>我是一名后端开发，熟悉 Python，但刚开始学大模型应用。
+</span></span></code></pre></td></tr></table></div></div><p>这类信息可以抽取成用户画像或长期记忆。</p><p>注意：长期记忆涉及隐私和数据治理，不能随便保存。</p><h3 id=4-rag-与-memory-的边界>4. RAG 与 Memory 的边界</h3><p>Memory 和 RAG 都是在给模型提供上下文，但它们不一样。</p><div class=table-wrapper><table><thead><tr><th>能力</th><th>主要解决什么</th></tr></thead><tbody><tr><td>Memory</td><td>当前用户或当前会话的历史上下文</td></tr><tr><td>RAG</td><td>外部知识库、文档、私有资料、事实依据</td></tr></tbody></table></div><p>例如：</p><ul><li>用户刚才问过什么：Memory。</li><li>公司内部文档怎么规定：RAG。</li><li>用户偏好用 Python 示例：Memory。</li><li>LangChain 官方 API 怎么用：RAG 或联网资料。</li></ul><p>真实应用里，Memory 和 RAG 经常会一起用。</p><h2 id=十一个完整实战多轮-langchain-学习助手>十、一个完整实战：多轮 LangChain 学习助手</h2><p>下面我们做一个小项目：构建一个支持多轮上下文的 LangChain 学习助手。</p><p>功能：</p><ul><li>用户可以连续提问。</li><li>系统保留同一个 session 的历史。</li><li>用户追问“它”“刚才那个概念”时，模型能结合历史回答。</li><li>使用 LCEL + RunnableWithMessageHistory 实现。</li></ul><p>文件：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>memory_chatbot.py
+</span></span></code></pre></td></tr></table></div></div><p>代码：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span><span class=lnt>46
+</span><span class=lnt>47
+</span><span class=lnt>48
+</span><span class=lnt>49
+</span><span class=lnt>50
+</span><span class=lnt>51
+</span><span class=lnt>52
+</span><span class=lnt>53
+</span><span class=lnt>54
+</span><span class=lnt>55
+</span><span class=lnt>56
+</span><span class=lnt>57
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>os</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dotenv</span> <span class=kn>import</span> <span class=n>load_dotenv</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_openai</span> <span class=kn>import</span> <span class=n>ChatOpenAI</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.prompts</span> <span class=kn>import</span> <span class=n>ChatPromptTemplate</span><span class=p>,</span> <span class=n>MessagesPlaceholder</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.output_parsers</span> <span class=kn>import</span> <span class=n>StrOutputParser</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.chat_history</span> <span class=kn>import</span> <span class=n>InMemoryChatMessageHistory</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.runnables.history</span> <span class=kn>import</span> <span class=n>RunnableWithMessageHistory</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>load_dotenv</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;system&#34;</span><span class=p>,</span> <span class=s2>&#34;&#34;&#34;
+</span></span></span><span class=line><span class=cl><span class=s2>你是一名专业、耐心的 LangChain 学习助手。
+</span></span></span><span class=line><span class=cl><span class=s2>请用中文回答，面向有 Python 基础但刚接触大模型应用的开发者。
+</span></span></span><span class=line><span class=cl><span class=s2>回答要清晰、具体，必要时给出简短代码示例。
+</span></span></span><span class=line><span class=cl><span class=s2>&#34;&#34;&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>MessagesPlaceholder</span><span class=p>(</span><span class=s2>&#34;chat_history&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;</span><span class=si>{question}</span><span class=s2>&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>model</span> <span class=o>=</span> <span class=n>ChatOpenAI</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>model</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;MODEL_NAME&#34;</span><span class=p>,</span> <span class=s2>&#34;gpt-4o-mini&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>api_key</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_API_KEY&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>base_url</span><span class=o>=</span><span class=n>os</span><span class=o>.</span><span class=n>getenv</span><span class=p>(</span><span class=s2>&#34;OPENAI_BASE_URL&#34;</span><span class=p>)</span> <span class=ow>or</span> <span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>temperature</span><span class=o>=</span><span class=mf>0.4</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>StrOutputParser</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>histories</span> <span class=o>=</span> <span class=p>{}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>get_session_history</span><span class=p>(</span><span class=n>session_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>session_id</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>histories</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>histories</span><span class=p>[</span><span class=n>session_id</span><span class=p>]</span> <span class=o>=</span> <span class=n>InMemoryChatMessageHistory</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>histories</span><span class=p>[</span><span class=n>session_id</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>chatbot</span> <span class=o>=</span> <span class=n>RunnableWithMessageHistory</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>chain</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>get_session_history</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>input_messages_key</span><span class=o>=</span><span class=s2>&#34;question&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>history_messages_key</span><span class=o>=</span><span class=s2>&#34;chat_history&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>ask</span><span class=p>(</span><span class=n>question</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span> <span class=n>session_id</span><span class=p>:</span> <span class=nb>str</span> <span class=o>=</span> <span class=s2>&#34;demo-user&#34;</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>chatbot</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=p>{</span><span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=n>question</span><span class=p>},</span>
+</span></span><span class=line><span class=cl>        <span class=n>config</span><span class=o>=</span><span class=p>{</span><span class=s2>&#34;configurable&#34;</span><span class=p>:</span> <span class=p>{</span><span class=s2>&#34;session_id&#34;</span><span class=p>:</span> <span class=n>session_id</span><span class=p>}},</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>if</span> <span class=vm>__name__</span> <span class=o>==</span> <span class=s2>&#34;__main__&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=nb>print</span><span class=p>(</span><span class=s2>&#34;AI:&#34;</span><span class=p>,</span> <span class=n>ask</span><span class=p>(</span><span class=s2>&#34;我想学习 LangChain，应该先理解哪些概念？&#34;</span><span class=p>))</span>
+</span></span><span class=line><span class=cl>    <span class=nb>print</span><span class=p>(</span><span class=s2>&#34;AI:&#34;</span><span class=p>,</span> <span class=n>ask</span><span class=p>(</span><span class=s2>&#34;那它里面的 Runnable 是什么？&#34;</span><span class=p>))</span>
+</span></span><span class=line><span class=cl>    <span class=nb>print</span><span class=p>(</span><span class=s2>&#34;AI:&#34;</span><span class=p>,</span> <span class=n>ask</span><span class=p>(</span><span class=s2>&#34;能基于刚才的解释再给一个代码例子吗？&#34;</span><span class=p>))</span>
+</span></span></code></pre></td></tr></table></div></div><p>这段代码里，用户第二次问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>那它里面的 Runnable 是什么？
+</span></span></code></pre></td></tr></table></div></div><p>第三次问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>能基于刚才的解释再给一个代码例子吗？
+</span></span></code></pre></td></tr></table></div></div><p>模型能理解“它”和“刚才的解释”，是因为历史消息被保存并重新注入到了 Prompt 中。</p><h3 id=这个例子还缺什么>这个例子还缺什么？</h3><p>它适合学习，但还不是生产版本。</p><p>生产环境还需要：</p><ul><li>把 <code>histories</code> 换成数据库或 Redis。</li><li>给 session_id 做鉴权。</li><li>控制历史消息长度。</li><li>记录错误和调用日志。</li><li>处理用户清空会话。</li><li>做隐私和敏感信息保护。</li></ul><h2 id=十一生产环境中的-memory-设计>十一、生产环境中的 Memory 设计</h2><p>Memory 在 demo 中很简单，但在真实系统里要认真设计。</p><h3 id=1-存储层选择>1. 存储层选择</h3><p>内存存储：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>histories</span> <span class=o>=</span> <span class=p>{}</span>
+</span></span></code></pre></td></tr></table></div></div><p>只适合本地 demo。</p><p>生产环境需要持久化：</p><div class=table-wrapper><table><thead><tr><th>存储</th><th>适合场景</th></tr></thead><tbody><tr><td>Redis</td><td>高频短期会话、过期自动清理</td></tr><tr><td>PostgreSQL / MySQL</td><td>需要查询、审计、长期保存</td></tr><tr><td>MongoDB</td><td>消息结构灵活、多字段扩展</td></tr><tr><td>对象存储</td><td>大规模归档，不常查询</td></tr><tr><td>LangGraph checkpoint</td><td>图工作流中的状态持久化</td></tr></tbody></table></div><h3 id=2-会话生命周期>2. 会话生命周期</h3><p>要明确：历史消息保存多久？</p><p>常见策略：</p><ul><li>浏览器关闭后清除。</li><li>24 小时无操作后过期。</li><li>用户手动删除。</li><li>按项目或对话永久保存。</li><li>只保存摘要，不保存完整原文。</li></ul><p>不同产品选择不同。</p><p>学习助手可以保存更久；客服系统可能要按合规要求保存；涉及隐私的应用则要更谨慎。</p><h3 id=3-隐私和权限>3. 隐私和权限</h3><p>聊天历史可能包含敏感信息。</p><p>比如：</p><ul><li>个人身份信息</li><li>公司内部资料</li><li>API Key</li><li>业务数据</li><li>客户信息</li><li>健康或金融信息</li></ul><p>所以 Memory 不是单纯技术问题，还涉及权限和合规。</p><p>至少要考虑：</p><ul><li>谁能读取历史？</li><li>历史是否加密？</li><li>用户能否删除？</li><li>日志里是否会泄露？</li><li>是否会被用于训练或分析？</li></ul><h3 id=4-清空和重置会话>4. 清空和重置会话</h3><p>聊天产品通常需要“新建对话”或“清空上下文”。</p><p>否则用户换了一个主题，旧历史可能干扰新回答。</p><p>例如用户先聊：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>帮我学习 LangChain。
+</span></span></code></pre></td></tr></table></div></div><p>后面又问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>帮我写一封请假邮件。
+</span></span></code></pre></td></tr></table></div></div><p>如果历史一直保留，模型可能仍然用技术学习助手的风格回答。</p><p>所以产品上要提供清晰的会话边界。</p><h2 id=十二常见问题>十二、常见问题</h2><h3 id=1-memory-会让模型永久记住用户吗>1. Memory 会让模型永久记住用户吗？</h3><p>不会。</p><p>Memory 是应用层保存上下文。模型本身不会因为一次调用就改变参数。</p><p>如果你删除历史记录，下一次不再传入这些历史，模型就不会知道之前聊过什么。</p><h3 id=2-为什么我用了同一个-model-对象模型还是不记得>2. 为什么我用了同一个 model 对象，模型还是不记得？</h3><p>因为模型对象不是会话状态。</p><p>你需要显式保存历史消息，并在下一次调用时传给模型。</p><p>同一个 <code>ChatOpenAI</code> 实例不会自动保存每次调用内容。</p><h3 id=3-messagesplaceholder-是-memory-吗>3. MessagesPlaceholder 是 Memory 吗？</h3><p>不是。</p><p><code>MessagesPlaceholder</code> 只是 Prompt 中的占位符，用来插入历史消息。</p><p>真正的 Memory 还需要：</p><ul><li>保存历史消息</li><li>根据 session_id 读取历史</li><li>调用后写入新消息</li><li>控制历史长度</li></ul><h3 id=4-runnablewithmessagehistory-会自动持久化到数据库吗>4. RunnableWithMessageHistory 会自动持久化到数据库吗？</h3><p>不会。</p><p>它负责把 Runnable 和 Chat History 连接起来。</p><p>具体历史存在哪里，取决于你提供的 <code>get_session_history</code> 函数。</p><p>如果你返回的是 <code>InMemoryChatMessageHistory</code>，那就是内存。</p><p>如果你返回的是数据库实现，那就是持久化存储。</p><h3 id=5-是否应该把所有历史都传给模型>5. 是否应该把所有历史都传给模型？</h3><p>不应该盲目全部传。</p><p>历史越多，成本越高，也越容易干扰模型。</p><p>更好的方式是：</p><ul><li>最近几轮完整保留。</li><li>更早内容做摘要。</li><li>重要用户偏好单独长期保存。</li><li>无关闲聊不进入长期记忆。</li></ul><h3 id=6-memory-和-rag-能不能一起用>6. Memory 和 RAG 能不能一起用？</h3><p>可以，而且真实项目里经常一起用。</p><p>典型结构是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户问题 + 对话历史
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>必要时改写问题
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Retriever 检索资料
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Prompt 中放入历史 + 检索上下文 + 当前问题
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>模型回答
+</span></span></code></pre></td></tr></table></div></div><p>Memory 负责对话连续性，RAG 负责外部知识依据。</p><h2 id=十三最佳实践>十三、最佳实践</h2><h3 id=1-先用手动历史理解原理>1. 先用手动历史理解原理</h3><p>学习阶段可以先手写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>chat_history</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=n>HumanMessage</span><span class=p>(</span><span class=o>...</span><span class=p>))</span>
+</span></span><span class=line><span class=cl><span class=n>chat_history</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=n>AIMessage</span><span class=p>(</span><span class=o>...</span><span class=p>))</span>
+</span></span></code></pre></td></tr></table></div></div><p>理解之后再用 <code>RunnableWithMessageHistory</code>。</p><p>这样你不会把 Memory 当成黑盒。</p><h3 id=2-每个会话必须有独立-session_id>2. 每个会话必须有独立 session_id</h3><p>不要让所有用户共享一个全局历史。</p><p>真实应用中，session_id 应该和当前用户权限绑定。</p><h3 id=3-不要无限追加历史>3. 不要无限追加历史</h3><p>历史消息一定要有控制策略。</p><p>至少要考虑：</p><ul><li>最大消息数</li><li>最大 token 数</li><li>摘要压缩</li><li>过期时间</li><li>用户手动清除</li></ul><h3 id=4-prompt-中明确区分历史和当前问题>4. Prompt 中明确区分历史和当前问题</h3><p>推荐结构：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;system&#34;</span><span class=p>,</span> <span class=s2>&#34;...&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>MessagesPlaceholder</span><span class=p>(</span><span class=s2>&#34;chat_history&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;</span><span class=si>{question}</span><span class=s2>&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>不要把历史和当前问题拼成一大段字符串，消息结构会更清晰。</p><h3 id=5-不要把敏感信息随意写入长期记忆>5. 不要把敏感信息随意写入长期记忆</h3><p>用户说过的话不代表你就应该永久保存。</p><p>尤其是：</p><ul><li>密钥</li><li>个人信息</li><li>公司内部资料</li><li>账号密码</li><li>客户数据</li></ul><p>这些内容要有过滤、加密、过期和删除机制。</p><h3 id=6-新项目优先理解-runnablewithmessagehistory-和-langgraph-memory>6. 新项目优先理解 RunnableWithMessageHistory 和 LangGraph memory</h3><p>如果你看旧教程，可能会看到大量 <code>ConversationBufferMemory</code> 示例。</p><p>学习时可以了解，但新项目更建议掌握：</p><ul><li><code>MessagesPlaceholder</code></li><li><code>InMemoryChatMessageHistory</code></li><li><code>RunnableWithMessageHistory</code></li><li>LangGraph 的 short-term memory 和 checkpoint</li></ul><p>这套思路更适合和 LCEL、Runnable、Agent 工作流结合。</p><h2 id=十四总结>十四、总结</h2><p>本文我们系统讲了 LangChain 的 Memory 机制。</p><p>核心结论是：</p><blockquote><p>大模型 API 本身通常是无状态的。所谓 Memory，本质上是应用层保存历史消息，并在下一次调用时把相关上下文重新传给模型。</p></blockquote><p>本文重点包括：</p><ul><li>模型不会自动记住上一次调用。</li><li>多轮对话依赖历史消息。</li><li>Memory 不是修改模型参数，而是应用层上下文管理。</li><li><code>MessagesPlaceholder</code> 用于在 Prompt 中插入历史消息。</li><li><code>InMemoryChatMessageHistory</code> 可以保存内存中的消息历史。</li><li><code>RunnableWithMessageHistory</code> 可以给 LCEL 链路增加自动读写历史的能力。</li><li><code>session_id</code> 是多用户、多会话隔离的关键。</li><li>旧式 Memory 类仍能看到，但新项目更应该理解 Runnable 和消息历史方式。</li><li>历史消息不能无限增长，需要窗口、摘要、长期记忆等策略。</li><li>生产环境必须考虑存储、权限、隐私、过期和清空机制。</li></ul><p>到这里，我们已经掌握了多轮对话的基础。</p><p>下一篇文章，我们会把这些能力串起来，构建一个真正支持多轮上下文的聊天机器人：从命令行交互开始，逐步加入 Prompt、历史保存、会话管理和完整代码结构。</p><h2 id=参考资料>参考资料</h2><ul><li><a class=link href=https://docs.langchain.com/oss/python/langchain/short-term-memory target=_blank rel=noopener>Short-term memory — LangChain Python docs</a></li><li><a class=link href=https://docs.langchain.com/oss/python/concepts/memory target=_blank rel=noopener>Memory overview — LangChain Python concepts</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/core/runnables/langchain_core.runnables.history.RunnableWithMessageHistory.html target=_blank rel=noopener>RunnableWithMessageHistory — LangChain Python API reference</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/prompts/langchain_core.prompts.chat.MessagesPlaceholder.html target=_blank rel=noopener>MessagesPlaceholder — LangChain Python API reference</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langchain/messages target=_blank rel=noopener>Messages — LangChain Python docs</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/core/chat_history/langchain_core.chat_history.InMemoryChatMessageHistory.html target=_blank rel=noopener>InMemoryChatMessageHistory — LangChain Python API reference</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/core/chat_history.html target=_blank rel=noopener>chat_history — LangChain Python API reference</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/langchain/chains/langchain.chains.conversation.base.ConversationChain.html target=_blank rel=noopener>ConversationChain — LangChain Python API reference</a></li><li><a class=link href=https://api.python.langchain.com/en/latest/langchain/memory.html target=_blank rel=noopener>memory — LangChain Python API reference</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langchain/long-term-memory target=_blank rel=noopener>Long-term memory — LangChain Python docs</a></li></ul></section><footer class=article-footer><section class=article-tags><a href=/tags/langchain/>LangChain</a>
+<a href=/tags/memory/>Memory</a>
+<a href=/tags/chat-history/>Chat History</a>
+<a href=/tags/%E5%A4%9A%E8%BD%AE%E5%AF%B9%E8%AF%9D/>多轮对话</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/langchain-build-chatbot-with-memory/><div class=article-details><h2 class=article-title>LangChain 实战：构建一个支持多轮对话的聊天机器人</h2></div></a></article><article><a href=/p/langchain-series-summary/><div class=article-details><h2 class=article-title>LangChain 系列总结：从大模型调用到 Agent 工程化</h2></div></a></article><article><a href=/p/langchain-enterprise-document-qa/><div class=article-details><h2 class=article-title>LangChain 企业实践：构建内部文档问答系统</h2></div></a></article><article><a href=/p/langchain-personal-knowledge-assistant/><div class=article-details><h2 class=article-title>LangChain 综合实战：构建你的个人知识库 AI 助手</h2></div></a></article><article><a href=/p/langchain-performance-optimization/><div class=article-details><h2 class=article-title>LangChain 性能优化：如何让大模型应用更快、更稳、更省钱？</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>
