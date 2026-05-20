@@ -1,0 +1,597 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇文章里，我们系统讲了 LangGraph 的三个核心概念：State、Node 与 Edge。\n其中最重要的一句话是：\nState 管数据，Node 管动作，Edge 管流程。\n这一篇，我们继续深入 State。\n因为在 LangGraph 里，State 不是一个可有可无的参数对象，而是整张图的运行记忆。\nAgent 当前拿到了什么信息、执行到什么阶段、工具返回了什么结果、下一步应该依据什么判断，最终都要回到 State 上。\n如果 State 设计得清楚，图就清楚。\n如果 State 设计得混乱，节点和边也会跟着混乱。\n"><title>LangGraph 实战笔记 04：如何管理 Agent 的运行状态？</title><link rel=canonical href=https://tkdwbiao.github.io/p/langgraph-state-management-guide/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="LangGraph 实战笔记 04：如何管理 Agent 的运行状态？"><meta property='og:description' content="上一篇文章里，我们系统讲了 LangGraph 的三个核心概念：State、Node 与 Edge。\n其中最重要的一句话是：\nState 管数据，Node 管动作，Edge 管流程。\n这一篇，我们继续深入 State。\n因为在 LangGraph 里，State 不是一个可有可无的参数对象，而是整张图的运行记忆。\nAgent 当前拿到了什么信息、执行到什么阶段、工具返回了什么结果、下一步应该依据什么判断，最终都要回到 State 上。\n如果 State 设计得清楚，图就清楚。\n如果 State 设计得混乱，节点和边也会跟着混乱。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/langgraph-state-management-guide/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='LangGraph'><meta property='article:tag' content='State'><meta property='article:tag' content='Agent'><meta property='article:tag' content='MessagesState'><meta property='article:tag' content='Reducer'><meta property='article:published_time' content='2025-11-07T10:00:00+08:00'><meta property='article:modified_time' content='2025-11-07T10:00:00+08:00'><meta name=twitter:title content="LangGraph 实战笔记 04：如何管理 Agent 的运行状态？"><meta name=twitter:description content="上一篇文章里，我们系统讲了 LangGraph 的三个核心概念：State、Node 与 Edge。\n其中最重要的一句话是：\nState 管数据，Node 管动作，Edge 管流程。\n这一篇，我们继续深入 State。\n因为在 LangGraph 里，State 不是一个可有可无的参数对象，而是整张图的运行记忆。\nAgent 当前拿到了什么信息、执行到什么阶段、工具返回了什么结果、下一步应该依据什么判断，最终都要回到 State 上。\n如果 State 设计得清楚，图就清楚。\n如果 State 设计得混乱，节点和边也会跟着混乱。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二为什么-agent-需要显式状态>二、为什么 Agent 需要显式状态？</a></li><li><a href=#三state-的基本写法typeddict>三、State 的基本写法：TypedDict</a></li><li><a href=#四state-不是全局变量>四、State 不是全局变量</a><ol><li><a href=#1-state-是结构化的>1. State 是结构化的</a></li><li><a href=#2-state-是跨节点共享的>2. State 是跨节点共享的</a></li><li><a href=#3-state-是可恢复的基础>3. State 是可恢复的基础</a></li></ol></li><li><a href=#五哪些字段应该放进-state>五、哪些字段应该放进 State？</a><ol><li><a href=#1-输入字段>1. 输入字段</a></li><li><a href=#2-路由字段>2. 路由字段</a></li><li><a href=#3-上下文字段>3. 上下文字段</a></li><li><a href=#4-输出字段>4. 输出字段</a></li><li><a href=#5-控制字段>5. 控制字段</a></li><li><a href=#6-消息字段>6. 消息字段</a></li></ol></li><li><a href=#六状态更新覆盖还是追加>六、状态更新：覆盖还是追加？</a></li><li><a href=#七reducer控制状态如何合并>七、Reducer：控制状态如何合并</a><ol><li><a href=#reducer-适合哪些场景>Reducer 适合哪些场景？</a></li></ol></li><li><a href=#八messagesstate对话型-agent-的常用状态>八、MessagesState：对话型 Agent 的常用状态</a></li><li><a href=#九typeddict-state-和-messagesstate-怎么选>九、TypedDict State 和 MessagesState 怎么选？</a><ol><li><a href=#1-固定工作流优先用-typeddict>1. 固定工作流优先用 TypedDict</a></li><li><a href=#2-对话型-agent-优先用-messagesstate>2. 对话型 Agent 优先用 MessagesState</a></li><li><a href=#3-可以混合使用>3. 可以混合使用</a></li></ol></li><li><a href=#十一个完整示例带状态字段的路由-agent>十、一个完整示例：带状态字段的路由 Agent</a></li><li><a href=#十一一个对话示例messagesstate>十一、一个对话示例：MessagesState</a></li><li><a href=#十二状态设计中的常见问题>十二、状态设计中的常见问题</a><ol><li><a href=#1-state-字段太少>1. State 字段太少</a></li><li><a href=#2-state-字段太多>2. State 字段太多</a></li><li><a href=#3-字段命名模糊>3. 字段命名模糊</a></li><li><a href=#4-把-messages-当成万能状态>4. 把 messages 当成万能状态</a></li><li><a href=#5-忘记初始化必要字段>5. 忘记初始化必要字段</a></li></ol></li><li><a href=#十三状态设计的实用流程>十三、状态设计的实用流程</a><ol><li><a href=#第一步写出流程>第一步：写出流程</a></li><li><a href=#第二步标出每个节点的输入输出>第二步：标出每个节点的输入输出</a></li><li><a href=#第三步合并成-state>第三步：合并成 State</a></li><li><a href=#第四步检查字段是否真的跨节点使用>第四步：检查字段是否真的跨节点使用</a></li><li><a href=#第五步检查是否有需要累积的字段>第五步：检查是否有需要累积的字段</a></li><li><a href=#第六步检查路由字段是否清楚>第六步：检查路由字段是否清楚</a></li></ol></li><li><a href=#十四最佳实践>十四、最佳实践</a><ol><li><a href=#1-state-从小开始>1. State 从小开始</a></li><li><a href=#2-字段按职责分组思考>2. 字段按职责分组思考</a></li><li><a href=#3-不要把-state-当日志系统>3. 不要把 State 当日志系统</a></li><li><a href=#4-结构化字段优先于纯文本堆叠>4. 结构化字段优先于纯文本堆叠</a></li><li><a href=#5-路由字段保持稳定>5. 路由字段保持稳定</a></li><li><a href=#6-对话历史用-messagesstate>6. 对话历史用 MessagesState</a></li><li><a href=#7-为-checkpoint-提前考虑-state>7. 为 Checkpoint 提前考虑 State</a></li></ol></li><li><a href=#十五总结>十五、总结</a></li><li><a href=#参考资料>参考资料</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/agent-%E7%B3%BB%E5%88%97/ style=background-color:#beefe2;color:#0f3d32>Agent 系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/langgraph-state-management-guide/>LangGraph 实战笔记 04：如何管理 Agent 的运行状态？</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2025-11-07T10:00:00+08:00>2025-11-07 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 12 分钟</time></div></footer></div></header><section class=article-content><p>上一篇文章里，我们系统讲了 LangGraph 的三个核心概念：State、Node 与 Edge。</p><p>其中最重要的一句话是：</p><blockquote><p>State 管数据，Node 管动作，Edge 管流程。</p></blockquote><p>这一篇，我们继续深入 State。</p><p>因为在 LangGraph 里，State 不是一个可有可无的参数对象，而是整张图的运行记忆。</p><p>Agent 当前拿到了什么信息、执行到什么阶段、工具返回了什么结果、下一步应该依据什么判断，最终都要回到 State 上。</p><p>如果 State 设计得清楚，图就清楚。</p><p>如果 State 设计得混乱，节点和边也会跟着混乱。</p><h2 id=一前言>一、前言</h2><p>很多人刚开始写 LangGraph 时，会把注意力放在节点和边上。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>先添加哪个节点？
+</span></span><span class=line><span class=cl>哪个节点连到哪个节点？
+</span></span><span class=line><span class=cl>条件边怎么写？
+</span></span></code></pre></td></tr></table></div></div><p>这些当然重要。</p><p>但真正决定一个 LangGraph 应用是否可维护的，往往是 State。</p><p>因为 State 决定了：</p><ul><li>图的输入是什么。</li><li>节点之间共享什么数据。</li><li>哪些中间结果需要保留。</li><li>哪些字段会被后续节点消费。</li><li>循环时如何记录次数和结果。</li><li>多轮对话时消息如何累积。</li><li>Checkpoint 恢复时能恢复到什么上下文。</li></ul><p>换句话说，State 是整个 Agent 工作流的数据骨架。</p><p>如果没有清晰的 State，复杂 Agent 很容易退化成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>一堆函数 + 一堆临时变量 + 一大段 messages + 不知道谁改了什么
+</span></span></code></pre></td></tr></table></div></div><p>LangGraph 的优势，是把这些隐藏状态显式表达出来。</p><h2 id=二为什么-agent-需要显式状态>二、为什么 Agent 需要显式状态？</h2><p>在最简单的 LLM 调用里，我们通常只关心一次输入和一次输出。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>answer</span> <span class=o>=</span> <span class=n>model</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=s2>&#34;请解释什么是 RAG&#34;</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个场景里，状态很简单。</p><p>输入是问题，输出是回答。</p><p>但 Agent 不一样。</p><p>一个 Agent 可能需要经历多个阶段：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>接收问题
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>识别意图
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>检索文档
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>调用工具
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>生成草稿
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>检查结果
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>必要时重试
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>输出最终回答
+</span></span></code></pre></td></tr></table></div></div><p>在这个过程中，系统需要保存很多信息：</p><ul><li>用户原始问题。</li><li>当前意图。</li><li>检索到的上下文。</li><li>工具调用结果。</li><li>当前生成的草稿。</li><li>检查结果。</li><li>重试次数。</li><li>最终回答。</li></ul><p>如果这些信息散落在不同函数里，后面就会很难追踪。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>run_agent</span><span class=p>(</span><span class=n>question</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>intent</span> <span class=o>=</span> <span class=n>classify</span><span class=p>(</span><span class=n>question</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs</span> <span class=o>=</span> <span class=n>retrieve</span><span class=p>(</span><span class=n>question</span><span class=p>)</span> <span class=k>if</span> <span class=n>intent</span> <span class=o>==</span> <span class=s2>&#34;knowledge&#34;</span> <span class=k>else</span> <span class=p>[]</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span> <span class=o>=</span> <span class=n>generate</span><span class=p>(</span><span class=n>question</span><span class=p>,</span> <span class=n>docs</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>passed</span> <span class=o>=</span> <span class=n>check</span><span class=p>(</span><span class=n>answer</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>passed</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>answer</span> <span class=o>=</span> <span class=n>rewrite</span><span class=p>(</span><span class=n>question</span><span class=p>,</span> <span class=n>docs</span><span class=p>,</span> <span class=n>answer</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>answer</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个例子还能读。</p><p>但一旦加入工具调用、循环、人工确认、checkpoint、多 Agent 协作，临时变量会越来越多。</p><p>LangGraph 的 State 就是为了解决这个问题。</p><p>它把跨节点共享的数据集中定义出来，让整个工作流有一个明确的数据边界。</p><h2 id=三state-的基本写法typeddict>三、State 的基本写法：TypedDict</h2><p>最常见的 State 写法是使用 <code>TypedDict</code>。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>AgentState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>intent</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>context</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个 State 表示整张图会围绕四个字段运行：</p><div class=table-wrapper><table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody><tr><td><code>question</code></td><td>用户输入的问题</td></tr><tr><td><code>intent</code></td><td>意图分类结果</td></tr><tr><td><code>context</code></td><td>检索或工具返回的上下文</td></tr><tr><td><code>answer</code></td><td>最终回答</td></tr></tbody></table></div><p>节点会接收当前 State，并返回部分状态更新。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>classify_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>AgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;订单&#34;</span> <span class=ow>in</span> <span class=n>question</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;intent&#34;</span><span class=p>:</span> <span class=s2>&#34;order&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;制度&#34;</span> <span class=ow>in</span> <span class=n>question</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;intent&#34;</span><span class=p>:</span> <span class=s2>&#34;knowledge&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;intent&#34;</span><span class=p>:</span> <span class=s2>&#34;chat&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点只更新 <code>intent</code>。</p><p>再例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>generate_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>AgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span> <span class=o>=</span> <span class=sa>f</span><span class=s2>&#34;基于上下文回答：</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;context&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=n>answer</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点只更新 <code>answer</code>。</p><p>这就是 State 的基本使用方式：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>节点读取 State -&gt; 执行动作 -&gt; 返回状态更新 -&gt; LangGraph 合并更新
+</span></span></code></pre></td></tr></table></div></div><h2 id=四state-不是全局变量>四、State 不是全局变量</h2><p>State 很像工作流上下文，但不要把它当成随便写的全局变量。</p><p>它有几个重要特点。</p><h3 id=1-state-是结构化的>1. State 是结构化的</h3><p>你应该提前定义字段，而不是让节点随意塞数据。</p><p>不推荐：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>AgentState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>data</span><span class=p>:</span> <span class=nb>dict</span>
+</span></span></code></pre></td></tr></table></div></div><p>然后所有东西都塞进 <code>data</code>。</p><p>这样短期方便，长期会失去类型和结构。</p><p>更推荐：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>AgentState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>intent</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>retrieved_docs</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>字段名越清楚，节点职责越容易判断。</p><h3 id=2-state-是跨节点共享的>2. State 是跨节点共享的</h3><p>只有后续节点会用到的数据，才值得放进 State。</p><p>例如一个节点内部临时变量：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>retrieve_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>AgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>keyword</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]</span><span class=o>.</span><span class=n>strip</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs</span> <span class=o>=</span> <span class=n>retriever</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=n>keyword</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;retrieved_docs&#34;</span><span class=p>:</span> <span class=n>docs</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里的 <code>keyword</code> 不需要放进 State。</p><p>因为后续节点真正需要的是 <code>retrieved_docs</code>。</p><h3 id=3-state-是可恢复的基础>3. State 是可恢复的基础</h3><p>后面我们学习 Checkpoint 时会看到，LangGraph 可以保存图的中间状态。</p><p>如果 State 设计合理，恢复后就能知道：</p><ul><li>当前问题是什么。</li><li>已经执行过哪些步骤。</li><li>中间结果是什么。</li><li>下一步应该继续哪里。</li></ul><p>如果关键数据没有写进 State，恢复就没有意义。</p><p>所以 State 不只是节点之间传数据，也是长流程恢复的基础。</p><h2 id=五哪些字段应该放进-state>五、哪些字段应该放进 State？</h2><p>一个实用判断标准是：</p><blockquote><p>如果某个数据会被后续节点使用、会影响路由、需要被观察或需要恢复，就应该考虑放进 State。</p></blockquote><p>常见字段可以分为几类。</p><h3 id=1-输入字段>1. 输入字段</h3><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl><span class=n>user_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl><span class=n>session_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>这些字段通常来自用户或调用方。</p><p>它们是图执行的起点。</p><h3 id=2-路由字段>2. 路由字段</h3><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>intent</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl><span class=n>route</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl><span class=n>next_action</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>这些字段通常由分类节点或判断节点生成。</p><p>条件边会读取它们决定下一步。</p><h3 id=3-上下文字段>3. 上下文字段</h3><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>retrieved_docs</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span>
+</span></span><span class=line><span class=cl><span class=n>tool_result</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl><span class=n>context</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>这些字段来自 Retriever、Tool、数据库或外部系统。</p><p>生成节点会读取它们。</p><h3 id=4-输出字段>4. 输出字段</h3><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl><span class=n>summary</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl><span class=n>final_result</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>这些字段是最终要返回给调用方或用户的结果。</p><h3 id=5-控制字段>5. 控制字段</h3><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>retry_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl><span class=n>is_answer_valid</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl><span class=n>needs_human_review</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span></code></pre></td></tr></table></div></div><p>这些字段用于控制流程。</p><p>例如：</p><ul><li>是否继续循环。</li><li>是否进入人工审核。</li><li>是否结束。</li><li>是否走失败分支。</li></ul><h3 id=6-消息字段>6. 消息字段</h3><p>对话型 Agent 通常需要保存消息列表：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>messages</span><span class=p>:</span> <span class=nb>list</span>
+</span></span></code></pre></td></tr></table></div></div><p>不过消息字段比较特殊，因为它往往不是简单覆盖，而是需要追加。</p><p>这就会引出后面要讲的 reducer。</p><h2 id=六状态更新覆盖还是追加>六、状态更新：覆盖还是追加？</h2><p>默认情况下，节点返回的字段会更新到 State 里。</p><p>对于普通字段，可以把它理解成覆盖。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>AgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=s2>&#34;新的回答&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>如果 State 里原本有：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=s2>&#34;旧的回答&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>执行后就会变成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=s2>&#34;新的回答&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这对 <code>answer</code>、<code>intent</code>、<code>route</code> 这类字段很自然。</p><p>但有些字段不适合覆盖。</p><p>最典型的是消息列表。</p><p>对话过程中，我们通常希望：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>已有 messages + 新消息
+</span></span></code></pre></td></tr></table></div></div><p>而不是每次把 messages 整个覆盖掉。</p><p>这时就需要 reducer。</p><h2 id=七reducer控制状态如何合并>七、Reducer：控制状态如何合并</h2><p>Reducer 用来定义某个 State 字段在多次更新时如何合并。</p><p>最常见的例子是消息累积。</p><p>LangGraph 提供了 <code>add_messages</code>，可以用来把新消息追加到已有消息列表中。</p><p>常见写法是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>Annotated</span><span class=p>,</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langgraph.graph.message</span> <span class=kn>import</span> <span class=n>add_messages</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ChatState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>messages</span><span class=p>:</span> <span class=n>Annotated</span><span class=p>[</span><span class=nb>list</span><span class=p>,</span> <span class=n>add_messages</span><span class=p>]</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里的意思是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>messages 字段不是简单覆盖，而是使用 add_messages 合并。
+</span></span></code></pre></td></tr></table></div></div><p>假设初始状态是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;messages&#34;</span><span class=p>:</span> <span class=p>[</span><span class=n>HumanMessage</span><span class=p>(</span><span class=n>content</span><span class=o>=</span><span class=s2>&#34;你好&#34;</span><span class=p>)]</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>某个节点返回：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;messages&#34;</span><span class=p>:</span> <span class=p>[</span><span class=n>AIMessage</span><span class=p>(</span><span class=n>content</span><span class=o>=</span><span class=s2>&#34;你好，我是助手&#34;</span><span class=p>)]</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>最终 <code>messages</code> 会变成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=n>HumanMessage</span><span class=p>(</span><span class=n>content</span><span class=o>=</span><span class=s2>&#34;你好&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>AIMessage</span><span class=p>(</span><span class=n>content</span><span class=o>=</span><span class=s2>&#34;你好，我是助手&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>]</span>
+</span></span></code></pre></td></tr></table></div></div><p>这对于多轮对话非常重要。</p><p>如果没有 reducer，每个节点返回 <code>messages</code> 都可能覆盖历史消息。</p><h3 id=reducer-适合哪些场景>Reducer 适合哪些场景？</h3><p>Reducer 适合那些“需要累积”的字段。</p><p>例如：</p><ul><li>对话消息。</li><li>执行日志。</li><li>检索到的文档列表。</li><li>多个 Agent 的中间结果。</li><li>错误记录。</li></ul><p>不过入门阶段不要过度使用 reducer。</p><p>如果一个字段只需要保存最新值，普通字段就够了。</p><h2 id=八messagesstate对话型-agent-的常用状态>八、MessagesState：对话型 Agent 的常用状态</h2><p>对于对话型 Agent，LangGraph 提供了更方便的 <code>MessagesState</code>。</p><p>它本质上是一个包含 <code>messages</code> 字段的状态结构，并且已经处理了消息追加逻辑。</p><p>常见写法是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langgraph.graph</span> <span class=kn>import</span> <span class=n>MessagesState</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ChatState</span><span class=p>(</span><span class=n>MessagesState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>user_name</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>这样 State 中天然有一个 <code>messages</code> 字段，同时你还可以增加自定义字段。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>AssistantState</span><span class=p>(</span><span class=n>MessagesState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>intent</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer_quality</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>Node 可以读取消息：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>chatbot_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>AssistantState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>messages</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;messages&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>response</span> <span class=o>=</span> <span class=n>model</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=n>messages</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;messages&#34;</span><span class=p>:</span> <span class=p>[</span><span class=n>response</span><span class=p>]}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里返回的新消息会被追加到历史消息中。</p><p>这比自己手动维护消息列表更安全。</p><h2 id=九typeddict-state-和-messagesstate-怎么选>九、TypedDict State 和 MessagesState 怎么选？</h2><p>可以用一个简单标准判断。</p><h3 id=1-固定工作流优先用-typeddict>1. 固定工作流优先用 TypedDict</h3><p>如果你的图更像一个固定流程：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>输入 -&gt; 分类 -&gt; 检索 -&gt; 生成 -&gt; 检查 -&gt; 输出
+</span></span></code></pre></td></tr></table></div></div><p>并且主要处理结构化字段，那么 <code>TypedDict</code> 很合适。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>RagState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>is_answer_valid</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span></code></pre></td></tr></table></div></div><p>这种 State 清晰、直接、容易维护。</p><h3 id=2-对话型-agent-优先用-messagesstate>2. 对话型 Agent 优先用 MessagesState</h3><p>如果你的图核心是多轮消息：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>HumanMessage -&gt; AIMessage -&gt; ToolMessage -&gt; AIMessage
+</span></span></code></pre></td></tr></table></div></div><p>那么 <code>MessagesState</code> 更自然。</p><p>例如 Tool Calling 或 ReAct Agent，通常会围绕 messages 运转。</p><h3 id=3-可以混合使用>3. 可以混合使用</h3><p>很多真实 Agent 既需要消息，也需要结构化字段。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langgraph.graph</span> <span class=kn>import</span> <span class=n>MessagesState</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>SupportAgentState</span><span class=p>(</span><span class=n>MessagesState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>user_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>intent</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>needs_human_review</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span></code></pre></td></tr></table></div></div><p>这样既保留多轮消息，又能保存业务状态。</p><h2 id=十一个完整示例带状态字段的路由-agent>十、一个完整示例：带状态字段的路由 Agent</h2><p>下面我们写一个完整的小例子。</p><p>它包含：</p><ul><li>用户问题 <code>question</code>。</li><li>路由结果 <code>intent</code>。</li><li>上下文 <code>context</code>。</li><li>最终回答 <code>answer</code>。</li><li>是否需要人工审核 <code>needs_human_review</code>。</li></ul><p>流程是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>START
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>classify
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>  ├── order -&gt; query_order -&gt; risk_check -&gt; generate_answer
+</span></span><span class=line><span class=cl>  ├── knowledge -&gt; retrieve_docs -&gt; generate_answer
+</span></span><span class=line><span class=cl>  └── chat -&gt; chat_answer
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>END
+</span></span></code></pre></td></tr></table></div></div><p>代码如下：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span><span class=lnt>46
+</span><span class=lnt>47
+</span><span class=lnt>48
+</span><span class=lnt>49
+</span><span class=lnt>50
+</span><span class=lnt>51
+</span><span class=lnt>52
+</span><span class=lnt>53
+</span><span class=lnt>54
+</span><span class=lnt>55
+</span><span class=lnt>56
+</span><span class=lnt>57
+</span><span class=lnt>58
+</span><span class=lnt>59
+</span><span class=lnt>60
+</span><span class=lnt>61
+</span><span class=lnt>62
+</span><span class=lnt>63
+</span><span class=lnt>64
+</span><span class=lnt>65
+</span><span class=lnt>66
+</span><span class=lnt>67
+</span><span class=lnt>68
+</span><span class=lnt>69
+</span><span class=lnt>70
+</span><span class=lnt>71
+</span><span class=lnt>72
+</span><span class=lnt>73
+</span><span class=lnt>74
+</span><span class=lnt>75
+</span><span class=lnt>76
+</span><span class=lnt>77
+</span><span class=lnt>78
+</span><span class=lnt>79
+</span><span class=lnt>80
+</span><span class=lnt>81
+</span><span class=lnt>82
+</span><span class=lnt>83
+</span><span class=lnt>84
+</span><span class=lnt>85
+</span><span class=lnt>86
+</span><span class=lnt>87
+</span><span class=lnt>88
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>Literal</span><span class=p>,</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langgraph.graph</span> <span class=kn>import</span> <span class=n>StateGraph</span><span class=p>,</span> <span class=n>START</span><span class=p>,</span> <span class=n>END</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>SupportState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>intent</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>context</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>needs_human_review</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>classify_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>SupportState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;退款&#34;</span> <span class=ow>in</span> <span class=n>question</span> <span class=ow>or</span> <span class=s2>&#34;订单&#34;</span> <span class=ow>in</span> <span class=n>question</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;intent&#34;</span><span class=p>:</span> <span class=s2>&#34;order&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;制度&#34;</span> <span class=ow>in</span> <span class=n>question</span> <span class=ow>or</span> <span class=s2>&#34;文档&#34;</span> <span class=ow>in</span> <span class=n>question</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;intent&#34;</span><span class=p>:</span> <span class=s2>&#34;knowledge&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;intent&#34;</span><span class=p>:</span> <span class=s2>&#34;chat&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>route_by_intent</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>SupportState</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>Literal</span><span class=p>[</span><span class=s2>&#34;order&#34;</span><span class=p>,</span> <span class=s2>&#34;knowledge&#34;</span><span class=p>,</span> <span class=s2>&#34;chat&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;intent&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>query_order_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>SupportState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;context&#34;</span><span class=p>:</span> <span class=s2>&#34;订单 1001 当前状态：已付款，尚未发货。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>retrieve_docs_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>SupportState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;context&#34;</span><span class=p>:</span> <span class=s2>&#34;知识库文档：普通报销应在费用发生后 30 天内提交。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>risk_check_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>SupportState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>needs_review</span> <span class=o>=</span> <span class=s2>&#34;退款&#34;</span> <span class=ow>in</span> <span class=n>question</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;needs_human_review&#34;</span><span class=p>:</span> <span class=n>needs_review</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>generate_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>SupportState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;needs_human_review&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=s2>&#34;这个问题涉及退款操作，需要人工客服进一步确认。&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=sa>f</span><span class=s2>&#34;根据查询结果：</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;context&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2>&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>chat_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>SupportState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=s2>&#34;你好，我可以帮你查询订单、解释制度或回答常见问题。&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span> <span class=o>=</span> <span class=n>StateGraph</span><span class=p>(</span><span class=n>SupportState</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;classify&#34;</span><span class=p>,</span> <span class=n>classify_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;query_order&#34;</span><span class=p>,</span> <span class=n>query_order_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;retrieve_docs&#34;</span><span class=p>,</span> <span class=n>retrieve_docs_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;risk_check&#34;</span><span class=p>,</span> <span class=n>risk_check_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;generate_answer&#34;</span><span class=p>,</span> <span class=n>generate_answer_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;chat_answer&#34;</span><span class=p>,</span> <span class=n>chat_answer_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=n>START</span><span class=p>,</span> <span class=s2>&#34;classify&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_conditional_edges</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;classify&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>route_by_intent</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;order&#34;</span><span class=p>:</span> <span class=s2>&#34;query_order&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;knowledge&#34;</span><span class=p>:</span> <span class=s2>&#34;retrieve_docs&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;chat&#34;</span><span class=p>:</span> <span class=s2>&#34;chat_answer&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;query_order&#34;</span><span class=p>,</span> <span class=s2>&#34;risk_check&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;risk_check&#34;</span><span class=p>,</span> <span class=s2>&#34;generate_answer&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;retrieve_docs&#34;</span><span class=p>,</span> <span class=s2>&#34;generate_answer&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;generate_answer&#34;</span><span class=p>,</span> <span class=n>END</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;chat_answer&#34;</span><span class=p>,</span> <span class=n>END</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>graph</span> <span class=o>=</span> <span class=n>builder</span><span class=o>.</span><span class=n>compile</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>graph</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=s2>&#34;我想申请订单退款&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;needs_human_review&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>[</span><span class=s2>&#34;answer&#34;</span><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>输出类似：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>这个问题涉及退款操作，需要人工客服进一步确认。
+</span></span></code></pre></td></tr></table></div></div><p>这个例子展示了 State 的作用：</p><ul><li><code>classify</code> 写入 <code>intent</code>。</li><li>条件边读取 <code>intent</code> 决定路径。</li><li><code>query_order</code> 或 <code>retrieve_docs</code> 写入 <code>context</code>。</li><li><code>risk_check</code> 写入 <code>needs_human_review</code>。</li><li><code>generate_answer</code> 根据多个状态字段生成最终回答。</li></ul><p>这比把所有逻辑写在一个函数里更清楚。</p><h2 id=十一一个对话示例messagesstate>十一、一个对话示例：MessagesState</h2><p>下面再看一个对话型示例。</p><p>它使用 <code>MessagesState</code> 保存多轮消息。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.messages</span> <span class=kn>import</span> <span class=n>HumanMessage</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langgraph.graph</span> <span class=kn>import</span> <span class=n>MessagesState</span><span class=p>,</span> <span class=n>StateGraph</span><span class=p>,</span> <span class=n>START</span><span class=p>,</span> <span class=n>END</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ChatState</span><span class=p>(</span><span class=n>MessagesState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>topic</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>chat_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ChatState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>last_message</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;messages&#34;</span><span class=p>][</span><span class=o>-</span><span class=mi>1</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>response</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;role&#34;</span><span class=p>:</span> <span class=s2>&#34;assistant&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;content&#34;</span><span class=p>:</span> <span class=sa>f</span><span class=s2>&#34;你刚才围绕 </span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;topic&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2> 提问：</span><span class=si>{</span><span class=n>last_message</span><span class=o>.</span><span class=n>content</span><span class=si>}</span><span class=s2>&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;messages&#34;</span><span class=p>:</span> <span class=p>[</span><span class=n>response</span><span class=p>]}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span> <span class=o>=</span> <span class=n>StateGraph</span><span class=p>(</span><span class=n>ChatState</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;chat&#34;</span><span class=p>,</span> <span class=n>chat_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=n>START</span><span class=p>,</span> <span class=s2>&#34;chat&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;chat&#34;</span><span class=p>,</span> <span class=n>END</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>graph</span> <span class=o>=</span> <span class=n>builder</span><span class=o>.</span><span class=n>compile</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>graph</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LangGraph&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;messages&#34;</span><span class=p>:</span> <span class=p>[</span><span class=n>HumanMessage</span><span class=p>(</span><span class=n>content</span><span class=o>=</span><span class=s2>&#34;State 是什么？&#34;</span><span class=p>)],</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>[</span><span class=s2>&#34;messages&#34;</span><span class=p>][</span><span class=o>-</span><span class=mi>1</span><span class=p>]</span><span class=o>.</span><span class=n>content</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>输出类似：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你刚才围绕 LangGraph 提问：State 是什么？
+</span></span></code></pre></td></tr></table></div></div><p>这个例子里：</p><ul><li><code>messages</code> 负责保存对话历史。</li><li><code>topic</code> 是额外业务字段。</li><li>节点返回的新消息会追加到 messages 中。</li></ul><p>后面写 Tool Calling、ReAct Agent、多轮对话 Agent 时，<code>MessagesState</code> 会非常常见。</p><h2 id=十二状态设计中的常见问题>十二、状态设计中的常见问题</h2><h3 id=1-state-字段太少>1. State 字段太少</h3><p>如果 State 字段太少，节点之间就会通过隐式方式传递信息。</p><p>例如把所有中间结果都藏在 Prompt 或 messages 里。</p><p>这样不利于调试，也不利于恢复。</p><h3 id=2-state-字段太多>2. State 字段太多</h3><p>另一个极端是字段太多。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>AgentState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>temp1</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>temp2</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>temp3</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>debug_info</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>raw_response</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>parsed_response</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>unused_result</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>如果很多字段只被一个节点使用，就没有必要放进 State。</p><p>State 应该保存跨节点有意义的数据，而不是所有临时变量。</p><h3 id=3-字段命名模糊>3. 字段命名模糊</h3><p>不要大量使用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>data</span>
+</span></span><span class=line><span class=cl><span class=n>result</span>
+</span></span><span class=line><span class=cl><span class=n>output</span>
+</span></span><span class=line><span class=cl><span class=n>flag</span>
+</span></span><span class=line><span class=cl><span class=n>status</span>
+</span></span></code></pre></td></tr></table></div></div><p>这些名字不是不能用，而是太容易变得含糊。</p><p>更好的命名是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>retrieved_docs</span>
+</span></span><span class=line><span class=cl><span class=n>tool_result</span>
+</span></span><span class=line><span class=cl><span class=n>is_answer_valid</span>
+</span></span><span class=line><span class=cl><span class=n>needs_human_review</span>
+</span></span><span class=line><span class=cl><span class=n>final_answer</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=4-把-messages-当成万能状态>4. 把 messages 当成万能状态</h3><p>很多 Agent 框架喜欢把所有东西都塞进 messages。</p><p>messages 确实很重要，但不应该成为唯一状态。</p><p>例如：</p><ul><li><code>intent</code> 可以是结构化字段。</li><li><code>retry_count</code> 可以是结构化字段。</li><li><code>needs_human_review</code> 可以是结构化字段。</li><li><code>retrieved_docs</code> 可以是结构化字段。</li></ul><p>这样比让模型从一堆消息里猜当前状态更可靠。</p><h3 id=5-忘记初始化必要字段>5. 忘记初始化必要字段</h3><p>如果某个节点会读取字段，就要确保执行到该节点前字段已经存在。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>generate_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>SupportState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;context&#34;</span><span class=p>]}</span>
+</span></span></code></pre></td></tr></table></div></div><p>那就要确保所有通向 <code>generate_answer_node</code> 的路径都会写入 <code>context</code>。</p><p>否则某些路径会出错。</p><h2 id=十三状态设计的实用流程>十三、状态设计的实用流程</h2><p>设计一个 LangGraph State 时，可以按下面步骤来。</p><h3 id=第一步写出流程>第一步：写出流程</h3><p>先写流程，不要先写类型。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户问题 -&gt; 分类 -&gt; 检索 / 工具 -&gt; 生成 -&gt; 检查 -&gt; 输出
+</span></span></code></pre></td></tr></table></div></div><h3 id=第二步标出每个节点的输入输出>第二步：标出每个节点的输入输出</h3><p>例如：</p><div class=table-wrapper><table><thead><tr><th>节点</th><th>读取字段</th><th>写入字段</th></tr></thead><tbody><tr><td>classify</td><td>question</td><td>intent</td></tr><tr><td>retrieve</td><td>question</td><td>retrieved_docs</td></tr><tr><td>call_tool</td><td>question</td><td>tool_result</td></tr><tr><td>generate</td><td>question, retrieved_docs/tool_result</td><td>answer</td></tr><tr><td>check</td><td>answer</td><td>is_answer_valid</td></tr></tbody></table></div><h3 id=第三步合并成-state>第三步：合并成 State</h3><p>根据节点输入输出整理出 State：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>AgentState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>intent</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>retrieved_docs</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>tool_result</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>is_answer_valid</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=第四步检查字段是否真的跨节点使用>第四步：检查字段是否真的跨节点使用</h3><p>如果某个字段只在一个节点内部使用，可以删掉。</p><h3 id=第五步检查是否有需要累积的字段>第五步：检查是否有需要累积的字段</h3><p>如果有消息、日志、文档列表等需要累积的字段，再考虑 reducer。</p><h3 id=第六步检查路由字段是否清楚>第六步：检查路由字段是否清楚</h3><p>所有条件边依赖的字段都应该很明确。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>intent</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl><span class=n>is_answer_valid</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl><span class=n>needs_human_review</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span></code></pre></td></tr></table></div></div><p>不要让路由函数依赖一堆隐式状态。</p><h2 id=十四最佳实践>十四、最佳实践</h2><h3 id=1-state-从小开始>1. State 从小开始</h3><p>不要一开始就设计一个包含几十个字段的 State。</p><p>先让最小流程跑起来，再随着节点增加逐步扩展。</p><h3 id=2-字段按职责分组思考>2. 字段按职责分组思考</h3><p>可以按这几类思考：</p><ul><li>输入字段。</li><li>路由字段。</li><li>上下文字段。</li><li>输出字段。</li><li>控制字段。</li><li>消息字段。</li></ul><p>这样比随手添加字段更清楚。</p><h3 id=3-不要把-state-当日志系统>3. 不要把 State 当日志系统</h3><p>State 可以保存关键中间结果，但不应该保存所有调试日志。</p><p>日志、trace 和观测数据更适合交给日志系统或 LangSmith。</p><h3 id=4-结构化字段优先于纯文本堆叠>4. 结构化字段优先于纯文本堆叠</h3><p>如果某个信息会被程序判断，就尽量用结构化字段。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>needs_human_review</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span></code></pre></td></tr></table></div></div><p>通常比把“需要人工审核”写在一段自然语言 messages 里更可靠。</p><h3 id=5-路由字段保持稳定>5. 路由字段保持稳定</h3><p>条件边依赖的字段不要频繁改变含义。</p><p>例如 <code>intent</code> 就应该稳定表示意图，不要一会儿表示业务类型，一会儿表示下一步动作。</p><h3 id=6-对话历史用-messagesstate>6. 对话历史用 MessagesState</h3><p>如果你的核心流程围绕多轮消息展开，优先考虑 <code>MessagesState</code>。</p><p>如果只是普通固定工作流，<code>TypedDict</code> 往往更直观。</p><h3 id=7-为-checkpoint-提前考虑-state>7. 为 Checkpoint 提前考虑 State</h3><p>即使你现在还没有用 checkpoint，也可以提前想一个问题：</p><blockquote><p>如果流程在这个节点暂停，恢复时需要哪些信息？</p></blockquote><p>这个问题能帮助你判断哪些字段应该放进 State。</p><h2 id=十五总结>十五、总结</h2><p>本文重点讲了 LangGraph 中的状态管理。</p><p>核心结论是：</p><blockquote><p>State 是 LangGraph 工作流的数据骨架。它不仅负责节点之间传递数据，也决定了复杂 Agent 是否可观察、可控制、可恢复。</p></blockquote><p>本文重点包括：</p><ul><li>Agent 需要显式状态，是因为复杂流程会产生大量中间结果和控制信息。</li><li><code>TypedDict</code> 是最常见、最适合入门的 State 定义方式。</li><li>State 应该保存跨节点共享、影响路由、需要观察或需要恢复的数据。</li><li>普通字段通常是覆盖更新。</li><li>对于消息列表等需要累积的字段，可以使用 reducer。</li><li><code>MessagesState</code> 适合对话型 Agent 和 Tool Calling / ReAct 场景。</li><li>不要把 State 当全局变量、垃圾桶或日志系统。</li><li>好的 State 设计应该字段清晰、职责明确、尽量结构化。</li></ul><p>到这里，我们已经更深入地理解了“State 管数据”。</p><p>下一篇文章，我们会继续看“Node 管动作”：如何设计可复用的执行节点，怎样区分普通函数节点、LLM 节点、Tool 节点，以及如何避免把一个节点写成难以维护的“大杂烩”。</p><h2 id=参考资料>参考资料</h2><ul><li><a class=link href=https://docs.langchain.com/oss/python/langgraph/graph-api target=_blank rel=noopener>Graph API overview — LangGraph Python docs</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langgraph/use-graph-api target=_blank rel=noopener>Use the graph API — LangGraph Python docs</a></li><li><a class=link href=https://langchain-ai.github.io/langgraph/concepts/low_level/ target=_blank rel=noopener>LangGraph low-level concepts</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langgraph/overview target=_blank rel=noopener>LangGraph overview — Python docs</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langchain/messages target=_blank rel=noopener>Messages — LangChain Python docs</a></li></ul></section><footer class=article-footer><section class=article-tags><a href=/tags/langgraph/>LangGraph</a>
+<a href=/tags/state/>State</a>
+<a href=/tags/agent/>Agent</a>
+<a href=/tags/messagesstate/>MessagesState</a>
+<a href=/tags/reducer/>Reducer</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/langgraph-messagesstate-conversation-agent/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 10：构建有记忆的多轮对话 Agent</h2></div></a></article><article><a href=/p/langgraph-state-node-edge-core-concepts/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 03：State、Node 与 Edge 核心概念详解</h2></div></a></article><article><a href=/p/langgraph-series-summary/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 20：从状态图到复杂 Agent 工程化</h2></div></a></article><article><a href=/p/langgraph-engineering-practice/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 19：从 Demo 到可维护 Agent 系统</h2></div></a></article><article><a href=/p/langgraph-supervisor-pattern-multi-agent/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 18：构建多 Agent 调度中心</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

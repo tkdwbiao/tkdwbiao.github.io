@@ -1,0 +1,657 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇文章里，我们构建了一个可以根据状态选择下一步的多分支 Agent。\n它会先识别用户问题类型，然后在知识库问答、订单查询和普通聊天之间选择不同路径。\n这一篇，我们继续往前走一步：让 Agent 具备“自我反思”和“自我修正”的能力。\n也就是：\n1 2 3 4 5 6 7 8 9 先生成一个结果 ↓ 检查这个结果是否合格 ↓ 如果不合格，就修改 ↓ 再检查 ↓ 直到合格或达到最大次数 这类流程是 LangGraph 非常典型的使用场景，因为它天然包含循环、状态更新和终止条件。\n"><title>LangGraph 实战笔记 08：构建一个会自我反思的 Agent</title><link rel=canonical href=https://tkdwbiao.github.io/p/langgraph-loop-reflection-agent/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="LangGraph 实战笔记 08：构建一个会自我反思的 Agent"><meta property='og:description' content="上一篇文章里，我们构建了一个可以根据状态选择下一步的多分支 Agent。\n它会先识别用户问题类型，然后在知识库问答、订单查询和普通聊天之间选择不同路径。\n这一篇，我们继续往前走一步：让 Agent 具备“自我反思”和“自我修正”的能力。\n也就是：\n1 2 3 4 5 6 7 8 9 先生成一个结果 ↓ 检查这个结果是否合格 ↓ 如果不合格，就修改 ↓ 再检查 ↓ 直到合格或达到最大次数 这类流程是 LangGraph 非常典型的使用场景，因为它天然包含循环、状态更新和终止条件。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/langgraph-loop-reflection-agent/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='LangGraph'><meta property='article:tag' content='Agent'><meta property='article:tag' content='Reflection'><meta property='article:tag' content='循环'><meta property='article:tag' content='状态图'><meta property='article:published_time' content='2025-11-15T10:00:00+08:00'><meta property='article:modified_time' content='2025-11-15T10:00:00+08:00'><meta name=twitter:title content="LangGraph 实战笔记 08：构建一个会自我反思的 Agent"><meta name=twitter:description content="上一篇文章里，我们构建了一个可以根据状态选择下一步的多分支 Agent。\n它会先识别用户问题类型，然后在知识库问答、订单查询和普通聊天之间选择不同路径。\n这一篇，我们继续往前走一步：让 Agent 具备“自我反思”和“自我修正”的能力。\n也就是：\n1 2 3 4 5 6 7 8 9 先生成一个结果 ↓ 检查这个结果是否合格 ↓ 如果不合格，就修改 ↓ 再检查 ↓ 直到合格或达到最大次数 这类流程是 LangGraph 非常典型的使用场景，因为它天然包含循环、状态更新和终止条件。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二为什么需要自我反思-agent>二、为什么需要自我反思 Agent？</a></li><li><a href=#三本篇要构建的-reflection-agent>三、本篇要构建的 Reflection Agent</a></li><li><a href=#四设计-state>四、设计 State</a></li><li><a href=#五生成节点generate_draft>五、生成节点：generate_draft</a></li><li><a href=#六检查节点review_draft>六、检查节点：review_draft</a></li><li><a href=#七路由函数决定继续结束还是放弃>七、路由函数：决定继续、结束还是放弃</a></li><li><a href=#八重写节点rewrite_draft>八、重写节点：rewrite_draft</a></li><li><a href=#九最终输出节点finalize>九、最终输出节点：finalize</a></li><li><a href=#十组装完整图>十、组装完整图</a></li><li><a href=#十一运行结果分析>十一、运行结果分析</a></li><li><a href=#十二为什么必须有最大循环次数>十二、为什么必须有最大循环次数？</a></li><li><a href=#十三langgraph-自身的递归限制>十三、LangGraph 自身的递归限制</a></li><li><a href=#十四如何把规则检查换成-llm-检查>十四、如何把规则检查换成 LLM 检查？</a></li><li><a href=#十五reflection-agent-适合哪些场景>十五、Reflection Agent 适合哪些场景？</a><ol><li><a href=#1-内容生成>1. 内容生成</a></li><li><a href=#2-代码生成>2. 代码生成</a></li><li><a href=#3-rag-问答>3. RAG 问答</a></li><li><a href=#4-数据分析报告>4. 数据分析报告</a></li><li><a href=#5-agent-计划执行>5. Agent 计划执行</a></li></ol></li><li><a href=#十六设计-reflection-agent-的常见问题>十六、设计 Reflection Agent 的常见问题</a><ol><li><a href=#1-没有终止条件>1. 没有终止条件</a></li><li><a href=#2-检查标准太模糊>2. 检查标准太模糊</a></li><li><a href=#3-重写节点没有利用反馈>3. 重写节点没有利用反馈</a></li><li><a href=#4-每次都从头生成>4. 每次都从头生成</a></li><li><a href=#5-把检查和重写塞进一个节点>5. 把检查和重写塞进一个节点</a></li><li><a href=#6-忽略成本控制>6. 忽略成本控制</a></li></ol></li><li><a href=#十七最佳实践>十七、最佳实践</a><ol><li><a href=#1-循环必须有终止条件>1. 循环必须有终止条件</a></li><li><a href=#2-检查结果要结构化>2. 检查结果要结构化</a></li><li><a href=#3-重写要基于反馈>3. 重写要基于反馈</a></li><li><a href=#4-区分检查节点和路由函数>4. 区分检查节点和路由函数</a></li><li><a href=#5-失败也要有出口>5. 失败也要有出口</a></li><li><a href=#6-不要过度反思>6. 不要过度反思</a></li><li><a href=#7-观察每一轮状态变化>7. 观察每一轮状态变化</a></li></ol></li><li><a href=#十八总结>十八、总结</a></li><li><a href=#参考资料>参考资料</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/agent-%E7%B3%BB%E5%88%97/ style=background-color:#beefe2;color:#0f3d32>Agent 系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/langgraph-loop-reflection-agent/>LangGraph 实战笔记 08：构建一个会自我反思的 Agent</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2025-11-15T10:00:00+08:00>2025-11-15 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 12 分钟</time></div></footer></div></header><section class=article-content><p>上一篇文章里，我们构建了一个可以根据状态选择下一步的多分支 Agent。</p><p>它会先识别用户问题类型，然后在知识库问答、订单查询和普通聊天之间选择不同路径。</p><p>这一篇，我们继续往前走一步：让 Agent 具备“自我反思”和“自我修正”的能力。</p><p>也就是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>先生成一个结果
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>检查这个结果是否合格
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>如果不合格，就修改
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>再检查
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>直到合格或达到最大次数
+</span></span></code></pre></td></tr></table></div></div><p>这类流程是 LangGraph 非常典型的使用场景，因为它天然包含循环、状态更新和终止条件。</p><h2 id=一前言>一、前言</h2><p>很多 Agent 示例看起来都很聪明。</p><p>用户问一个问题，模型生成一个答案，然后直接返回。</p><p>但真实业务里，我们经常不能只依赖第一次生成结果。</p><p>例如：</p><ul><li>回答可能太短。</li><li>回答可能没有引用来源。</li><li>回答可能没有覆盖用户问题。</li><li>生成的文案可能不符合风格。</li><li>生成的代码可能缺少关键步骤。</li><li>计划可能不完整。</li></ul><p>这时就需要一个检查和修正过程。</p><p>最简单的形式是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生成 -&gt; 检查 -&gt; 修改
+</span></span></code></pre></td></tr></table></div></div><p>如果修改后还不合格，就继续：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生成 -&gt; 检查 -&gt; 修改 -&gt; 检查 -&gt; 修改 -&gt; 检查
+</span></span></code></pre></td></tr></table></div></div><p>这就是 Reflection Agent 的基本思想。</p><p>不过，循环能力是一把双刃剑。</p><p>如果没有终止条件，Agent 可能会一直反思、一直修改，永远不结束。</p><p>所以本篇重点不是让 Agent 无限自我反思，而是学习如何在 LangGraph 中安全地表达循环。</p><h2 id=二为什么需要自我反思-agent>二、为什么需要自我反思 Agent？</h2><p>普通 LLM 调用通常是一次性的。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>输入 -&gt; 模型 -&gt; 输出
+</span></span></code></pre></td></tr></table></div></div><p>但很多任务需要“先生成，再检查”。</p><p>例如写文章：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生成初稿 -&gt; 检查是否结构完整 -&gt; 不完整则补充
+</span></span></code></pre></td></tr></table></div></div><p>例如写代码：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生成代码 -&gt; 检查是否满足需求 -&gt; 不满足则修改
+</span></span></code></pre></td></tr></table></div></div><p>例如 RAG 问答：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生成回答 -&gt; 检查是否基于文档 -&gt; 不基于则重写
+</span></span></code></pre></td></tr></table></div></div><p>例如客服回复：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生成回复 -&gt; 检查是否有风险表达 -&gt; 有风险则改写
+</span></span></code></pre></td></tr></table></div></div><p>这些流程都有一个共同点：</p><blockquote><p>第一次输出不一定可靠，需要经过检查和修正。</p></blockquote><p>如果用普通代码写，可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>answer</span> <span class=o>=</span> <span class=n>generate</span><span class=p>(</span><span class=n>question</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>review</span> <span class=o>=</span> <span class=n>check</span><span class=p>(</span><span class=n>answer</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>if</span> <span class=ow>not</span> <span class=n>review</span><span class=o>.</span><span class=n>passed</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span> <span class=o>=</span> <span class=n>rewrite</span><span class=p>(</span><span class=n>question</span><span class=p>,</span> <span class=n>answer</span><span class=p>,</span> <span class=n>review</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这只能修改一次。</p><p>如果要多次修改，就会变成循环：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>for</span> <span class=n>i</span> <span class=ow>in</span> <span class=nb>range</span><span class=p>(</span><span class=n>max_attempts</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span> <span class=o>=</span> <span class=n>generate_or_rewrite</span><span class=p>(</span><span class=o>...</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>review</span> <span class=o>=</span> <span class=n>check</span><span class=p>(</span><span class=n>answer</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>review</span><span class=o>.</span><span class=n>passed</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>break</span>
+</span></span></code></pre></td></tr></table></div></div><p>LangGraph 可以把这个循环显式建模成图。</p><p>这样我们能清楚看到：</p><ul><li>哪个节点负责生成。</li><li>哪个节点负责检查。</li><li>哪个节点负责修改。</li><li>哪个字段记录检查结果。</li><li>哪个字段记录循环次数。</li><li>什么条件下继续。</li><li>什么条件下结束。</li></ul><h2 id=三本篇要构建的-reflection-agent>三、本篇要构建的 Reflection Agent</h2><p>我们要构建一个简化的内容生成 Agent。</p><p>用户输入一个主题，Agent 会生成一段解释。</p><p>然后检查这段解释是否合格。</p><p>检查标准简化为三个：</p><ol><li>内容长度是否足够。</li><li>是否包含“为什么需要”。</li><li>是否包含“如何使用”。</li></ol><p>如果不合格，就进入重写节点。</p><p>重写后再次检查。</p><p>如果合格，就结束。</p><p>如果重写次数达到上限，也结束，并返回当前最好结果。</p><p>整体流程如下：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>START
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>generate_draft
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>review_draft
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>  ├── pass -&gt; finalize -&gt; END
+</span></span><span class=line><span class=cl>  ├── retry -&gt; rewrite_draft -&gt; review_draft
+</span></span><span class=line><span class=cl>  └── give_up -&gt; finalize -&gt; END
+</span></span></code></pre></td></tr></table></div></div><p>这里有一个关键点：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>rewrite_draft -&gt; review_draft
+</span></span></code></pre></td></tr></table></div></div><p>这是一条回边。</p><p>它让流程形成循环。</p><h2 id=四设计-state>四、设计 State</h2><p>Reflection Agent 的 State 需要记录更多控制信息。</p><p>例如：</p><div class=table-wrapper><table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody><tr><td><code>topic</code></td><td>用户输入的主题</td></tr><tr><td><code>draft</code></td><td>当前草稿</td></tr><tr><td><code>review_passed</code></td><td>检查是否通过</td></tr><tr><td><code>review_feedback</code></td><td>检查意见</td></tr><tr><td><code>revision_count</code></td><td>已经修改了几次</td></tr><tr><td><code>max_revisions</code></td><td>最大修改次数</td></tr><tr><td><code>final_answer</code></td><td>最终输出</td></tr></tbody></table></div><p>代码如下：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ReflectionState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>topic</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>draft</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>review_passed</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>review_feedback</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>revision_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_revisions</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>final_answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里最重要的是两个字段：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>revision_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl><span class=n>max_revisions</span><span class=p>:</span> <span class=nb>int</span>
+</span></span></code></pre></td></tr></table></div></div><p>它们负责控制循环次数。</p><p>只要图里有循环，就应该考虑类似的终止条件。</p><p>否则 Agent 可能无限执行。</p><h2 id=五生成节点generate_draft>五、生成节点：generate_draft</h2><p>第一个节点负责生成初稿。</p><p>这里先不用真实模型，用简单字符串模拟。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>generate_draft_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReflectionState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>draft</span> <span class=o>=</span> <span class=sa>f</span><span class=s2>&#34;</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;topic&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2> 是一个重要概念。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;draft&#34;</span><span class=p>:</span> <span class=n>draft</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;revision_count&#34;</span><span class=p>:</span> <span class=mi>0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点做两件事：</p><ol><li>写入初稿 <code>draft</code>。</li><li>初始化修改次数 <code>revision_count</code>。</li></ol><p>注意这里的初稿故意写得很短。</p><p>这样后面的检查节点会判定它不合格，从而触发重写流程。</p><p>在真实场景里，这个节点可以调用 LLM：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>generate_draft_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReflectionState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>draft</span> <span class=o>=</span> <span class=n>writing_chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span><span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;topic&#34;</span><span class=p>]})</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;draft&#34;</span><span class=p>:</span> <span class=n>draft</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;revision_count&#34;</span><span class=p>:</span> <span class=mi>0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><h2 id=六检查节点review_draft>六、检查节点：review_draft</h2><p>检查节点负责判断草稿是否合格。</p><p>它读取 <code>draft</code>，写入：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>review_passed</span>
+</span></span><span class=line><span class=cl><span class=n>review_feedback</span>
+</span></span></code></pre></td></tr></table></div></div><p>示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>review_draft_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReflectionState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>draft</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;draft&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>feedback</span> <span class=o>=</span> <span class=p>[]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=nb>len</span><span class=p>(</span><span class=n>draft</span><span class=p>)</span> <span class=o>&lt;</span> <span class=mi>80</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>feedback</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=s2>&#34;内容太短，需要更详细。&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;为什么需要&#34;</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>draft</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>feedback</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=s2>&#34;缺少为什么需要这个概念的说明。&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;如何使用&#34;</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>draft</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>feedback</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=s2>&#34;缺少如何使用这个概念的说明。&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>feedback</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;review_passed&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;review_feedback&#34;</span><span class=p>:</span> <span class=s2>&#34;；&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>(</span><span class=n>feedback</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>        <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;review_passed&#34;</span><span class=p>:</span> <span class=kc>True</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;review_feedback&#34;</span><span class=p>:</span> <span class=s2>&#34;内容已经满足要求。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点不决定下一步去哪里。</p><p>它只负责检查并写入状态。</p><p>下一步由条件边决定。</p><p>这仍然符合前面的原则：</p><blockquote><p>Node 管动作，Edge 管流程。</p></blockquote><h2 id=七路由函数决定继续结束还是放弃>七、路由函数：决定继续、结束还是放弃</h2><p>检查完成后，需要根据 State 选择下一步。</p><p>规则是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>如果 review_passed 为 True -&gt; finalize
+</span></span><span class=line><span class=cl>如果 revision_count &lt; max_revisions -&gt; rewrite_draft
+</span></span><span class=line><span class=cl>否则 -&gt; finalize
+</span></span></code></pre></td></tr></table></div></div><p>代码如下：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>Literal</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>route_after_review</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReflectionState</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>Literal</span><span class=p>[</span><span class=s2>&#34;pass&#34;</span><span class=p>,</span> <span class=s2>&#34;retry&#34;</span><span class=p>,</span> <span class=s2>&#34;give_up&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;review_passed&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;pass&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;revision_count&#34;</span><span class=p>]</span> <span class=o>&lt;</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;max_revisions&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;retry&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;give_up&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个路由函数只读取状态，不做复杂业务逻辑。</p><p>它返回三个路由 key：</p><div class=table-wrapper><table><thead><tr><th>路由结果</th><th>含义</th></tr></thead><tbody><tr><td><code>pass</code></td><td>检查通过，进入最终输出</td></tr><tr><td><code>retry</code></td><td>还可以修改，进入重写节点</td></tr><tr><td><code>give_up</code></td><td>达到最大次数，结束</td></tr></tbody></table></div><p>这里的 <code>give_up</code> 很重要。</p><p>它是循环的失败出口。</p><p>没有这个出口，流程可能一直循环。</p><h2 id=八重写节点rewrite_draft>八、重写节点：rewrite_draft</h2><p>重写节点根据检查意见修改草稿，并增加修改次数。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>rewrite_draft_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReflectionState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>revision_count</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;revision_count&#34;</span><span class=p>]</span> <span class=o>+</span> <span class=mi>1</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>revised_draft</span> <span class=o>=</span> <span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;draft&#39;</span><span class=p>]</span><span class=si>}</span><span class=se>\n\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;第 </span><span class=si>{</span><span class=n>revision_count</span><span class=si>}</span><span class=s2> 次修改：</span><span class=se>\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;为什么需要：</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;topic&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2> 可以帮助我们把复杂问题拆成更清晰的结构。</span><span class=se>\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;如何使用：先理解它解决的问题，再结合具体场景逐步实践。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;draft&#34;</span><span class=p>:</span> <span class=n>revised_draft</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;revision_count&#34;</span><span class=p>:</span> <span class=n>revision_count</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点读取：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>draft</span>
+</span></span><span class=line><span class=cl><span class=n>revision_count</span>
+</span></span><span class=line><span class=cl><span class=n>topic</span>
+</span></span></code></pre></td></tr></table></div></div><p>然后写入：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>draft</span>
+</span></span><span class=line><span class=cl><span class=n>revision_count</span>
+</span></span></code></pre></td></tr></table></div></div><p>重写后，流程会回到 <code>review_draft</code>。</p><p>这就是循环。</p><h2 id=九最终输出节点finalize>九、最终输出节点：finalize</h2><p>最终输出节点负责把当前草稿写入最终答案。</p><p>如果检查通过，就直接输出。</p><p>如果达到最大次数仍然不通过，也输出当前最好结果，并附上检查意见。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>finalize_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReflectionState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;review_passed&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=n>final_answer</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;draft&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=k>else</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>final_answer</span> <span class=o>=</span> <span class=p>(</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;当前已达到最大修改次数，返回当前版本：</span><span class=se>\n\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;draft&#39;</span><span class=p>]</span><span class=si>}</span><span class=se>\n\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;未完全通过原因：</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;review_feedback&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;final_answer&#34;</span><span class=p>:</span> <span class=n>final_answer</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这也是一个常见模式。</p><p>复杂 Agent 不一定每次都能达到完美结果。</p><p>当超过预算、次数或时间限制时，系统应该有一个可控出口。</p><h2 id=十组装完整图>十、组装完整图</h2><p>下面是完整代码。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>  1
+</span><span class=lnt>  2
+</span><span class=lnt>  3
+</span><span class=lnt>  4
+</span><span class=lnt>  5
+</span><span class=lnt>  6
+</span><span class=lnt>  7
+</span><span class=lnt>  8
+</span><span class=lnt>  9
+</span><span class=lnt> 10
+</span><span class=lnt> 11
+</span><span class=lnt> 12
+</span><span class=lnt> 13
+</span><span class=lnt> 14
+</span><span class=lnt> 15
+</span><span class=lnt> 16
+</span><span class=lnt> 17
+</span><span class=lnt> 18
+</span><span class=lnt> 19
+</span><span class=lnt> 20
+</span><span class=lnt> 21
+</span><span class=lnt> 22
+</span><span class=lnt> 23
+</span><span class=lnt> 24
+</span><span class=lnt> 25
+</span><span class=lnt> 26
+</span><span class=lnt> 27
+</span><span class=lnt> 28
+</span><span class=lnt> 29
+</span><span class=lnt> 30
+</span><span class=lnt> 31
+</span><span class=lnt> 32
+</span><span class=lnt> 33
+</span><span class=lnt> 34
+</span><span class=lnt> 35
+</span><span class=lnt> 36
+</span><span class=lnt> 37
+</span><span class=lnt> 38
+</span><span class=lnt> 39
+</span><span class=lnt> 40
+</span><span class=lnt> 41
+</span><span class=lnt> 42
+</span><span class=lnt> 43
+</span><span class=lnt> 44
+</span><span class=lnt> 45
+</span><span class=lnt> 46
+</span><span class=lnt> 47
+</span><span class=lnt> 48
+</span><span class=lnt> 49
+</span><span class=lnt> 50
+</span><span class=lnt> 51
+</span><span class=lnt> 52
+</span><span class=lnt> 53
+</span><span class=lnt> 54
+</span><span class=lnt> 55
+</span><span class=lnt> 56
+</span><span class=lnt> 57
+</span><span class=lnt> 58
+</span><span class=lnt> 59
+</span><span class=lnt> 60
+</span><span class=lnt> 61
+</span><span class=lnt> 62
+</span><span class=lnt> 63
+</span><span class=lnt> 64
+</span><span class=lnt> 65
+</span><span class=lnt> 66
+</span><span class=lnt> 67
+</span><span class=lnt> 68
+</span><span class=lnt> 69
+</span><span class=lnt> 70
+</span><span class=lnt> 71
+</span><span class=lnt> 72
+</span><span class=lnt> 73
+</span><span class=lnt> 74
+</span><span class=lnt> 75
+</span><span class=lnt> 76
+</span><span class=lnt> 77
+</span><span class=lnt> 78
+</span><span class=lnt> 79
+</span><span class=lnt> 80
+</span><span class=lnt> 81
+</span><span class=lnt> 82
+</span><span class=lnt> 83
+</span><span class=lnt> 84
+</span><span class=lnt> 85
+</span><span class=lnt> 86
+</span><span class=lnt> 87
+</span><span class=lnt> 88
+</span><span class=lnt> 89
+</span><span class=lnt> 90
+</span><span class=lnt> 91
+</span><span class=lnt> 92
+</span><span class=lnt> 93
+</span><span class=lnt> 94
+</span><span class=lnt> 95
+</span><span class=lnt> 96
+</span><span class=lnt> 97
+</span><span class=lnt> 98
+</span><span class=lnt> 99
+</span><span class=lnt>100
+</span><span class=lnt>101
+</span><span class=lnt>102
+</span><span class=lnt>103
+</span><span class=lnt>104
+</span><span class=lnt>105
+</span><span class=lnt>106
+</span><span class=lnt>107
+</span><span class=lnt>108
+</span><span class=lnt>109
+</span><span class=lnt>110
+</span><span class=lnt>111
+</span><span class=lnt>112
+</span><span class=lnt>113
+</span><span class=lnt>114
+</span><span class=lnt>115
+</span><span class=lnt>116
+</span><span class=lnt>117
+</span><span class=lnt>118
+</span><span class=lnt>119
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>Literal</span><span class=p>,</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langgraph.graph</span> <span class=kn>import</span> <span class=n>StateGraph</span><span class=p>,</span> <span class=n>START</span><span class=p>,</span> <span class=n>END</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ReflectionState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>topic</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>draft</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>review_passed</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>review_feedback</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>revision_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_revisions</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>final_answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>generate_draft_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReflectionState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>draft</span> <span class=o>=</span> <span class=sa>f</span><span class=s2>&#34;</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;topic&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2> 是一个重要概念。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;draft&#34;</span><span class=p>:</span> <span class=n>draft</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;revision_count&#34;</span><span class=p>:</span> <span class=mi>0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>review_draft_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReflectionState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>draft</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;draft&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>feedback</span> <span class=o>=</span> <span class=p>[]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=nb>len</span><span class=p>(</span><span class=n>draft</span><span class=p>)</span> <span class=o>&lt;</span> <span class=mi>80</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>feedback</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=s2>&#34;内容太短，需要更详细。&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;为什么需要&#34;</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>draft</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>feedback</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=s2>&#34;缺少为什么需要这个概念的说明。&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;如何使用&#34;</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>draft</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>feedback</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=s2>&#34;缺少如何使用这个概念的说明。&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>feedback</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;review_passed&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;review_feedback&#34;</span><span class=p>:</span> <span class=s2>&#34;；&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>(</span><span class=n>feedback</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>        <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;review_passed&#34;</span><span class=p>:</span> <span class=kc>True</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;review_feedback&#34;</span><span class=p>:</span> <span class=s2>&#34;内容已经满足要求。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>route_after_review</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReflectionState</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>Literal</span><span class=p>[</span><span class=s2>&#34;pass&#34;</span><span class=p>,</span> <span class=s2>&#34;retry&#34;</span><span class=p>,</span> <span class=s2>&#34;give_up&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;review_passed&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;pass&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;revision_count&#34;</span><span class=p>]</span> <span class=o>&lt;</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;max_revisions&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;retry&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;give_up&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>rewrite_draft_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReflectionState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>revision_count</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;revision_count&#34;</span><span class=p>]</span> <span class=o>+</span> <span class=mi>1</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>revised_draft</span> <span class=o>=</span> <span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;draft&#39;</span><span class=p>]</span><span class=si>}</span><span class=se>\n\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;第 </span><span class=si>{</span><span class=n>revision_count</span><span class=si>}</span><span class=s2> 次修改：</span><span class=se>\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;为什么需要：</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;topic&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2> 可以帮助我们把复杂问题拆成更清晰的结构。</span><span class=se>\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;如何使用：先理解它解决的问题，再结合具体场景逐步实践。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;draft&#34;</span><span class=p>:</span> <span class=n>revised_draft</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;revision_count&#34;</span><span class=p>:</span> <span class=n>revision_count</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>finalize_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReflectionState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;review_passed&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=n>final_answer</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;draft&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=k>else</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>final_answer</span> <span class=o>=</span> <span class=p>(</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;当前已达到最大修改次数，返回当前版本：</span><span class=se>\n\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;draft&#39;</span><span class=p>]</span><span class=si>}</span><span class=se>\n\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;未完全通过原因：</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;review_feedback&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;final_answer&#34;</span><span class=p>:</span> <span class=n>final_answer</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span> <span class=o>=</span> <span class=n>StateGraph</span><span class=p>(</span><span class=n>ReflectionState</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;generate_draft&#34;</span><span class=p>,</span> <span class=n>generate_draft_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;review_draft&#34;</span><span class=p>,</span> <span class=n>review_draft_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;rewrite_draft&#34;</span><span class=p>,</span> <span class=n>rewrite_draft_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;finalize&#34;</span><span class=p>,</span> <span class=n>finalize_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=n>START</span><span class=p>,</span> <span class=s2>&#34;generate_draft&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;generate_draft&#34;</span><span class=p>,</span> <span class=s2>&#34;review_draft&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_conditional_edges</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;review_draft&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>route_after_review</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;pass&#34;</span><span class=p>:</span> <span class=s2>&#34;finalize&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;retry&#34;</span><span class=p>:</span> <span class=s2>&#34;rewrite_draft&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;give_up&#34;</span><span class=p>:</span> <span class=s2>&#34;finalize&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;rewrite_draft&#34;</span><span class=p>,</span> <span class=s2>&#34;review_draft&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;finalize&#34;</span><span class=p>,</span> <span class=n>END</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>graph</span> <span class=o>=</span> <span class=n>builder</span><span class=o>.</span><span class=n>compile</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>graph</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LangGraph Reflection Agent&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;max_revisions&#34;</span><span class=p>:</span> <span class=mi>2</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>[</span><span class=s2>&#34;final_answer&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=s2>&#34;修改次数：&#34;</span><span class=p>,</span> <span class=n>result</span><span class=p>[</span><span class=s2>&#34;revision_count&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=s2>&#34;检查结果：&#34;</span><span class=p>,</span> <span class=n>result</span><span class=p>[</span><span class=s2>&#34;review_passed&#34;</span><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>这张图可以表示为：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>START
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>generate_draft
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>review_draft
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>  ├── pass    -&gt; finalize -&gt; END
+</span></span><span class=line><span class=cl>  ├── retry   -&gt; rewrite_draft -&gt; review_draft
+</span></span><span class=line><span class=cl>  └── give_up -&gt; finalize -&gt; END
+</span></span></code></pre></td></tr></table></div></div><p>这里的核心是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;rewrite_draft&#34;</span><span class=p>,</span> <span class=s2>&#34;review_draft&#34;</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这条边让流程回到检查节点，从而形成循环。</p><h2 id=十一运行结果分析>十一、运行结果分析</h2><p>初始草稿是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LangGraph Reflection Agent 是一个重要概念。
+</span></span></code></pre></td></tr></table></div></div><p>它不满足检查条件：</p><ul><li>内容太短。</li><li>缺少“为什么需要”。</li><li>缺少“如何使用”。</li></ul><p>所以流程会进入 <code>rewrite_draft</code>。</p><p>重写后草稿变成类似：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LangGraph Reflection Agent 是一个重要概念。
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>第 1 次修改：
+</span></span><span class=line><span class=cl>为什么需要：LangGraph Reflection Agent 可以帮助我们把复杂问题拆成更清晰的结构。
+</span></span><span class=line><span class=cl>如何使用：先理解它解决的问题，再结合具体场景逐步实践。
+</span></span></code></pre></td></tr></table></div></div><p>再次检查时，条件满足，于是进入 <code>finalize</code>。</p><p>最终输出当前草稿。</p><p>如果你把检查条件调得更严格，或者把 <code>max_revisions</code> 设置为 0，就会走 <code>give_up</code> 路径。</p><h2 id=十二为什么必须有最大循环次数>十二、为什么必须有最大循环次数？</h2><p>循环是 Agent 中很常见的结构。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生成 -&gt; 检查 -&gt; 重写 -&gt; 检查
+</span></span></code></pre></td></tr></table></div></div><p>或者：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>计划 -&gt; 执行 -&gt; 观察 -&gt; 修正计划
+</span></span></code></pre></td></tr></table></div></div><p>但循环也有风险。</p><p>如果模型一直生成不合格结果，或者检查条件永远无法满足，系统就可能无限执行。</p><p>所以只要有循环，就至少需要一个终止机制。</p><p>常见终止条件包括：</p><ul><li>最大循环次数。</li><li>质量检查通过。</li><li>时间预算耗尽。</li><li>用户取消。</li><li>工具调用失败次数超限。</li><li>人工审核拒绝。</li></ul><p>在本文示例中，我们使用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>revision_count</span> <span class=o>&lt;</span> <span class=n>max_revisions</span>
+</span></span></code></pre></td></tr></table></div></div><p>控制是否继续重写。</p><p>这是最简单、也最常用的方式。</p><h2 id=十三langgraph-自身的递归限制>十三、LangGraph 自身的递归限制</h2><p>LangGraph 对图执行也有递归限制，用来防止无限循环。</p><p>如果图一直循环，没有到达 <code>END</code>，就可能触发类似递归限制的错误。</p><p>这是一种保护机制，但不应该把它当成业务终止条件。</p><p>更好的做法是你自己在 State 中设计明确的控制字段。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>revision_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl><span class=n>max_revisions</span><span class=p>:</span> <span class=nb>int</span>
+</span></span></code></pre></td></tr></table></div></div><p>然后在路由函数中显式判断。</p><p>换句话说：</p><blockquote><p>框架限制是安全网，业务终止条件才是主逻辑。</p></blockquote><h2 id=十四如何把规则检查换成-llm-检查>十四、如何把规则检查换成 LLM 检查？</h2><p>本文为了简单，用规则检查草稿。</p><p>真实场景中，可以把 <code>review_draft_node</code> 替换成 LLM 检查节点。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.prompts</span> <span class=kn>import</span> <span class=n>ChatPromptTemplate</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_openai</span> <span class=kn>import</span> <span class=n>ChatOpenAI</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>review_prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;system&#34;</span><span class=p>,</span> <span class=s2>&#34;你是内容审稿人，请判断草稿是否清晰、完整，并给出修改建议。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;主题：</span><span class=si>{topic}</span><span class=se>\n\n</span><span class=s2>草稿：</span><span class=si>{draft}</span><span class=se>\n\n</span><span class=s2>请返回是否通过和原因。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>model</span> <span class=o>=</span> <span class=n>ChatOpenAI</span><span class=p>(</span><span class=n>model</span><span class=o>=</span><span class=s2>&#34;gpt-4o-mini&#34;</span><span class=p>,</span> <span class=n>temperature</span><span class=o>=</span><span class=mi>0</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>review_chain</span> <span class=o>=</span> <span class=n>review_prompt</span> <span class=o>|</span> <span class=n>model</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>review_draft_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReflectionState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>response</span> <span class=o>=</span> <span class=n>review_chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;topic&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;draft&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;draft&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>    <span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>content</span> <span class=o>=</span> <span class=n>response</span><span class=o>.</span><span class=n>content</span>
+</span></span><span class=line><span class=cl>    <span class=n>passed</span> <span class=o>=</span> <span class=s2>&#34;通过&#34;</span> <span class=ow>in</span> <span class=n>content</span> <span class=ow>and</span> <span class=s2>&#34;不通过&#34;</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>content</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;review_passed&#34;</span><span class=p>:</span> <span class=n>passed</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;review_feedback&#34;</span><span class=p>:</span> <span class=n>content</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>不过这里要注意，LLM 输出可能不稳定。</p><p>如果后续路由依赖检查结果，最好让模型输出结构化结果。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;passed&#34;</span><span class=p>:</span> <span class=kc>false</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;feedback&#34;</span><span class=p>:</span> <span class=s2>&#34;缺少具体例子&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>然后解析成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;review_passed&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;review_feedback&#34;</span><span class=p>:</span> <span class=s2>&#34;缺少具体例子&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这样条件边才能稳定工作。</p><h2 id=十五reflection-agent-适合哪些场景>十五、Reflection Agent 适合哪些场景？</h2><p>Reflection Agent 适合那些“生成结果需要检查和改进”的任务。</p><p>例如：</p><h3 id=1-内容生成>1. 内容生成</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>写初稿 -&gt; 检查结构 -&gt; 修改 -&gt; 输出
+</span></span></code></pre></td></tr></table></div></div><h3 id=2-代码生成>2. 代码生成</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生成代码 -&gt; 检查需求覆盖 -&gt; 修改 -&gt; 输出
+</span></span></code></pre></td></tr></table></div></div><h3 id=3-rag-问答>3. RAG 问答</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生成答案 -&gt; 检查是否引用资料 -&gt; 不合格则重新生成
+</span></span></code></pre></td></tr></table></div></div><h3 id=4-数据分析报告>4. 数据分析报告</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生成分析结论 -&gt; 检查是否包含关键指标 -&gt; 补充报告
+</span></span></code></pre></td></tr></table></div></div><h3 id=5-agent-计划执行>5. Agent 计划执行</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>制定计划 -&gt; 检查计划是否完整 -&gt; 修改计划
+</span></span></code></pre></td></tr></table></div></div><p>不过它并不适合所有任务。</p><p>如果任务本身很简单，例如翻译一句话、提取一个关键词，就没必要引入反思循环。</p><h2 id=十六设计-reflection-agent-的常见问题>十六、设计 Reflection Agent 的常见问题</h2><h3 id=1-没有终止条件>1. 没有终止条件</h3><p>这是最大问题。</p><p>只要有循环，就必须明确什么时候停止。</p><h3 id=2-检查标准太模糊>2. 检查标准太模糊</h3><p>如果检查节点只是说“看起来不错”或“还可以”，后续很难路由。</p><p>最好输出结构化字段：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>review_passed</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl><span class=n>review_feedback</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=3-重写节点没有利用反馈>3. 重写节点没有利用反馈</h3><p>如果重写节点不读取 <code>review_feedback</code>，它可能每次都犯同样错误。</p><p>重写应该基于反馈进行。</p><h3 id=4-每次都从头生成>4. 每次都从头生成</h3><p>有些任务适合从头生成，有些任务适合在原稿基础上修改。</p><p>要根据场景决定。</p><p>本文示例使用的是“基于原稿追加修改”。</p><h3 id=5-把检查和重写塞进一个节点>5. 把检查和重写塞进一个节点</h3><p>不推荐：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>review_and_rewrite
+</span></span></code></pre></td></tr></table></div></div><p>更推荐拆开：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>review_draft -&gt; rewrite_draft
+</span></span></code></pre></td></tr></table></div></div><p>这样更容易观察每一步。</p><h3 id=6-忽略成本控制>6. 忽略成本控制</h3><p>如果每轮都调用大模型，循环成本会快速增加。</p><p>需要控制：</p><ul><li>最大轮数。</li><li>模型选择。</li><li>输入上下文长度。</li><li>是否真的需要重写。</li></ul><h2 id=十七最佳实践>十七、最佳实践</h2><h3 id=1-循环必须有终止条件>1. 循环必须有终止条件</h3><p>最简单的是最大次数。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>revision_count</span> <span class=o>&lt;</span> <span class=n>max_revisions</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=2-检查结果要结构化>2. 检查结果要结构化</h3><p>推荐字段：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>review_passed</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl><span class=n>review_feedback</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=3-重写要基于反馈>3. 重写要基于反馈</h3><p>不要盲目重写。</p><p>让重写节点读取检查意见。</p><h3 id=4-区分检查节点和路由函数>4. 区分检查节点和路由函数</h3><p>检查节点负责判断并写状态。</p><p>路由函数负责根据状态选择下一步。</p><h3 id=5-失败也要有出口>5. 失败也要有出口</h3><p>达到最大次数后，不要继续循环。</p><p>可以返回当前最好结果，并附带未通过原因。</p><h3 id=6-不要过度反思>6. 不要过度反思</h3><p>不是所有任务都需要 Reflection Agent。</p><p>简单任务直接生成即可。</p><h3 id=7-观察每一轮状态变化>7. 观察每一轮状态变化</h3><p>调试 Reflection Agent 时，要重点观察：</p><ul><li>每轮 draft 变了什么。</li><li>review_feedback 是否有效。</li><li>revision_count 是否正确增加。</li><li>为什么继续或结束。</li></ul><h2 id=十八总结>十八、总结</h2><p>本文构建了一个会自我反思和修正的 LangGraph Agent。</p><p>核心结论是：</p><blockquote><p>Reflection Agent 的关键不是让模型无限思考，而是把“生成、检查、修改、终止”建模成可观察、可控制的状态图。</p></blockquote><p>本文重点包括：</p><ul><li>自我反思适合需要生成、检查、修改的任务。</li><li>循环流程可以用 LangGraph 的回边表达。</li><li>State 中需要保存 <code>revision_count</code>、<code>max_revisions</code>、<code>review_passed</code> 和 <code>review_feedback</code> 等控制字段。</li><li>检查节点负责写入结构化检查结果。</li><li>路由函数根据检查结果和循环次数决定通过、重试或放弃。</li><li>重写节点应该基于检查反馈修改结果。</li><li>最大循环次数是 Reflection Agent 的基本安全边界。</li><li>框架递归限制是安全网，业务终止条件才是主逻辑。</li></ul><p>下一篇文章，我们会继续深入长流程 Agent：如何使用 interrupt、resume 和 checkpoint，让 Agent 可以在中间暂停、恢复，并更可靠地处理长时间运行的任务。</p><h2 id=参考资料>参考资料</h2><ul><li><a class=link href=https://docs.langchain.com/oss/python/langgraph/graph-api target=_blank rel=noopener>Graph API overview — LangGraph Python docs</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langgraph/use-graph-api target=_blank rel=noopener>Use the graph API — LangGraph Python docs</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langgraph/workflows-agents target=_blank rel=noopener>Workflows and agents — LangGraph Python docs</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langgraph/errors/GRAPH_RECURSION_LIMIT target=_blank rel=noopener>GRAPH_RECURSION_LIMIT — LangGraph errors</a></li><li><a class=link href=https://langchain-ai.github.io/langgraph/concepts/low_level/ target=_blank rel=noopener>LangGraph low-level concepts</a></li></ul></section><footer class=article-footer><section class=article-tags><a href=/tags/langgraph/>LangGraph</a>
+<a href=/tags/agent/>Agent</a>
+<a href=/tags/reflection/>Reflection</a>
+<a href=/tags/%E5%BE%AA%E7%8E%AF/>循环</a>
+<a href=/tags/%E7%8A%B6%E6%80%81%E5%9B%BE/>状态图</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/from-langchain-to-langgraph-orchestration-evolution/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 02：从 LangChain 到 LangGraph，大模型应用编排方式的演进</h2></div></a></article><article><a href=/p/langgraph-introduction-why-agent-needs-graph/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 01：为什么复杂 Agent 需要图结构？</h2></div></a></article><article><a href=/p/langgraph-reflection-agent/><div class=article-details><h2 class=article-title>LangGraph 实战：构建一个会自我反思和修正的 Agent</h2></div></a></article><article><a href=/p/langgraph-series-summary/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 20：从状态图到复杂 Agent 工程化</h2></div></a></article><article><a href=/p/langgraph-engineering-practice/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 19：从 Demo 到可维护 Agent 系统</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

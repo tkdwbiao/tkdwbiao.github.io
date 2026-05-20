@@ -1,0 +1,865 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇文章里，我们从零构建了一个 ReAct Agent。\n它的核心结构是：\n1 LLM -> Tools -> LLM 模型可以根据任务判断是否调用工具，工具返回 Observation 后，模型再继续推理并生成最终回答。\n这一篇，我们把这个思路放到 RAG 场景里，构建一个可控的 RAG Agent。\n普通 RAG 通常是固定流程：\n1 问题 -> 检索 -> 生成回答 但真实业务中，我们经常需要更细的控制：\n1 2 3 4 5 是否需要检索？ 检索结果是否相关？ 回答是否基于资料？ 资料不够时是否要改写问题重新检索？ 回答是否需要附带来源？ 这些都非常适合用 LangGraph 显式建模。\n"><title>LangGraph 实战笔记 14：构建一个可控的 RAG Agent</title><link rel=canonical href=https://tkdwbiao.github.io/p/langgraph-build-controllable-rag-agent/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="LangGraph 实战笔记 14：构建一个可控的 RAG Agent"><meta property='og:description' content="上一篇文章里，我们从零构建了一个 ReAct Agent。\n它的核心结构是：\n1 LLM -> Tools -> LLM 模型可以根据任务判断是否调用工具，工具返回 Observation 后，模型再继续推理并生成最终回答。\n这一篇，我们把这个思路放到 RAG 场景里，构建一个可控的 RAG Agent。\n普通 RAG 通常是固定流程：\n1 问题 -> 检索 -> 生成回答 但真实业务中，我们经常需要更细的控制：\n1 2 3 4 5 是否需要检索？ 检索结果是否相关？ 回答是否基于资料？ 资料不够时是否要改写问题重新检索？ 回答是否需要附带来源？ 这些都非常适合用 LangGraph 显式建模。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/langgraph-build-controllable-rag-agent/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='LangGraph'><meta property='article:tag' content='RAG'><meta property='article:tag' content='Agent'><meta property='article:tag' content='Retriever'><meta property='article:tag' content='质量检查'><meta property='article:published_time' content='2025-11-27T10:00:00+08:00'><meta property='article:modified_time' content='2025-11-27T10:00:00+08:00'><meta name=twitter:title content="LangGraph 实战笔记 14：构建一个可控的 RAG Agent"><meta name=twitter:description content="上一篇文章里，我们从零构建了一个 ReAct Agent。\n它的核心结构是：\n1 LLM -> Tools -> LLM 模型可以根据任务判断是否调用工具，工具返回 Observation 后，模型再继续推理并生成最终回答。\n这一篇，我们把这个思路放到 RAG 场景里，构建一个可控的 RAG Agent。\n普通 RAG 通常是固定流程：\n1 问题 -> 检索 -> 生成回答 但真实业务中，我们经常需要更细的控制：\n1 2 3 4 5 是否需要检索？ 检索结果是否相关？ 回答是否基于资料？ 资料不够时是否要改写问题重新检索？ 回答是否需要附带来源？ 这些都非常适合用 LangGraph 显式建模。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二普通-rag-和-rag-agent-的区别>二、普通 RAG 和 RAG Agent 的区别</a></li><li><a href=#三本篇要构建的可控-rag-agent>三、本篇要构建的可控 RAG Agent</a></li><li><a href=#四设计-state>四、设计 State</a></li><li><a href=#五判断是否需要检索>五、判断是否需要检索</a></li><li><a href=#六直接回答节点>六、直接回答节点</a></li><li><a href=#七检索节点>七、检索节点</a></li><li><a href=#八文档相关性检查节点>八、文档相关性检查节点</a></li><li><a href=#九文档不相关时改写查询>九、文档不相关时改写查询</a></li><li><a href=#十文档检查后的路由>十、文档检查后的路由</a></li><li><a href=#十一生成回答节点>十一、生成回答节点</a></li><li><a href=#十二回答质量检查节点>十二、回答质量检查节点</a></li><li><a href=#十三回答检查后的路由>十三、回答检查后的路由</a></li><li><a href=#十四组装完整图>十四、组装完整图</a></li><li><a href=#十五运行示例>十五、运行示例</a><ol><li><a href=#1-报销制度问题>1. 报销制度问题</a></li><li><a href=#2-不需要检索的问题>2. 不需要检索的问题</a></li><li><a href=#3-检索不相关的问题>3. 检索不相关的问题</a></li></ol></li><li><a href=#十六如何接入真实-retriever>十六、如何接入真实 Retriever？</a></li><li><a href=#十七如何检查幻觉>十七、如何检查幻觉？</a></li><li><a href=#十八可控-rag-的常见问题>十八、可控 RAG 的常见问题</a><ol><li><a href=#1-检索结果不相关还继续生成>1. 检索结果不相关还继续生成</a></li><li><a href=#2-改写查询无限循环>2. 改写查询无限循环</a></li><li><a href=#3-所有问题都走检索>3. 所有问题都走检索</a></li><li><a href=#4-回答没有来源>4. 回答没有来源</a></li><li><a href=#5-把所有逻辑塞进一个节点>5. 把所有逻辑塞进一个节点</a></li></ol></li><li><a href=#十九最佳实践>十九、最佳实践</a><ol><li><a href=#1-先做普通-rag再升级成可控-rag>1. 先做普通 RAG，再升级成可控 RAG</a></li><li><a href=#2-检索和生成分开>2. 检索和生成分开</a></li><li><a href=#3-文档相关性要检查>3. 文档相关性要检查</a></li><li><a href=#4-查询改写要有次数限制>4. 查询改写要有次数限制</a></li><li><a href=#5-回答要基于资料>5. 回答要基于资料</a></li><li><a href=#6-尽量保留来源信息>6. 尽量保留来源信息</a></li><li><a href=#7-用-langsmith-评估-rag>7. 用 LangSmith 评估 RAG</a></li></ol></li><li><a href=#二十总结>二十、总结</a></li><li><a href=#参考资料>参考资料</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/agent-%E7%B3%BB%E5%88%97/ style=background-color:#beefe2;color:#0f3d32>Agent 系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/langgraph-build-controllable-rag-agent/>LangGraph 实战笔记 14：构建一个可控的 RAG Agent</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2025-11-27T10:00:00+08:00>2025-11-27 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 12 分钟</time></div></footer></div></header><section class=article-content><p>上一篇文章里，我们从零构建了一个 ReAct Agent。</p><p>它的核心结构是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM -&gt; Tools -&gt; LLM
+</span></span></code></pre></td></tr></table></div></div><p>模型可以根据任务判断是否调用工具，工具返回 Observation 后，模型再继续推理并生成最终回答。</p><p>这一篇，我们把这个思路放到 RAG 场景里，构建一个可控的 RAG Agent。</p><p>普通 RAG 通常是固定流程：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>问题 -&gt; 检索 -&gt; 生成回答
+</span></span></code></pre></td></tr></table></div></div><p>但真实业务中，我们经常需要更细的控制：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>是否需要检索？
+</span></span><span class=line><span class=cl>检索结果是否相关？
+</span></span><span class=line><span class=cl>回答是否基于资料？
+</span></span><span class=line><span class=cl>资料不够时是否要改写问题重新检索？
+</span></span><span class=line><span class=cl>回答是否需要附带来源？
+</span></span></code></pre></td></tr></table></div></div><p>这些都非常适合用 LangGraph 显式建模。</p><h2 id=一前言>一、前言</h2><p>RAG 是大模型应用中非常重要的能力。</p><p>它解决的是：</p><blockquote><p>让模型基于外部知识回答，而不是只依赖模型参数里的记忆。</p></blockquote><p>一个最基础的 RAG 流程是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>User Question
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Retriever
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Relevant Documents
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Prompt
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Model
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Answer
+</span></span></code></pre></td></tr></table></div></div><p>这在很多场景下已经足够。</p><p>例如：</p><ul><li>企业制度问答。</li><li>项目文档问答。</li><li>产品手册问答。</li><li>API 文档问答。</li><li>私有知识库问答。</li></ul><p>但普通 RAG 也有一些常见问题。</p><p>例如：</p><ul><li>用户问题其实不需要检索，却仍然检索。</li><li>检索结果不相关，模型仍然硬答。</li><li>检索结果不够，模型开始编造。</li><li>答案没有说明依据来自哪里。</li><li>第一次检索失败后，没有改写查询重试。</li><li>回答质量不合格，但流程已经结束。</li></ul><p>这些问题不是单纯换一个向量库就能解决的。</p><p>很多时候，它们需要流程控制。</p><p>而 LangGraph 正适合把 RAG 从“一条固定 Chain”升级成“一张可控状态图”。</p><h2 id=二普通-rag-和-rag-agent-的区别>二、普通 RAG 和 RAG Agent 的区别</h2><p>普通 RAG 更像固定流水线。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Question -&gt; Retrieve -&gt; Generate -&gt; Answer
+</span></span></code></pre></td></tr></table></div></div><p>无论用户问什么，都走同一套流程。</p><p>RAG Agent 则更动态。</p><p>它可以根据状态决定：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>这个问题需不需要检索？
+</span></span><span class=line><span class=cl>检索结果够不够好？
+</span></span><span class=line><span class=cl>是否需要改写问题再检索？
+</span></span><span class=line><span class=cl>是否可以直接回答？
+</span></span><span class=line><span class=cl>是否应该拒答或提示资料不足？
+</span></span></code></pre></td></tr></table></div></div><p>可以简单对比一下：</p><div class=table-wrapper><table><thead><tr><th>维度</th><th>普通 RAG Chain</th><th>RAG Agent</th></tr></thead><tbody><tr><td>流程</td><td>固定</td><td>可分支、可循环</td></tr><tr><td>是否检索</td><td>通常总是检索</td><td>可判断是否需要检索</td></tr><tr><td>检索质量</td><td>通常直接使用</td><td>可以检查相关性</td></tr><tr><td>生成答案</td><td>一次生成</td><td>可检查、可重写</td></tr><tr><td>失败处理</td><td>较弱</td><td>可走 fallback 或重新检索</td></tr><tr><td>可观测性</td><td>看整体链路</td><td>看每个节点状态</td></tr></tbody></table></div><p>所以，RAG Agent 不是为了把 RAG 复杂化。</p><p>它是为了让 RAG 的关键步骤更可控。</p><h2 id=三本篇要构建的可控-rag-agent>三、本篇要构建的可控 RAG Agent</h2><p>这一篇我们构建一个简化版的企业制度问答 Agent。</p><p>它会处理用户问题，并按下面流程执行：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>START
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>classify_question
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>  ├── no_retrieval -&gt; direct_answer -&gt; END
+</span></span><span class=line><span class=cl>  └── retrieval -&gt; retrieve_docs
+</span></span><span class=line><span class=cl>                    ↓
+</span></span><span class=line><span class=cl>                 grade_docs
+</span></span><span class=line><span class=cl>                    ↓
+</span></span><span class=line><span class=cl>          ┌─────────┴─────────┐
+</span></span><span class=line><span class=cl>          ↓                   ↓
+</span></span><span class=line><span class=cl>      useful              not_useful
+</span></span><span class=line><span class=cl>          ↓                   ↓
+</span></span><span class=line><span class=cl>   generate_answer      rewrite_query
+</span></span><span class=line><span class=cl>          ↓                   ↓
+</span></span><span class=line><span class=cl>    check_answer         retrieve_docs
+</span></span><span class=line><span class=cl>          ↓
+</span></span><span class=line><span class=cl>   ┌──────┴──────┐
+</span></span><span class=line><span class=cl>   ↓             ↓
+</span></span><span class=line><span class=cl> pass          fail
+</span></span><span class=line><span class=cl>   ↓             ↓
+</span></span><span class=line><span class=cl> END       fallback_answer -&gt; END
+</span></span></code></pre></td></tr></table></div></div><p>这个流程包含几个关键能力：</p><ol><li>判断是否需要检索。</li><li>检索文档。</li><li>检查文档是否相关。</li><li>不相关时改写查询并重新检索。</li><li>基于文档生成回答。</li><li>检查回答是否合格。</li><li>不合格时走 fallback。</li></ol><p>为了保持示例可读，本文会用简单函数模拟 Retriever 和检查逻辑。</p><p>真实项目里，你可以把这些节点替换成向量库、reranker、LLM judge 或 LangSmith 评估器。</p><h2 id=四设计-state>四、设计 State</h2><p>先设计 State。</p><p>可控 RAG Agent 需要保存：</p><div class=table-wrapper><table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody><tr><td><code>question</code></td><td>用户原始问题</td></tr><tr><td><code>query</code></td><td>实际用于检索的问题</td></tr><tr><td><code>route</code></td><td>是否需要检索</td></tr><tr><td><code>docs</code></td><td>检索到的文档</td></tr><tr><td><code>docs_are_relevant</code></td><td>文档是否相关</td></tr><tr><td><code>answer</code></td><td>生成的回答</td></tr><tr><td><code>answer_is_grounded</code></td><td>回答是否基于资料</td></tr><tr><td><code>rewrite_count</code></td><td>查询改写次数</td></tr><tr><td><code>max_rewrites</code></td><td>最大改写次数</td></tr></tbody></table></div><p>代码如下：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>RagAgentState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>query</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>route</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs_are_relevant</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer_is_grounded</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>rewrite_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_rewrites</span><span class=p>:</span> <span class=nb>int</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里有两个字段特别重要。</p><p>第一个是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>query</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>它和 <code>question</code> 不完全一样。</p><p><code>question</code> 是用户原始问题。</p><p><code>query</code> 是实际用于检索的问题。</p><p>如果第一次检索效果不好，我们可以改写 <code>query</code>，但保留原始 <code>question</code>。</p><p>第二个是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>rewrite_count</span>
+</span></span><span class=line><span class=cl><span class=n>max_rewrites</span>
+</span></span></code></pre></td></tr></table></div></div><p>它们用来控制重新检索的次数。</p><p>只要图里有循环，就要有终止条件。</p><h2 id=五判断是否需要检索>五、判断是否需要检索</h2><p>不是所有问题都需要 RAG。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你好。
+</span></span><span class=line><span class=cl>你是谁？
+</span></span><span class=line><span class=cl>帮我把这句话润色一下。
+</span></span></code></pre></td></tr></table></div></div><p>这些问题不一定需要查知识库。</p><p>而下面的问题通常需要检索：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>公司的报销制度是什么？
+</span></span><span class=line><span class=cl>年假怎么申请？
+</span></span><span class=line><span class=cl>项目发布流程在哪里看？
+</span></span></code></pre></td></tr></table></div></div><p>我们先写一个简单分类节点。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>classify_question_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;制度&#34;</span> <span class=ow>in</span> <span class=n>question</span> <span class=ow>or</span> <span class=s2>&#34;报销&#34;</span> <span class=ow>in</span> <span class=n>question</span> <span class=ow>or</span> <span class=s2>&#34;年假&#34;</span> <span class=ow>in</span> <span class=n>question</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;route&#34;</span><span class=p>:</span> <span class=s2>&#34;retrieval&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;query&#34;</span><span class=p>:</span> <span class=n>question</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;rewrite_count&#34;</span><span class=p>:</span> <span class=mi>0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;route&#34;</span><span class=p>:</span> <span class=s2>&#34;no_retrieval&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;query&#34;</span><span class=p>:</span> <span class=n>question</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;rewrite_count&#34;</span><span class=p>:</span> <span class=mi>0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点读取 <code>question</code>，写入：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>route</span>
+</span></span><span class=line><span class=cl><span class=n>query</span>
+</span></span><span class=line><span class=cl><span class=n>rewrite_count</span>
+</span></span></code></pre></td></tr></table></div></div><p>后续条件边会根据 <code>route</code> 选择路径。</p><p>路由函数：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>Literal</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>route_after_classify</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>Literal</span><span class=p>[</span><span class=s2>&#34;retrieval&#34;</span><span class=p>,</span> <span class=s2>&#34;no_retrieval&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;route&#34;</span><span class=p>]</span>
+</span></span></code></pre></td></tr></table></div></div><h2 id=六直接回答节点>六、直接回答节点</h2><p>如果问题不需要检索，就直接回答。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>direct_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=s2>&#34;这是一个不需要检索知识库的问题，我可以直接回答。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>真实项目里，这里可以调用普通 Chat Model。</p><p>这个路径说明：</p><blockquote><p>RAG Agent 不一定每次都 RAG。</p></blockquote><p>这是它比固定 RAG Chain 更灵活的地方。</p><h2 id=七检索节点>七、检索节点</h2><p>检索节点负责根据 <code>query</code> 获取文档。</p><p>为了简化，我们用内置列表模拟。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>retrieve_docs_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>query</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;query&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;报销&#34;</span> <span class=ow>in</span> <span class=n>query</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>docs</span> <span class=o>=</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;报销制度：员工应在费用发生后 30 天内提交报销申请。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;报销材料：需要上传发票、付款凭证和审批记录。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=k>elif</span> <span class=s2>&#34;年假&#34;</span> <span class=ow>in</span> <span class=n>query</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>docs</span> <span class=o>=</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;年假制度：员工入职满一年后可申请年假。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;年假申请：需要提前在系统中提交申请并等待主管审批。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=k>else</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>docs</span> <span class=o>=</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;公司制度文档目录：包含报销、年假、考勤等制度。&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;docs&#34;</span><span class=p>:</span> <span class=n>docs</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>真实项目里，这个节点可以替换成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>retrieve_docs_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs</span> <span class=o>=</span> <span class=n>retriever</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=n>state</span><span class=p>[</span><span class=s2>&#34;query&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;docs&#34;</span><span class=p>:</span> <span class=p>[</span><span class=n>doc</span><span class=o>.</span><span class=n>page_content</span> <span class=k>for</span> <span class=n>doc</span> <span class=ow>in</span> <span class=n>docs</span><span class=p>]}</span>
+</span></span></code></pre></td></tr></table></div></div><p>节点职责要保持清楚：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>读取 query -&gt; 调用 retriever -&gt; 写入 docs
+</span></span></code></pre></td></tr></table></div></div><p>不要在检索节点里同时生成答案。</p><h2 id=八文档相关性检查节点>八、文档相关性检查节点</h2><p>检索到文档后，不应该默认文档一定相关。</p><p>我们可以增加一个文档评分节点。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>grade_docs_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;docs&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>joined_docs</span> <span class=o>=</span> <span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>(</span><span class=n>docs</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;报销&#34;</span> <span class=ow>in</span> <span class=n>question</span> <span class=ow>and</span> <span class=s2>&#34;报销&#34;</span> <span class=ow>in</span> <span class=n>joined_docs</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;docs_are_relevant&#34;</span><span class=p>:</span> <span class=kc>True</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;年假&#34;</span> <span class=ow>in</span> <span class=n>question</span> <span class=ow>and</span> <span class=s2>&#34;年假&#34;</span> <span class=ow>in</span> <span class=n>joined_docs</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;docs_are_relevant&#34;</span><span class=p>:</span> <span class=kc>True</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;docs_are_relevant&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>真实项目里，这个节点可以使用 LLM judge。</p><p>例如让模型判断：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>这些文档是否足以回答用户问题？只返回 yes/no。
+</span></span></code></pre></td></tr></table></div></div><p>但不管内部怎么实现，输出最好是结构化字段：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span><span class=s2>&#34;docs_are_relevant&#34;</span><span class=p>:</span> <span class=kc>True</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这样条件边才能稳定路由。</p><h2 id=九文档不相关时改写查询>九、文档不相关时改写查询</h2><p>如果检索结果不相关，可以改写查询后重新检索。</p><p>例如用户问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>花钱之后多久能报？
+</span></span></code></pre></td></tr></table></div></div><p>第一次检索可能不一定命中“报销制度”。</p><p>改写后可以变成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>公司报销制度 报销时间限制
+</span></span></code></pre></td></tr></table></div></div><p>示例节点：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>rewrite_query_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>rewrite_count</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;rewrite_count&#34;</span><span class=p>]</span> <span class=o>+</span> <span class=mi>1</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;花钱&#34;</span> <span class=ow>in</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=n>query</span> <span class=o>=</span> <span class=s2>&#34;公司报销制度 报销时间限制&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>else</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>query</span> <span class=o>=</span> <span class=sa>f</span><span class=s2>&#34;公司制度 </span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;question&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;query&#34;</span><span class=p>:</span> <span class=n>query</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;rewrite_count&#34;</span><span class=p>:</span> <span class=n>rewrite_count</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里要注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>rewrite_query -&gt; retrieve_docs
+</span></span></code></pre></td></tr></table></div></div><p>会形成循环。</p><p>所以我们需要在路由函数里控制最大改写次数。</p><h2 id=十文档检查后的路由>十、文档检查后的路由</h2><p>文档相关性检查后，有三种可能：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>文档相关 -&gt; generate_answer
+</span></span><span class=line><span class=cl>文档不相关但还能改写 -&gt; rewrite_query
+</span></span><span class=line><span class=cl>文档不相关且超过次数 -&gt; fallback_answer
+</span></span></code></pre></td></tr></table></div></div><p>路由函数：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>Literal</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>route_after_grade</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>Literal</span><span class=p>[</span><span class=s2>&#34;generate&#34;</span><span class=p>,</span> <span class=s2>&#34;rewrite&#34;</span><span class=p>,</span> <span class=s2>&#34;fallback&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;docs_are_relevant&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;generate&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;rewrite_count&#34;</span><span class=p>]</span> <span class=o>&lt;</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;max_rewrites&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;rewrite&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;fallback&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>这就是可控 RAG 的关键。</p><p>普通 RAG 检索到什么就用什么。</p><p>可控 RAG 会先判断资料是否可用，再决定下一步。</p><h2 id=十一生成回答节点>十一、生成回答节点</h2><p>文档相关后，进入生成节点。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>generate_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>context</span> <span class=o>=</span> <span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>(</span><span class=n>state</span><span class=p>[</span><span class=s2>&#34;docs&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span> <span class=o>=</span> <span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;根据检索到的资料：</span><span class=se>\n</span><span class=si>{</span><span class=n>context</span><span class=si>}</span><span class=se>\n\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;针对你的问题：</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;question&#39;</span><span class=p>]</span><span class=si>}</span><span class=se>\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;回答：员工应根据公司制度提交申请，并按要求上传相关材料。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=n>answer</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>真实项目里，这里通常会用 Prompt + Model。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>generate_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span> <span class=o>=</span> <span class=n>rag_chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;context&#34;</span><span class=p>:</span> <span class=s2>&#34;</span><span class=se>\n\n</span><span class=s2>&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>(</span><span class=n>state</span><span class=p>[</span><span class=s2>&#34;docs&#34;</span><span class=p>]),</span>
+</span></span><span class=line><span class=cl>    <span class=p>})</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=n>answer</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>生成节点应该明确要求模型：</p><ul><li>只能基于给定资料回答。</li><li>资料不足时说明不足。</li><li>尽量引用来源。</li><li>不要编造没有出现的信息。</li></ul><h2 id=十二回答质量检查节点>十二、回答质量检查节点</h2><p>生成答案后，还可以检查回答是否合格。</p><p>例如检查：</p><ul><li>是否为空。</li><li>是否引用了资料。</li><li>是否覆盖用户问题。</li><li>是否包含明显无依据内容。</li></ul><p>示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>check_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;answer&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs</span> <span class=o>=</span> <span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>(</span><span class=n>state</span><span class=p>[</span><span class=s2>&#34;docs&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>answer</span><span class=o>.</span><span class=n>strip</span><span class=p>():</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer_is_grounded&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;根据检索到的资料&#34;</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>answer</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer_is_grounded&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;报销&#34;</span> <span class=ow>in</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]</span> <span class=ow>and</span> <span class=s2>&#34;报销&#34;</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>docs</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer_is_grounded&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer_is_grounded&#34;</span><span class=p>:</span> <span class=kc>True</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>真实项目里，可以用 LLM-as-judge 或 LangSmith 评估器来检查：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>回答是否由检索文档支持？
+</span></span><span class=line><span class=cl>回答是否回答了用户问题？
+</span></span><span class=line><span class=cl>回答是否包含未出现在文档中的事实？
+</span></span></code></pre></td></tr></table></div></div><h2 id=十三回答检查后的路由>十三、回答检查后的路由</h2><p>检查后有两种路径：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>通过 -&gt; END
+</span></span><span class=line><span class=cl>不通过 -&gt; fallback_answer
+</span></span></code></pre></td></tr></table></div></div><p>路由函数：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>route_after_answer_check</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>Literal</span><span class=p>[</span><span class=s2>&#34;pass&#34;</span><span class=p>,</span> <span class=s2>&#34;fallback&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;answer_is_grounded&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;pass&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;fallback&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>fallback 节点：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>fallback_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=p>(</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;我没有找到足够可靠的资料来回答这个问题。&#34;</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;建议你补充更具体的问题，或查看公司制度文档。&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这比让模型基于无关资料硬答更可靠。</p><p>很多 RAG 系统的问题不是“不知道”，而是“不知道还硬答”。</p><p>Fallback 的价值就是允许系统明确说：资料不足。</p><h2 id=十四组装完整图>十四、组装完整图</h2><p>下面把所有节点组装起来。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>  1
+</span><span class=lnt>  2
+</span><span class=lnt>  3
+</span><span class=lnt>  4
+</span><span class=lnt>  5
+</span><span class=lnt>  6
+</span><span class=lnt>  7
+</span><span class=lnt>  8
+</span><span class=lnt>  9
+</span><span class=lnt> 10
+</span><span class=lnt> 11
+</span><span class=lnt> 12
+</span><span class=lnt> 13
+</span><span class=lnt> 14
+</span><span class=lnt> 15
+</span><span class=lnt> 16
+</span><span class=lnt> 17
+</span><span class=lnt> 18
+</span><span class=lnt> 19
+</span><span class=lnt> 20
+</span><span class=lnt> 21
+</span><span class=lnt> 22
+</span><span class=lnt> 23
+</span><span class=lnt> 24
+</span><span class=lnt> 25
+</span><span class=lnt> 26
+</span><span class=lnt> 27
+</span><span class=lnt> 28
+</span><span class=lnt> 29
+</span><span class=lnt> 30
+</span><span class=lnt> 31
+</span><span class=lnt> 32
+</span><span class=lnt> 33
+</span><span class=lnt> 34
+</span><span class=lnt> 35
+</span><span class=lnt> 36
+</span><span class=lnt> 37
+</span><span class=lnt> 38
+</span><span class=lnt> 39
+</span><span class=lnt> 40
+</span><span class=lnt> 41
+</span><span class=lnt> 42
+</span><span class=lnt> 43
+</span><span class=lnt> 44
+</span><span class=lnt> 45
+</span><span class=lnt> 46
+</span><span class=lnt> 47
+</span><span class=lnt> 48
+</span><span class=lnt> 49
+</span><span class=lnt> 50
+</span><span class=lnt> 51
+</span><span class=lnt> 52
+</span><span class=lnt> 53
+</span><span class=lnt> 54
+</span><span class=lnt> 55
+</span><span class=lnt> 56
+</span><span class=lnt> 57
+</span><span class=lnt> 58
+</span><span class=lnt> 59
+</span><span class=lnt> 60
+</span><span class=lnt> 61
+</span><span class=lnt> 62
+</span><span class=lnt> 63
+</span><span class=lnt> 64
+</span><span class=lnt> 65
+</span><span class=lnt> 66
+</span><span class=lnt> 67
+</span><span class=lnt> 68
+</span><span class=lnt> 69
+</span><span class=lnt> 70
+</span><span class=lnt> 71
+</span><span class=lnt> 72
+</span><span class=lnt> 73
+</span><span class=lnt> 74
+</span><span class=lnt> 75
+</span><span class=lnt> 76
+</span><span class=lnt> 77
+</span><span class=lnt> 78
+</span><span class=lnt> 79
+</span><span class=lnt> 80
+</span><span class=lnt> 81
+</span><span class=lnt> 82
+</span><span class=lnt> 83
+</span><span class=lnt> 84
+</span><span class=lnt> 85
+</span><span class=lnt> 86
+</span><span class=lnt> 87
+</span><span class=lnt> 88
+</span><span class=lnt> 89
+</span><span class=lnt> 90
+</span><span class=lnt> 91
+</span><span class=lnt> 92
+</span><span class=lnt> 93
+</span><span class=lnt> 94
+</span><span class=lnt> 95
+</span><span class=lnt> 96
+</span><span class=lnt> 97
+</span><span class=lnt> 98
+</span><span class=lnt> 99
+</span><span class=lnt>100
+</span><span class=lnt>101
+</span><span class=lnt>102
+</span><span class=lnt>103
+</span><span class=lnt>104
+</span><span class=lnt>105
+</span><span class=lnt>106
+</span><span class=lnt>107
+</span><span class=lnt>108
+</span><span class=lnt>109
+</span><span class=lnt>110
+</span><span class=lnt>111
+</span><span class=lnt>112
+</span><span class=lnt>113
+</span><span class=lnt>114
+</span><span class=lnt>115
+</span><span class=lnt>116
+</span><span class=lnt>117
+</span><span class=lnt>118
+</span><span class=lnt>119
+</span><span class=lnt>120
+</span><span class=lnt>121
+</span><span class=lnt>122
+</span><span class=lnt>123
+</span><span class=lnt>124
+</span><span class=lnt>125
+</span><span class=lnt>126
+</span><span class=lnt>127
+</span><span class=lnt>128
+</span><span class=lnt>129
+</span><span class=lnt>130
+</span><span class=lnt>131
+</span><span class=lnt>132
+</span><span class=lnt>133
+</span><span class=lnt>134
+</span><span class=lnt>135
+</span><span class=lnt>136
+</span><span class=lnt>137
+</span><span class=lnt>138
+</span><span class=lnt>139
+</span><span class=lnt>140
+</span><span class=lnt>141
+</span><span class=lnt>142
+</span><span class=lnt>143
+</span><span class=lnt>144
+</span><span class=lnt>145
+</span><span class=lnt>146
+</span><span class=lnt>147
+</span><span class=lnt>148
+</span><span class=lnt>149
+</span><span class=lnt>150
+</span><span class=lnt>151
+</span><span class=lnt>152
+</span><span class=lnt>153
+</span><span class=lnt>154
+</span><span class=lnt>155
+</span><span class=lnt>156
+</span><span class=lnt>157
+</span><span class=lnt>158
+</span><span class=lnt>159
+</span><span class=lnt>160
+</span><span class=lnt>161
+</span><span class=lnt>162
+</span><span class=lnt>163
+</span><span class=lnt>164
+</span><span class=lnt>165
+</span><span class=lnt>166
+</span><span class=lnt>167
+</span><span class=lnt>168
+</span><span class=lnt>169
+</span><span class=lnt>170
+</span><span class=lnt>171
+</span><span class=lnt>172
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>Literal</span><span class=p>,</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langgraph.graph</span> <span class=kn>import</span> <span class=n>StateGraph</span><span class=p>,</span> <span class=n>START</span><span class=p>,</span> <span class=n>END</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>RagAgentState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>query</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>route</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs_are_relevant</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer_is_grounded</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>rewrite_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_rewrites</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>classify_question_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;制度&#34;</span> <span class=ow>in</span> <span class=n>question</span> <span class=ow>or</span> <span class=s2>&#34;报销&#34;</span> <span class=ow>in</span> <span class=n>question</span> <span class=ow>or</span> <span class=s2>&#34;年假&#34;</span> <span class=ow>in</span> <span class=n>question</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;route&#34;</span><span class=p>:</span> <span class=s2>&#34;retrieval&#34;</span><span class=p>,</span> <span class=s2>&#34;query&#34;</span><span class=p>:</span> <span class=n>question</span><span class=p>,</span> <span class=s2>&#34;rewrite_count&#34;</span><span class=p>:</span> <span class=mi>0</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;route&#34;</span><span class=p>:</span> <span class=s2>&#34;no_retrieval&#34;</span><span class=p>,</span> <span class=s2>&#34;query&#34;</span><span class=p>:</span> <span class=n>question</span><span class=p>,</span> <span class=s2>&#34;rewrite_count&#34;</span><span class=p>:</span> <span class=mi>0</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>route_after_classify</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>Literal</span><span class=p>[</span><span class=s2>&#34;retrieval&#34;</span><span class=p>,</span> <span class=s2>&#34;no_retrieval&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;route&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>direct_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=s2>&#34;这是一个不需要检索知识库的问题，我可以直接回答。&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>retrieve_docs_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>query</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;query&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;报销&#34;</span> <span class=ow>in</span> <span class=n>query</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>docs</span> <span class=o>=</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;报销制度：员工应在费用发生后 30 天内提交报销申请。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;报销材料：需要上传发票、付款凭证和审批记录。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=k>elif</span> <span class=s2>&#34;年假&#34;</span> <span class=ow>in</span> <span class=n>query</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>docs</span> <span class=o>=</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;年假制度：员工入职满一年后可申请年假。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;年假申请：需要提前在系统中提交申请并等待主管审批。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=k>else</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>docs</span> <span class=o>=</span> <span class=p>[</span><span class=s2>&#34;公司制度文档目录：包含报销、年假、考勤等制度。&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;docs&#34;</span><span class=p>:</span> <span class=n>docs</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>grade_docs_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>joined_docs</span> <span class=o>=</span> <span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>(</span><span class=n>state</span><span class=p>[</span><span class=s2>&#34;docs&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;报销&#34;</span> <span class=ow>in</span> <span class=n>question</span> <span class=ow>and</span> <span class=s2>&#34;报销&#34;</span> <span class=ow>in</span> <span class=n>joined_docs</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;docs_are_relevant&#34;</span><span class=p>:</span> <span class=kc>True</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;年假&#34;</span> <span class=ow>in</span> <span class=n>question</span> <span class=ow>and</span> <span class=s2>&#34;年假&#34;</span> <span class=ow>in</span> <span class=n>joined_docs</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;docs_are_relevant&#34;</span><span class=p>:</span> <span class=kc>True</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;docs_are_relevant&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>route_after_grade</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>Literal</span><span class=p>[</span><span class=s2>&#34;generate&#34;</span><span class=p>,</span> <span class=s2>&#34;rewrite&#34;</span><span class=p>,</span> <span class=s2>&#34;fallback&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;docs_are_relevant&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;generate&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;rewrite_count&#34;</span><span class=p>]</span> <span class=o>&lt;</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;max_rewrites&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;rewrite&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;fallback&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>rewrite_query_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>rewrite_count</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;rewrite_count&#34;</span><span class=p>]</span> <span class=o>+</span> <span class=mi>1</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;花钱&#34;</span> <span class=ow>in</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=n>query</span> <span class=o>=</span> <span class=s2>&#34;公司报销制度 报销时间限制&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>else</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>query</span> <span class=o>=</span> <span class=sa>f</span><span class=s2>&#34;公司制度 </span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;question&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;query&#34;</span><span class=p>:</span> <span class=n>query</span><span class=p>,</span> <span class=s2>&#34;rewrite_count&#34;</span><span class=p>:</span> <span class=n>rewrite_count</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>generate_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>context</span> <span class=o>=</span> <span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>(</span><span class=n>state</span><span class=p>[</span><span class=s2>&#34;docs&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span> <span class=o>=</span> <span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;根据检索到的资料：</span><span class=se>\n</span><span class=si>{</span><span class=n>context</span><span class=si>}</span><span class=se>\n\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;针对你的问题：</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;question&#39;</span><span class=p>]</span><span class=si>}</span><span class=se>\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;回答：员工应根据公司制度提交申请，并按要求上传相关材料。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=n>answer</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>check_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;answer&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs</span> <span class=o>=</span> <span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>(</span><span class=n>state</span><span class=p>[</span><span class=s2>&#34;docs&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>answer</span><span class=o>.</span><span class=n>strip</span><span class=p>():</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer_is_grounded&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;根据检索到的资料&#34;</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>answer</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer_is_grounded&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;报销&#34;</span> <span class=ow>in</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]</span> <span class=ow>and</span> <span class=s2>&#34;报销&#34;</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>docs</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer_is_grounded&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer_is_grounded&#34;</span><span class=p>:</span> <span class=kc>True</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>route_after_answer_check</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>Literal</span><span class=p>[</span><span class=s2>&#34;pass&#34;</span><span class=p>,</span> <span class=s2>&#34;fallback&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;answer_is_grounded&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;pass&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;fallback&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>fallback_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=p>(</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;我没有找到足够可靠的资料来回答这个问题。&#34;</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;建议你补充更具体的问题，或查看公司制度文档。&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span> <span class=o>=</span> <span class=n>StateGraph</span><span class=p>(</span><span class=n>RagAgentState</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;classify_question&#34;</span><span class=p>,</span> <span class=n>classify_question_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;direct_answer&#34;</span><span class=p>,</span> <span class=n>direct_answer_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;retrieve_docs&#34;</span><span class=p>,</span> <span class=n>retrieve_docs_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;grade_docs&#34;</span><span class=p>,</span> <span class=n>grade_docs_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;rewrite_query&#34;</span><span class=p>,</span> <span class=n>rewrite_query_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;generate_answer&#34;</span><span class=p>,</span> <span class=n>generate_answer_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;check_answer&#34;</span><span class=p>,</span> <span class=n>check_answer_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;fallback_answer&#34;</span><span class=p>,</span> <span class=n>fallback_answer_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=n>START</span><span class=p>,</span> <span class=s2>&#34;classify_question&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_conditional_edges</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;classify_question&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>route_after_classify</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;retrieval&#34;</span><span class=p>:</span> <span class=s2>&#34;retrieve_docs&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;no_retrieval&#34;</span><span class=p>:</span> <span class=s2>&#34;direct_answer&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;direct_answer&#34;</span><span class=p>,</span> <span class=n>END</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;retrieve_docs&#34;</span><span class=p>,</span> <span class=s2>&#34;grade_docs&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_conditional_edges</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;grade_docs&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>route_after_grade</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;generate&#34;</span><span class=p>:</span> <span class=s2>&#34;generate_answer&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;rewrite&#34;</span><span class=p>:</span> <span class=s2>&#34;rewrite_query&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;fallback&#34;</span><span class=p>:</span> <span class=s2>&#34;fallback_answer&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;rewrite_query&#34;</span><span class=p>,</span> <span class=s2>&#34;retrieve_docs&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;generate_answer&#34;</span><span class=p>,</span> <span class=s2>&#34;check_answer&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_conditional_edges</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;check_answer&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>route_after_answer_check</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;pass&#34;</span><span class=p>:</span> <span class=n>END</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;fallback&#34;</span><span class=p>:</span> <span class=s2>&#34;fallback_answer&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;fallback_answer&#34;</span><span class=p>,</span> <span class=n>END</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>graph</span> <span class=o>=</span> <span class=n>builder</span><span class=o>.</span><span class=n>compile</span><span class=p>()</span>
+</span></span></code></pre></td></tr></table></div></div><p>这就是一个完整的可控 RAG Agent。</p><p>它不只是检索和生成，而是把关键控制点都显式放进图里。</p><h2 id=十五运行示例>十五、运行示例</h2><h3 id=1-报销制度问题>1. 报销制度问题</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>graph</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=s2>&#34;公司的报销制度是什么？&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;max_rewrites&#34;</span><span class=p>:</span> <span class=mi>1</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>[</span><span class=s2>&#34;answer&#34;</span><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>预期路径：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>classify_question -&gt; retrieve_docs -&gt; grade_docs -&gt; generate_answer -&gt; check_answer -&gt; END
+</span></span></code></pre></td></tr></table></div></div><h3 id=2-不需要检索的问题>2. 不需要检索的问题</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>graph</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=s2>&#34;你好，你能做什么？&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;max_rewrites&#34;</span><span class=p>:</span> <span class=mi>1</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>[</span><span class=s2>&#34;answer&#34;</span><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>预期路径：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>classify_question -&gt; direct_answer -&gt; END
+</span></span></code></pre></td></tr></table></div></div><h3 id=3-检索不相关的问题>3. 检索不相关的问题</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>graph</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=s2>&#34;花钱之后多久能报？&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;max_rewrites&#34;</span><span class=p>:</span> <span class=mi>1</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>[</span><span class=s2>&#34;query&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>[</span><span class=s2>&#34;answer&#34;</span><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>预期路径可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>classify_question -&gt; direct_answer -&gt; END
+</span></span></code></pre></td></tr></table></div></div><p>如果你希望这类问题也进入检索，可以优化 <code>classify_question_node</code>。</p><p>这正是可控 RAG 的意义：每个控制点都可以单独优化。</p><h2 id=十六如何接入真实-retriever>十六、如何接入真实 Retriever？</h2><p>上面的检索节点是模拟的。</p><p>真实项目通常会这样：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>retrieve_docs_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagAgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs</span> <span class=o>=</span> <span class=n>retriever</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=n>state</span><span class=p>[</span><span class=s2>&#34;query&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;docs&#34;</span><span class=p>:</span> <span class=p>[</span><span class=n>doc</span><span class=o>.</span><span class=n>page_content</span> <span class=k>for</span> <span class=n>doc</span> <span class=ow>in</span> <span class=n>docs</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>如果要保留来源信息，可以让 <code>docs</code> 不是 <code>list[str]</code>，而是结构化对象。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>RetrievedDoc</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>content</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>source</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>score</span><span class=p>:</span> <span class=nb>float</span>
+</span></span></code></pre></td></tr></table></div></div><p>然后 State 改成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>docs</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=n>RetrievedDoc</span><span class=p>]</span>
+</span></span></code></pre></td></tr></table></div></div><p>这样生成回答时就可以附带来源。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>根据《报销制度》第 3 条，员工应在 30 天内提交报销申请。
+</span></span></code></pre></td></tr></table></div></div><p>来源引用对企业 RAG 很重要。</p><p>因为它让用户知道答案依据是什么。</p><h2 id=十七如何检查幻觉>十七、如何检查幻觉？</h2><p>RAG 中常见问题是：</p><blockquote><p>模型回答里出现了文档没有支持的内容。</p></blockquote><p>这通常叫 hallucination 或 grounding 问题。</p><p>可以增加一个检查节点：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>answer 是否由 docs 支持？
+</span></span></code></pre></td></tr></table></div></div><p>简单规则可以检查关键词。</p><p>更可靠的方式是使用 LLM judge。</p><p>例如让模型判断：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>给定文档和回答，请判断回答中的每个事实是否都能在文档中找到依据。
+</span></span><span class=line><span class=cl>只返回 yes 或 no，并说明原因。
+</span></span></code></pre></td></tr></table></div></div><p>然后输出结构化字段：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;answer_is_grounded&#34;</span><span class=p>:</span> <span class=kc>True</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;grounding_reason&#34;</span><span class=p>:</span> <span class=s2>&#34;回答中的关键事实均出现在文档中。&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个结果可以继续用于条件边。</p><p>如果不通过，可以：</p><ul><li>重新生成回答。</li><li>重新检索。</li><li>返回资料不足。</li><li>请求用户补充问题。</li></ul><h2 id=十八可控-rag-的常见问题>十八、可控 RAG 的常见问题</h2><h3 id=1-检索结果不相关还继续生成>1. 检索结果不相关还继续生成</h3><p>这是普通 RAG 的常见问题。</p><p>解决方式是增加 <code>grade_docs</code> 节点。</p><h3 id=2-改写查询无限循环>2. 改写查询无限循环</h3><p>如果加入 <code>rewrite_query -> retrieve_docs</code>，必须有最大次数。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>rewrite_count</span> <span class=o>&lt;</span> <span class=n>max_rewrites</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=3-所有问题都走检索>3. 所有问题都走检索</h3><p>这会浪费资源，也可能引入无关上下文。</p><p>可以先判断是否需要检索。</p><h3 id=4-回答没有来源>4. 回答没有来源</h3><p>企业知识库问答最好带来源。</p><p>否则用户很难判断可信度。</p><h3 id=5-把所有逻辑塞进一个节点>5. 把所有逻辑塞进一个节点</h3><p>不要写一个 <code>rag_node</code> 同时完成分类、检索、生成和检查。</p><p>拆成节点后更容易调试。</p><h2 id=十九最佳实践>十九、最佳实践</h2><h3 id=1-先做普通-rag再升级成可控-rag>1. 先做普通 RAG，再升级成可控 RAG</h3><p>不要一开始就做复杂图。</p><p>先跑通：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>retrieve -&gt; generate
+</span></span></code></pre></td></tr></table></div></div><p>再加：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>是否检索、文档评分、查询改写、回答检查
+</span></span></code></pre></td></tr></table></div></div><h3 id=2-检索和生成分开>2. 检索和生成分开</h3><p>这样可以单独观察检索质量。</p><h3 id=3-文档相关性要检查>3. 文档相关性要检查</h3><p>检索到文档不等于文档可用。</p><h3 id=4-查询改写要有次数限制>4. 查询改写要有次数限制</h3><p>所有循环都要有终止条件。</p><h3 id=5-回答要基于资料>5. 回答要基于资料</h3><p>Prompt 中明确要求模型只基于资料回答。</p><p>必要时增加 grounding 检查。</p><h3 id=6-尽量保留来源信息>6. 尽量保留来源信息</h3><p>来源能提升可解释性和可信度。</p><h3 id=7-用-langsmith-评估-rag>7. 用 LangSmith 评估 RAG</h3><p>RAG 不是只看最终答案。</p><p>要评估：</p><ul><li>检索相关性。</li><li>上下文充分性。</li><li>回答正确性。</li><li>是否幻觉。</li><li>是否引用来源。</li></ul><h2 id=二十总结>二十、总结</h2><p>本文构建了一个可控的 RAG Agent。</p><p>核心结论是：</p><blockquote><p>普通 RAG 解决“把知识交给模型”，可控 RAG Agent 进一步解决“什么时候检索、检索结果能不能用、答案是否可靠、失败时如何处理”。</p></blockquote><p>本文重点包括：</p><ul><li>普通 RAG 是固定链路，可控 RAG Agent 是状态图工作流。</li><li>可以先判断问题是否需要检索。</li><li>检索节点只负责获取文档，不负责生成回答。</li><li>文档相关性检查可以避免基于无关资料硬答。</li><li>查询改写可以提升检索召回，但必须有最大次数。</li><li>回答生成后可以继续做 grounding 或质量检查。</li><li>资料不足时应该 fallback，而不是编造答案。</li><li>来源引用能提升 RAG 回答的可信度。</li><li>LangGraph 适合把 RAG 的关键控制点显式建模出来。</li></ul><p>下一篇文章，我们会进入 Human-in-the-loop：如何让人参与 Agent 决策，尤其是在高风险操作前暂停、审核、修改或拒绝执行。</p><h2 id=参考资料>参考资料</h2><ul><li><a class=link href=https://docs.langchain.com/oss/python/langgraph/agentic-rag target=_blank rel=noopener>Build a custom RAG agent with LangGraph — Python</a></li><li><a class=link href=https://langchain-ai.github.io/langgraph/tutorials/rag/langgraph_self_rag/ target=_blank rel=noopener>Build a custom RAG agent with LangGraph — LangGraph docs</a></li><li><a class=link href=https://langchain-ai.github.io/langgraph/tutorials/rag/langgraph_self_rag_local/ target=_blank rel=noopener>Build a custom RAG agent with LangGraph — Local/self-RAG variant</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langchain/retrieval target=_blank rel=noopener>Retrieval — LangChain Python docs</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langchain/rag target=_blank rel=noopener>Build a RAG agent with LangChain — Python</a></li><li><a class=link href=https://docs.langchain.com/langsmith/evaluate-rag-tutorial target=_blank rel=noopener>Evaluate a RAG application — LangSmith</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langchain/evals target=_blank rel=noopener>Agent Evals — LangChain Python</a></li></ul></section><footer class=article-footer><section class=article-tags><a href=/tags/langgraph/>LangGraph</a>
+<a href=/tags/rag/>RAG</a>
+<a href=/tags/agent/>Agent</a>
+<a href=/tags/retriever/>Retriever</a>
+<a href=/tags/%E8%B4%A8%E9%87%8F%E6%A3%80%E6%9F%A5/>质量检查</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/langchain-series-summary/><div class=article-details><h2 class=article-title>LangChain 系列总结：从大模型调用到 Agent 工程化</h2></div></a></article><article><a href=/p/langgraph-series-summary/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 20：从状态图到复杂 Agent 工程化</h2></div></a></article><article><a href=/p/langgraph-engineering-practice/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 19：从 Demo 到可维护 Agent 系统</h2></div></a></article><article><a href=/p/langgraph-supervisor-pattern-multi-agent/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 18：构建多 Agent 调度中心</h2></div></a></article><article><a href=/p/langgraph-multi-agent-introduction/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 17：让多个 Agent 分工协作</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

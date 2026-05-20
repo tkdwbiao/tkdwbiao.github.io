@@ -1,0 +1,937 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇文章里，我们构建了一个可控的 RAG Agent。\n它不再是简单的：\n1 问题 -> 检索 -> 生成 而是把关键控制点拆成了状态图：\n1 2 3 4 5 是否需要检索？ 检索结果是否相关？ 是否要改写查询？ 回答是否基于资料？ 资料不足时是否 fallback？ 这一篇，我们继续往前走一步：让人参与 Agent 决策。\n因为真实业务里的 Agent，不只是要“会做事”，还要“知道哪些事不能自己决定”。\n例如：\n1 2 3 4 5 6 退款。 删除数据。 发送邮件。 发布内容。 修改线上配置。 调用高风险工具。 这些动作不能完全交给模型自动执行。\nLangGraph 的 Human-in-the-loop 能力，就是用来把人工审核、人工修改、人工批准和人工拒绝显式放进图里。\n"><title>LangGraph 实战笔记 15：让人参与 Agent 决策</title><link rel=canonical href=https://tkdwbiao.github.io/p/langgraph-human-in-the-loop-agent/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="LangGraph 实战笔记 15：让人参与 Agent 决策"><meta property='og:description' content="上一篇文章里，我们构建了一个可控的 RAG Agent。\n它不再是简单的：\n1 问题 -> 检索 -> 生成 而是把关键控制点拆成了状态图：\n1 2 3 4 5 是否需要检索？ 检索结果是否相关？ 是否要改写查询？ 回答是否基于资料？ 资料不足时是否 fallback？ 这一篇，我们继续往前走一步：让人参与 Agent 决策。\n因为真实业务里的 Agent，不只是要“会做事”，还要“知道哪些事不能自己决定”。\n例如：\n1 2 3 4 5 6 退款。 删除数据。 发送邮件。 发布内容。 修改线上配置。 调用高风险工具。 这些动作不能完全交给模型自动执行。\nLangGraph 的 Human-in-the-loop 能力，就是用来把人工审核、人工修改、人工批准和人工拒绝显式放进图里。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/langgraph-human-in-the-loop-agent/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='LangGraph'><meta property='article:tag' content='Human-in-the-loop'><meta property='article:tag' content='Interrupt'><meta property='article:tag' content='Agent'><meta property='article:tag' content='人工审核'><meta property='article:published_time' content='2025-11-29T10:00:00+08:00'><meta property='article:modified_time' content='2025-11-29T10:00:00+08:00'><meta name=twitter:title content="LangGraph 实战笔记 15：让人参与 Agent 决策"><meta name=twitter:description content="上一篇文章里，我们构建了一个可控的 RAG Agent。\n它不再是简单的：\n1 问题 -> 检索 -> 生成 而是把关键控制点拆成了状态图：\n1 2 3 4 5 是否需要检索？ 检索结果是否相关？ 是否要改写查询？ 回答是否基于资料？ 资料不足时是否 fallback？ 这一篇，我们继续往前走一步：让人参与 Agent 决策。\n因为真实业务里的 Agent，不只是要“会做事”，还要“知道哪些事不能自己决定”。\n例如：\n1 2 3 4 5 6 退款。 删除数据。 发送邮件。 发布内容。 修改线上配置。 调用高风险工具。 这些动作不能完全交给模型自动执行。\nLangGraph 的 Human-in-the-loop 能力，就是用来把人工审核、人工修改、人工批准和人工拒绝显式放进图里。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二为什么需要-human-in-the-loop>二、为什么需要 Human-in-the-loop？</a><ol><li><a href=#1-不可逆操作>1. 不可逆操作</a></li><li><a href=#2-涉及资金或权益>2. 涉及资金或权益</a></li><li><a href=#3-涉及外部可见内容>3. 涉及外部可见内容</a></li><li><a href=#4-模型判断不确定>4. 模型判断不确定</a></li></ol></li><li><a href=#三langgraph-中-human-in-the-loop-的核心机制>三、LangGraph 中 Human-in-the-loop 的核心机制</a></li><li><a href=#四本篇要构建的-agent>四、本篇要构建的 Agent</a></li><li><a href=#五设计-state>五、设计 State</a></li><li><a href=#六实现请求分析节点>六、实现请求分析节点</a></li><li><a href=#七实现订单查询节点>七、实现订单查询节点</a></li><li><a href=#八生成退款建议节点>八、生成退款建议节点</a></li><li><a href=#九人工审核节点>九、人工审核节点</a></li><li><a href=#十为什么必须使用-checkpointer>十、为什么必须使用 checkpointer？</a></li><li><a href=#十一审核后的路由>十一、审核后的路由</a></li><li><a href=#十二人工修改节点>十二、人工修改节点</a></li><li><a href=#十三执行退款和取消节点>十三、执行退款和取消节点</a></li><li><a href=#十四组装完整图>十四、组装完整图</a></li><li><a href=#十五第一次执行暂停等待人工审核>十五、第一次执行：暂停等待人工审核</a></li><li><a href=#十六恢复执行批准>十六、恢复执行：批准</a></li><li><a href=#十七恢复执行拒绝>十七、恢复执行：拒绝</a></li><li><a href=#十八恢复执行修改后批准>十八、恢复执行：修改后批准</a></li><li><a href=#十九审核工具调用>十九、审核工具调用</a></li><li><a href=#二十human-in-the-loop-的设计原则>二十、Human-in-the-loop 的设计原则</a><ol><li><a href=#1-人审核决策不审核噪音>1. 人审核决策，不审核噪音</a></li><li><a href=#2-给人足够上下文>2. 给人足够上下文</a></li><li><a href=#3-人工输入要结构化>3. 人工输入要结构化</a></li><li><a href=#4-高风险动作默认拒绝>4. 高风险动作默认拒绝</a></li><li><a href=#5-副作用节点要放在审核后>5. 副作用节点要放在审核后</a></li></ol></li><li><a href=#二十一常见问题>二十一、常见问题</a><ol><li><a href=#1-interrupt-后为什么要同一个-thread_id>1. interrupt 后为什么要同一个 thread_id？</a></li><li><a href=#2-没有-checkpointer-能不能用-interrupt>2. 没有 checkpointer 能不能用 interrupt？</a></li><li><a href=#3-人工审核节点里能不能调用外部-api>3. 人工审核节点里能不能调用外部 API？</a></li><li><a href=#4-人工可以修改-state-吗>4. 人工可以修改 State 吗？</a></li><li><a href=#5-human-in-the-loop-会不会让-agent-变慢>5. Human-in-the-loop 会不会让 Agent 变慢？</a></li></ol></li><li><a href=#二十二最佳实践>二十二、最佳实践</a><ol><li><a href=#1-把人工审核作为图节点>1. 把人工审核作为图节点</a></li><li><a href=#2-用-checkpoint-保存暂停状态>2. 用 checkpoint 保存暂停状态</a></li><li><a href=#3-为每个流程设计稳定-thread_id>3. 为每个流程设计稳定 thread_id</a></li><li><a href=#4-审核信息要可读>4. 审核信息要可读</a></li><li><a href=#5-审核结果要结构化>5. 审核结果要结构化</a></li><li><a href=#6-对副作用节点做幂等>6. 对副作用节点做幂等</a></li><li><a href=#7-保留审计记录>7. 保留审计记录</a></li></ol></li><li><a href=#二十三总结>二十三、总结</a></li><li><a href=#参考资料>参考资料</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/agent-%E7%B3%BB%E5%88%97/ style=background-color:#beefe2;color:#0f3d32>Agent 系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/langgraph-human-in-the-loop-agent/>LangGraph 实战笔记 15：让人参与 Agent 决策</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2025-11-29T10:00:00+08:00>2025-11-29 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 14 分钟</time></div></footer></div></header><section class=article-content><p>上一篇文章里，我们构建了一个可控的 RAG Agent。</p><p>它不再是简单的：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>问题 -&gt; 检索 -&gt; 生成
+</span></span></code></pre></td></tr></table></div></div><p>而是把关键控制点拆成了状态图：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>是否需要检索？
+</span></span><span class=line><span class=cl>检索结果是否相关？
+</span></span><span class=line><span class=cl>是否要改写查询？
+</span></span><span class=line><span class=cl>回答是否基于资料？
+</span></span><span class=line><span class=cl>资料不足时是否 fallback？
+</span></span></code></pre></td></tr></table></div></div><p>这一篇，我们继续往前走一步：让人参与 Agent 决策。</p><p>因为真实业务里的 Agent，不只是要“会做事”，还要“知道哪些事不能自己决定”。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>退款。
+</span></span><span class=line><span class=cl>删除数据。
+</span></span><span class=line><span class=cl>发送邮件。
+</span></span><span class=line><span class=cl>发布内容。
+</span></span><span class=line><span class=cl>修改线上配置。
+</span></span><span class=line><span class=cl>调用高风险工具。
+</span></span></code></pre></td></tr></table></div></div><p>这些动作不能完全交给模型自动执行。</p><p>LangGraph 的 Human-in-the-loop 能力，就是用来把人工审核、人工修改、人工批准和人工拒绝显式放进图里。</p><h2 id=一前言>一、前言</h2><p>前面几篇文章里，我们已经让 Agent 具备了很多能力。</p><p>它可以：</p><ul><li>根据状态选择下一步。</li><li>循环执行和自我反思。</li><li>保存和恢复状态。</li><li>调用外部工具。</li><li>构建 ReAct 循环。</li><li>构建可控 RAG 流程。</li></ul><p>这些能力让 Agent 越来越像一个真实的执行系统。</p><p>但能力越强，风险也越高。</p><p>如果一个 Agent 只能回答问题，最多是答错。</p><p>如果一个 Agent 能调用工具，风险就不一样了。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户：帮我把订单 1001 退款。
+</span></span><span class=line><span class=cl>Agent：好的，已退款。
+</span></span></code></pre></td></tr></table></div></div><p>这看起来很方便。</p><p>但实际业务中，退款前至少要确认：</p><ul><li>订单是否存在。</li><li>订单是否满足退款条件。</li><li>退款金额是否正确。</li><li>用户是否有权限。</li><li>是否需要客服或财务审核。</li><li>这次操作是否应该留下审计记录。</li></ul><p>这些不是单纯 Prompt 能可靠解决的问题。</p><p>更合理的方式是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Agent 生成建议
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>流程暂停
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>人工审核
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>根据审核结果继续执行
+</span></span></code></pre></td></tr></table></div></div><p>这就是 Human-in-the-loop。</p><h2 id=二为什么需要-human-in-the-loop>二、为什么需要 Human-in-the-loop？</h2><p>Human-in-the-loop 的核心不是“让人帮模型回答问题”。</p><p>它真正解决的是：</p><blockquote><p>在关键风险点，把最终决定权交还给人。</p></blockquote><p>在 Agent 系统中，常见风险点包括下面几类。</p><h3 id=1-不可逆操作>1. 不可逆操作</h3><p>例如：</p><ul><li>删除数据。</li><li>关闭账号。</li><li>发起退款。</li><li>取消订单。</li><li>发布内容。</li></ul><p>一旦执行，可能无法完全恢复。</p><p>这类动作最好不要让模型直接执行。</p><h3 id=2-涉及资金或权益>2. 涉及资金或权益</h3><p>例如：</p><ul><li>退款金额。</li><li>优惠券发放。</li><li>赔偿金额。</li><li>权限开通。</li><li>会员权益调整。</li></ul><p>这些动作会影响真实业务结果。</p><p>模型可以生成建议，但不应该独立承担最终决策。</p><h3 id=3-涉及外部可见内容>3. 涉及外部可见内容</h3><p>例如：</p><ul><li>发送邮件。</li><li>发布公告。</li><li>回复客户。</li><li>提交工单。</li><li>发送企业微信或 Slack 消息。</li></ul><p>内容一旦发出，就会被别人看到。</p><p>这类场景常常需要人工预览和修改。</p><h3 id=4-模型判断不确定>4. 模型判断不确定</h3><p>即使不是高风险操作，也可能因为信息不足而需要人参与。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>资料不足，是否继续检索？
+</span></span><span class=line><span class=cl>检索到多个冲突答案，采用哪一个？
+</span></span><span class=line><span class=cl>生成了两个方案，选择哪个？
+</span></span><span class=line><span class=cl>用户意图不明确，是否需要追问？
+</span></span></code></pre></td></tr></table></div></div><p>Human-in-the-loop 不只是安全机制，也是一种协作机制。</p><h2 id=三langgraph-中-human-in-the-loop-的核心机制>三、LangGraph 中 Human-in-the-loop 的核心机制</h2><p>在 LangGraph 中，实现 Human-in-the-loop 通常依赖三个能力：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>interrupt
+</span></span><span class=line><span class=cl>checkpoint
+</span></span><span class=line><span class=cl>resume
+</span></span></code></pre></td></tr></table></div></div><p>可以这样理解：</p><div class=table-wrapper><table><thead><tr><th>能力</th><th>作用</th></tr></thead><tbody><tr><td><code>interrupt()</code></td><td>在节点中暂停图执行，并把需要人工处理的信息抛出去</td></tr><tr><td>checkpointer</td><td>保存当前 State 和暂停位置</td></tr><tr><td><code>Command(resume=...)</code></td><td>带着人工输入恢复执行</td></tr></tbody></table></div><p>整体流程是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>第一次 invoke
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>执行到 human_review 节点
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>interrupt 抛出审核信息
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>checkpointer 保存状态
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>外部系统展示给人工审核
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>人工选择 approve / reject / edit
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Command(resume=人工输入)
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>图从暂停点继续执行
+</span></span></code></pre></td></tr></table></div></div><p>这里有一个关键点：</p><blockquote><p>Human-in-the-loop 不是在图外面临时 if/else，而是图本身的一部分。</p></blockquote><p>这意味着人工审核节点可以和普通节点一样参与流程编排。</p><p>它可以有上游节点，也可以有下游条件边。</p><h2 id=四本篇要构建的-agent>四、本篇要构建的 Agent</h2><p>这一篇我们构建一个简化的退款审核 Agent。</p><p>用户输入：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>帮我处理订单 1001 的退款。
+</span></span></code></pre></td></tr></table></div></div><p>Agent 会先自动完成几步：</p><ol><li>解析用户请求，识别订单号。</li><li>查询订单状态。</li><li>生成退款建议。</li><li>暂停，等待人工审核。</li></ol><p>人工审核可以选择三种动作：</p><div class=table-wrapper><table><thead><tr><th>动作</th><th>含义</th></tr></thead><tbody><tr><td><code>approve</code></td><td>批准，按建议执行退款</td></tr><tr><td><code>reject</code></td><td>拒绝，不执行退款</td></tr><tr><td><code>edit</code></td><td>修改退款金额或备注后再执行</td></tr></tbody></table></div><p>图结构如下：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>START
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>analyze_request
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>query_order
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>generate_refund_proposal
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>human_review
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>  ├── approve -&gt; execute_refund -&gt; END
+</span></span><span class=line><span class=cl>  ├── reject  -&gt; cancel_refund  -&gt; END
+</span></span><span class=line><span class=cl>  └── edit    -&gt; apply_human_edit -&gt; execute_refund -&gt; END
+</span></span></code></pre></td></tr></table></div></div><p>这个例子虽然简化，但已经包含 Human-in-the-loop 的核心模式：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>自动分析 -&gt; 生成建议 -&gt; 人工审核 -&gt; 恢复执行
+</span></span></code></pre></td></tr></table></div></div><h2 id=五设计-state>五、设计 State</h2><p>先设计 State。</p><p>退款审核流程需要保存这些字段：</p><div class=table-wrapper><table><thead><tr><th>字段</th><th>含义</th></tr></thead><tbody><tr><td><code>user_request</code></td><td>用户原始请求</td></tr><tr><td><code>order_id</code></td><td>解析出的订单号</td></tr><tr><td><code>order_status</code></td><td>订单状态</td></tr><tr><td><code>refund_amount</code></td><td>建议退款金额</td></tr><tr><td><code>refund_proposal</code></td><td>Agent 生成的退款建议</td></tr><tr><td><code>human_decision</code></td><td>人工审核结果</td></tr><tr><td><code>final_result</code></td><td>最终执行结果</td></tr></tbody></table></div><p>代码如下：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>RefundState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>user_request</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>refund_amount</span><span class=p>:</span> <span class=nb>float</span>
+</span></span><span class=line><span class=cl>    <span class=n>refund_proposal</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>human_decision</span><span class=p>:</span> <span class=nb>dict</span>
+</span></span><span class=line><span class=cl>    <span class=n>final_result</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里最重要的是两个字段。</p><p>第一个是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>refund_proposal</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>它保存 Agent 给人的建议。</p><p>第二个是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>human_decision</span><span class=p>:</span> <span class=nb>dict</span>
+</span></span></code></pre></td></tr></table></div></div><p>它保存人工审核结果。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;action&#34;</span><span class=p>:</span> <span class=s2>&#34;approve&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;comment&#34;</span><span class=p>:</span> <span class=s2>&#34;订单未发货，同意退款。&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>或者：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;action&#34;</span><span class=p>:</span> <span class=s2>&#34;edit&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=mf>89.0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;comment&#34;</span><span class=p>:</span> <span class=s2>&#34;扣除 10 元优惠券后退款。&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>后续条件边会根据 <code>human_decision</code> 决定下一步。</p><h2 id=六实现请求分析节点>六、实现请求分析节点</h2><p>第一个节点负责从用户请求中解析订单号。</p><p>为了保持示例简单，这里用字符串判断模拟。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>analyze_request_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>request</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;user_request&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;1001&#34;</span> <span class=ow>in</span> <span class=n>request</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>order_id</span> <span class=o>=</span> <span class=s2>&#34;1001&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>else</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>order_id</span> <span class=o>=</span> <span class=s2>&#34;unknown&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;order_id&#34;</span><span class=p>:</span> <span class=n>order_id</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>真实项目里，这个节点可以替换成：</p><ul><li>规则解析。</li><li>LLM 结构化抽取。</li><li>意图识别 Chain。</li><li>从前端表单直接传入订单号。</li></ul><p>节点职责很清楚：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>读取 user_request -&gt; 写入 order_id
+</span></span></code></pre></td></tr></table></div></div><p>不要在这个节点里同时查询订单或执行退款。</p><h2 id=七实现订单查询节点>七、实现订单查询节点</h2><p>第二个节点负责查询订单状态。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>query_order_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_id</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_id&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>order_id</span> <span class=o>==</span> <span class=s2>&#34;1001&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;order_status&#34;</span><span class=p>:</span> <span class=s2>&#34;paid_not_shipped&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=mf>99.0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;order_status&#34;</span><span class=p>:</span> <span class=s2>&#34;not_found&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=mf>0.0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里用模拟数据。</p><p>真实项目里，这个节点可能调用订单系统：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>query_order_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>order</span> <span class=o>=</span> <span class=n>order_service</span><span class=o>.</span><span class=n>get_order</span><span class=p>(</span><span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_id&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;order_status&#34;</span><span class=p>:</span> <span class=n>order</span><span class=o>.</span><span class=n>status</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=n>order</span><span class=o>.</span><span class=n>refundable_amount</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>注意，这里只是查询。</p><p>查询订单通常是低风险操作，可以自动执行。</p><p>真正的退款执行是高风险操作，要放到人工审核之后。</p><h2 id=八生成退款建议节点>八、生成退款建议节点</h2><p>第三个节点根据订单状态生成退款建议。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>generate_refund_proposal_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_status&#34;</span><span class=p>]</span> <span class=o>==</span> <span class=s2>&#34;not_found&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>proposal</span> <span class=o>=</span> <span class=s2>&#34;未找到订单，建议拒绝退款申请。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>elif</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_status&#34;</span><span class=p>]</span> <span class=o>==</span> <span class=s2>&#34;paid_not_shipped&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>proposal</span> <span class=o>=</span> <span class=p>(</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;订单 </span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;order_id&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2> 已付款但未发货，&#34;</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;建议退款 </span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;refund_amount&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2> 元。&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>else</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>proposal</span> <span class=o>=</span> <span class=s2>&#34;订单状态复杂，建议人工进一步核查。&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;refund_proposal&#34;</span><span class=p>:</span> <span class=n>proposal</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点仍然只是生成建议。</p><p>它不会直接执行退款。</p><p>这就是 Human-in-the-loop 的基本边界：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Agent 可以分析和建议。
+</span></span><span class=line><span class=cl>人负责批准关键动作。
+</span></span><span class=line><span class=cl>程序负责可靠执行。
+</span></span></code></pre></td></tr></table></div></div><h2 id=九人工审核节点>九、人工审核节点</h2><p>接下来是核心节点：<code>human_review_node</code>。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langgraph.types</span> <span class=kn>import</span> <span class=n>interrupt</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>human_review_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>decision</span> <span class=o>=</span> <span class=n>interrupt</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;message&#34;</span><span class=p>:</span> <span class=s2>&#34;请审核退款建议&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;order_id&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_id&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;order_status&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_status&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;refund_amount&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;refund_proposal&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;refund_proposal&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;allowed_actions&#34;</span><span class=p>:</span> <span class=p>[</span><span class=s2>&#34;approve&#34;</span><span class=p>,</span> <span class=s2>&#34;reject&#34;</span><span class=p>,</span> <span class=s2>&#34;edit&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>    <span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;human_decision&#34;</span><span class=p>:</span> <span class=n>decision</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p><code>interrupt()</code> 做了两件事。</p><p>第一次执行到这里时，它会暂停图，并把传入的信息返回给调用方。</p><p>这些信息可以展示给人工审核界面。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;message&#34;</span><span class=p>:</span> <span class=s2>&#34;请审核退款建议&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;order_id&#34;</span><span class=p>:</span> <span class=s2>&#34;1001&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;order_status&#34;</span><span class=p>:</span> <span class=s2>&#34;paid_not_shipped&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=mf>99.0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;refund_proposal&#34;</span><span class=p>:</span> <span class=s2>&#34;订单 1001 已付款但未发货，建议退款 99.0 元。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;allowed_actions&#34;</span><span class=p>:</span> <span class=p>[</span><span class=s2>&#34;approve&#34;</span><span class=p>,</span> <span class=s2>&#34;reject&#34;</span><span class=p>,</span> <span class=s2>&#34;edit&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>当外部用 <code>Command(resume=...)</code> 恢复时，<code>interrupt()</code> 会返回人工输入。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;action&#34;</span><span class=p>:</span> <span class=s2>&#34;approve&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;comment&#34;</span><span class=p>:</span> <span class=s2>&#34;订单未发货，同意退款。&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>然后节点返回：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span><span class=s2>&#34;human_decision&#34;</span><span class=p>:</span> <span class=n>decision</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这样人工审核结果就进入了 State。</p><h2 id=十为什么必须使用-checkpointer>十、为什么必须使用 checkpointer？</h2><p>Human-in-the-loop 依赖暂停和恢复。</p><p>暂停后，图要记住：</p><ul><li>当前 State 是什么。</li><li>执行到哪个节点。</li><li>等待什么人工输入。</li><li>恢复后从哪里继续。</li></ul><p>所以需要 checkpointer。</p><p>本地学习可以使用 <code>InMemorySaver</code>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langgraph.checkpoint.memory</span> <span class=kn>import</span> <span class=n>InMemorySaver</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>checkpointer</span> <span class=o>=</span> <span class=n>InMemorySaver</span><span class=p>()</span>
+</span></span><span class=line><span class=cl><span class=n>graph</span> <span class=o>=</span> <span class=n>builder</span><span class=o>.</span><span class=n>compile</span><span class=p>(</span><span class=n>checkpointer</span><span class=o>=</span><span class=n>checkpointer</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>调用图时还要提供稳定的 <code>thread_id</code>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>config</span> <span class=o>=</span> <span class=p>{</span><span class=s2>&#34;configurable&#34;</span><span class=p>:</span> <span class=p>{</span><span class=s2>&#34;thread_id&#34;</span><span class=p>:</span> <span class=s2>&#34;refund-1001&#34;</span><span class=p>}}</span>
+</span></span></code></pre></td></tr></table></div></div><p><code>thread_id</code> 用来标识这一次退款流程。</p><p>如果恢复时换了另一个 <code>thread_id</code>，LangGraph 就找不到之前暂停的状态。</p><h2 id=十一审核后的路由>十一、审核后的路由</h2><p>人工审核完成后，需要根据结果选择下一步。</p><p>路由函数如下：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>Literal</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>route_after_human_review</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>Literal</span><span class=p>[</span><span class=s2>&#34;approve&#34;</span><span class=p>,</span> <span class=s2>&#34;reject&#34;</span><span class=p>,</span> <span class=s2>&#34;edit&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=n>decision</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;human_decision&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>action</span> <span class=o>=</span> <span class=n>decision</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=s2>&#34;action&#34;</span><span class=p>,</span> <span class=s2>&#34;reject&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>action</span> <span class=o>==</span> <span class=s2>&#34;approve&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;approve&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>action</span> <span class=o>==</span> <span class=s2>&#34;edit&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;edit&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;reject&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里默认把未知动作当成拒绝。</p><p>原因很简单：</p><blockquote><p>高风险操作里，默认应该保守，而不是默认放行。</p></blockquote><p>这个路由函数不会执行退款。</p><p>它只负责回答一个问题：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>人工审核之后，流程应该去哪里？
+</span></span></code></pre></td></tr></table></div></div><h2 id=十二人工修改节点>十二、人工修改节点</h2><p>如果人工选择 <code>edit</code>，说明需要修改退款信息。</p><p>例如人工审核时输入：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;action&#34;</span><span class=p>:</span> <span class=s2>&#34;edit&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=mf>89.0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;comment&#34;</span><span class=p>:</span> <span class=s2>&#34;扣除 10 元优惠券后退款。&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>对应节点：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>apply_human_edit_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>decision</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;human_decision&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>refund_amount</span> <span class=o>=</span> <span class=n>decision</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=s2>&#34;refund_amount&#34;</span><span class=p>,</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;refund_amount&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=n>refund_amount</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点把人工修改写回 State。</p><p>然后流程继续进入执行退款节点。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>edit -&gt; apply_human_edit -&gt; execute_refund
+</span></span></code></pre></td></tr></table></div></div><p>这说明 Human-in-the-loop 不只是“批准或拒绝”。</p><p>很多场景下，人还可以修改 Agent 的计划。</p><h2 id=十三执行退款和取消节点>十三、执行退款和取消节点</h2><p>批准或修改后，进入执行退款节点。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>execute_refund_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_id</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_id&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>amount</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;refund_amount&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>comment</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;human_decision&#34;</span><span class=p>]</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=s2>&#34;comment&#34;</span><span class=p>,</span> <span class=s2>&#34;&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;final_result&#34;</span><span class=p>:</span> <span class=p>(</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;已执行退款：订单 </span><span class=si>{</span><span class=n>order_id</span><span class=si>}</span><span class=s2>，退款金额 </span><span class=si>{</span><span class=n>amount</span><span class=si>}</span><span class=s2> 元。&#34;</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;审核备注：</span><span class=si>{</span><span class=n>comment</span><span class=si>}</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>拒绝时进入取消节点。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>cancel_refund_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_id</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_id&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>comment</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;human_decision&#34;</span><span class=p>]</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=s2>&#34;comment&#34;</span><span class=p>,</span> <span class=s2>&#34;&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;final_result&#34;</span><span class=p>:</span> <span class=sa>f</span><span class=s2>&#34;未执行退款：订单 </span><span class=si>{</span><span class=n>order_id</span><span class=si>}</span><span class=s2>。原因：</span><span class=si>{</span><span class=n>comment</span><span class=si>}</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>真实项目里，<code>execute_refund_node</code> 会调用退款服务。</p><p>这类节点要特别注意：</p><ul><li>权限校验。</li><li>幂等性。</li><li>审计日志。</li><li>异常处理。</li><li>重复恢复时不能重复退款。</li></ul><p>这些工程细节比 Prompt 更重要。</p><h2 id=十四组装完整图>十四、组装完整图</h2><p>下面把完整代码放在一起。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>  1
+</span><span class=lnt>  2
+</span><span class=lnt>  3
+</span><span class=lnt>  4
+</span><span class=lnt>  5
+</span><span class=lnt>  6
+</span><span class=lnt>  7
+</span><span class=lnt>  8
+</span><span class=lnt>  9
+</span><span class=lnt> 10
+</span><span class=lnt> 11
+</span><span class=lnt> 12
+</span><span class=lnt> 13
+</span><span class=lnt> 14
+</span><span class=lnt> 15
+</span><span class=lnt> 16
+</span><span class=lnt> 17
+</span><span class=lnt> 18
+</span><span class=lnt> 19
+</span><span class=lnt> 20
+</span><span class=lnt> 21
+</span><span class=lnt> 22
+</span><span class=lnt> 23
+</span><span class=lnt> 24
+</span><span class=lnt> 25
+</span><span class=lnt> 26
+</span><span class=lnt> 27
+</span><span class=lnt> 28
+</span><span class=lnt> 29
+</span><span class=lnt> 30
+</span><span class=lnt> 31
+</span><span class=lnt> 32
+</span><span class=lnt> 33
+</span><span class=lnt> 34
+</span><span class=lnt> 35
+</span><span class=lnt> 36
+</span><span class=lnt> 37
+</span><span class=lnt> 38
+</span><span class=lnt> 39
+</span><span class=lnt> 40
+</span><span class=lnt> 41
+</span><span class=lnt> 42
+</span><span class=lnt> 43
+</span><span class=lnt> 44
+</span><span class=lnt> 45
+</span><span class=lnt> 46
+</span><span class=lnt> 47
+</span><span class=lnt> 48
+</span><span class=lnt> 49
+</span><span class=lnt> 50
+</span><span class=lnt> 51
+</span><span class=lnt> 52
+</span><span class=lnt> 53
+</span><span class=lnt> 54
+</span><span class=lnt> 55
+</span><span class=lnt> 56
+</span><span class=lnt> 57
+</span><span class=lnt> 58
+</span><span class=lnt> 59
+</span><span class=lnt> 60
+</span><span class=lnt> 61
+</span><span class=lnt> 62
+</span><span class=lnt> 63
+</span><span class=lnt> 64
+</span><span class=lnt> 65
+</span><span class=lnt> 66
+</span><span class=lnt> 67
+</span><span class=lnt> 68
+</span><span class=lnt> 69
+</span><span class=lnt> 70
+</span><span class=lnt> 71
+</span><span class=lnt> 72
+</span><span class=lnt> 73
+</span><span class=lnt> 74
+</span><span class=lnt> 75
+</span><span class=lnt> 76
+</span><span class=lnt> 77
+</span><span class=lnt> 78
+</span><span class=lnt> 79
+</span><span class=lnt> 80
+</span><span class=lnt> 81
+</span><span class=lnt> 82
+</span><span class=lnt> 83
+</span><span class=lnt> 84
+</span><span class=lnt> 85
+</span><span class=lnt> 86
+</span><span class=lnt> 87
+</span><span class=lnt> 88
+</span><span class=lnt> 89
+</span><span class=lnt> 90
+</span><span class=lnt> 91
+</span><span class=lnt> 92
+</span><span class=lnt> 93
+</span><span class=lnt> 94
+</span><span class=lnt> 95
+</span><span class=lnt> 96
+</span><span class=lnt> 97
+</span><span class=lnt> 98
+</span><span class=lnt> 99
+</span><span class=lnt>100
+</span><span class=lnt>101
+</span><span class=lnt>102
+</span><span class=lnt>103
+</span><span class=lnt>104
+</span><span class=lnt>105
+</span><span class=lnt>106
+</span><span class=lnt>107
+</span><span class=lnt>108
+</span><span class=lnt>109
+</span><span class=lnt>110
+</span><span class=lnt>111
+</span><span class=lnt>112
+</span><span class=lnt>113
+</span><span class=lnt>114
+</span><span class=lnt>115
+</span><span class=lnt>116
+</span><span class=lnt>117
+</span><span class=lnt>118
+</span><span class=lnt>119
+</span><span class=lnt>120
+</span><span class=lnt>121
+</span><span class=lnt>122
+</span><span class=lnt>123
+</span><span class=lnt>124
+</span><span class=lnt>125
+</span><span class=lnt>126
+</span><span class=lnt>127
+</span><span class=lnt>128
+</span><span class=lnt>129
+</span><span class=lnt>130
+</span><span class=lnt>131
+</span><span class=lnt>132
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>Literal</span><span class=p>,</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langgraph.checkpoint.memory</span> <span class=kn>import</span> <span class=n>InMemorySaver</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langgraph.graph</span> <span class=kn>import</span> <span class=n>StateGraph</span><span class=p>,</span> <span class=n>START</span><span class=p>,</span> <span class=n>END</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langgraph.types</span> <span class=kn>import</span> <span class=n>Command</span><span class=p>,</span> <span class=n>interrupt</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>RefundState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>user_request</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>refund_amount</span><span class=p>:</span> <span class=nb>float</span>
+</span></span><span class=line><span class=cl>    <span class=n>refund_proposal</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>human_decision</span><span class=p>:</span> <span class=nb>dict</span>
+</span></span><span class=line><span class=cl>    <span class=n>final_result</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>analyze_request_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>request</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;user_request&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;1001&#34;</span> <span class=ow>in</span> <span class=n>request</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>order_id</span> <span class=o>=</span> <span class=s2>&#34;1001&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>else</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>order_id</span> <span class=o>=</span> <span class=s2>&#34;unknown&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;order_id&#34;</span><span class=p>:</span> <span class=n>order_id</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>query_order_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_id</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_id&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>order_id</span> <span class=o>==</span> <span class=s2>&#34;1001&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;order_status&#34;</span><span class=p>:</span> <span class=s2>&#34;paid_not_shipped&#34;</span><span class=p>,</span> <span class=s2>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=mf>99.0</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;order_status&#34;</span><span class=p>:</span> <span class=s2>&#34;not_found&#34;</span><span class=p>,</span> <span class=s2>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=mf>0.0</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>generate_refund_proposal_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_status&#34;</span><span class=p>]</span> <span class=o>==</span> <span class=s2>&#34;not_found&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>proposal</span> <span class=o>=</span> <span class=s2>&#34;未找到订单，建议拒绝退款申请。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>elif</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_status&#34;</span><span class=p>]</span> <span class=o>==</span> <span class=s2>&#34;paid_not_shipped&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>proposal</span> <span class=o>=</span> <span class=p>(</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;订单 </span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;order_id&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2> 已付款但未发货，&#34;</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;建议退款 </span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;refund_amount&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2> 元。&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>else</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>proposal</span> <span class=o>=</span> <span class=s2>&#34;订单状态复杂，建议人工进一步核查。&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;refund_proposal&#34;</span><span class=p>:</span> <span class=n>proposal</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>human_review_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>decision</span> <span class=o>=</span> <span class=n>interrupt</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;message&#34;</span><span class=p>:</span> <span class=s2>&#34;请审核退款建议&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;order_id&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_id&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;order_status&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_status&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;refund_amount&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;refund_proposal&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;refund_proposal&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;allowed_actions&#34;</span><span class=p>:</span> <span class=p>[</span><span class=s2>&#34;approve&#34;</span><span class=p>,</span> <span class=s2>&#34;reject&#34;</span><span class=p>,</span> <span class=s2>&#34;edit&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>    <span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;human_decision&#34;</span><span class=p>:</span> <span class=n>decision</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>route_after_human_review</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>Literal</span><span class=p>[</span><span class=s2>&#34;approve&#34;</span><span class=p>,</span> <span class=s2>&#34;reject&#34;</span><span class=p>,</span> <span class=s2>&#34;edit&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=n>decision</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;human_decision&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>action</span> <span class=o>=</span> <span class=n>decision</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=s2>&#34;action&#34;</span><span class=p>,</span> <span class=s2>&#34;reject&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>action</span> <span class=o>==</span> <span class=s2>&#34;approve&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;approve&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>action</span> <span class=o>==</span> <span class=s2>&#34;edit&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;edit&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;reject&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>apply_human_edit_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>decision</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;human_decision&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>refund_amount</span> <span class=o>=</span> <span class=n>decision</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=s2>&#34;refund_amount&#34;</span><span class=p>,</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;refund_amount&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=n>refund_amount</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>execute_refund_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_id</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_id&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>amount</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;refund_amount&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>comment</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;human_decision&#34;</span><span class=p>]</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=s2>&#34;comment&#34;</span><span class=p>,</span> <span class=s2>&#34;&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;final_result&#34;</span><span class=p>:</span> <span class=p>(</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;已执行退款：订单 </span><span class=si>{</span><span class=n>order_id</span><span class=si>}</span><span class=s2>，退款金额 </span><span class=si>{</span><span class=n>amount</span><span class=si>}</span><span class=s2> 元。&#34;</span>
+</span></span><span class=line><span class=cl>            <span class=sa>f</span><span class=s2>&#34;审核备注：</span><span class=si>{</span><span class=n>comment</span><span class=si>}</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>cancel_refund_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RefundState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_id</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_id&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>comment</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;human_decision&#34;</span><span class=p>]</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=s2>&#34;comment&#34;</span><span class=p>,</span> <span class=s2>&#34;&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;final_result&#34;</span><span class=p>:</span> <span class=sa>f</span><span class=s2>&#34;未执行退款：订单 </span><span class=si>{</span><span class=n>order_id</span><span class=si>}</span><span class=s2>。原因：</span><span class=si>{</span><span class=n>comment</span><span class=si>}</span><span class=s2>&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span> <span class=o>=</span> <span class=n>StateGraph</span><span class=p>(</span><span class=n>RefundState</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;analyze_request&#34;</span><span class=p>,</span> <span class=n>analyze_request_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;query_order&#34;</span><span class=p>,</span> <span class=n>query_order_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;generate_refund_proposal&#34;</span><span class=p>,</span> <span class=n>generate_refund_proposal_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;human_review&#34;</span><span class=p>,</span> <span class=n>human_review_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;apply_human_edit&#34;</span><span class=p>,</span> <span class=n>apply_human_edit_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;execute_refund&#34;</span><span class=p>,</span> <span class=n>execute_refund_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;cancel_refund&#34;</span><span class=p>,</span> <span class=n>cancel_refund_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=n>START</span><span class=p>,</span> <span class=s2>&#34;analyze_request&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;analyze_request&#34;</span><span class=p>,</span> <span class=s2>&#34;query_order&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;query_order&#34;</span><span class=p>,</span> <span class=s2>&#34;generate_refund_proposal&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;generate_refund_proposal&#34;</span><span class=p>,</span> <span class=s2>&#34;human_review&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_conditional_edges</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;human_review&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>route_after_human_review</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;approve&#34;</span><span class=p>:</span> <span class=s2>&#34;execute_refund&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;edit&#34;</span><span class=p>:</span> <span class=s2>&#34;apply_human_edit&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;reject&#34;</span><span class=p>:</span> <span class=s2>&#34;cancel_refund&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;apply_human_edit&#34;</span><span class=p>,</span> <span class=s2>&#34;execute_refund&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;execute_refund&#34;</span><span class=p>,</span> <span class=n>END</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;cancel_refund&#34;</span><span class=p>,</span> <span class=n>END</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>checkpointer</span> <span class=o>=</span> <span class=n>InMemorySaver</span><span class=p>()</span>
+</span></span><span class=line><span class=cl><span class=n>graph</span> <span class=o>=</span> <span class=n>builder</span><span class=o>.</span><span class=n>compile</span><span class=p>(</span><span class=n>checkpointer</span><span class=o>=</span><span class=n>checkpointer</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这就是一个带人工审核的 LangGraph 工作流。</p><h2 id=十五第一次执行暂停等待人工审核>十五、第一次执行：暂停等待人工审核</h2><p>第一次调用图时，传入用户请求和 <code>thread_id</code>。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>config</span> <span class=o>=</span> <span class=p>{</span><span class=s2>&#34;configurable&#34;</span><span class=p>:</span> <span class=p>{</span><span class=s2>&#34;thread_id&#34;</span><span class=p>:</span> <span class=s2>&#34;refund-1001&#34;</span><span class=p>}}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>graph</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span><span class=s2>&#34;user_request&#34;</span><span class=p>:</span> <span class=s2>&#34;帮我处理订单 1001 的退款。&#34;</span><span class=p>},</span>
+</span></span><span class=line><span class=cl>    <span class=n>config</span><span class=o>=</span><span class=n>config</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>[</span><span class=s2>&#34;__interrupt__&#34;</span><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>执行路径是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>analyze_request
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>query_order
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>generate_refund_proposal
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>human_review
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>interrupt
+</span></span></code></pre></td></tr></table></div></div><p>此时图不会继续执行退款。</p><p>它会暂停，并把审核信息返回给外部系统。</p><p>外部系统可以把这些信息展示给客服、运营或管理员。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>订单号：1001
+</span></span><span class=line><span class=cl>订单状态：paid_not_shipped
+</span></span><span class=line><span class=cl>建议退款：99.0 元
+</span></span><span class=line><span class=cl>建议说明：订单 1001 已付款但未发货，建议退款 99.0 元。
+</span></span><span class=line><span class=cl>可选操作：approve / reject / edit
+</span></span></code></pre></td></tr></table></div></div><p>这一步非常关键。</p><p>高风险动作还没有发生。</p><p>Agent 只是给出了建议。</p><h2 id=十六恢复执行批准>十六、恢复执行：批准</h2><p>如果人工审核后选择批准，可以这样恢复：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>graph</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>Command</span><span class=p>(</span><span class=n>resume</span><span class=o>=</span><span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;action&#34;</span><span class=p>:</span> <span class=s2>&#34;approve&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;comment&#34;</span><span class=p>:</span> <span class=s2>&#34;订单未发货，同意退款。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}),</span>
+</span></span><span class=line><span class=cl>    <span class=n>config</span><span class=o>=</span><span class=n>config</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>[</span><span class=s2>&#34;final_result&#34;</span><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>恢复后，执行路径是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>human_review
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>route_after_human_review
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>execute_refund
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>END
+</span></span></code></pre></td></tr></table></div></div><p>最终结果类似：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>已执行退款：订单 1001，退款金额 99.0 元。审核备注：订单未发货，同意退款。
+</span></span></code></pre></td></tr></table></div></div><p>这里的重点是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>批准动作来自人。
+</span></span><span class=line><span class=cl>执行动作来自程序。
+</span></span></code></pre></td></tr></table></div></div><p>模型没有绕过审核直接退款。</p><h2 id=十七恢复执行拒绝>十七、恢复执行：拒绝</h2><p>如果人工审核后选择拒绝：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>graph</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>Command</span><span class=p>(</span><span class=n>resume</span><span class=o>=</span><span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;action&#34;</span><span class=p>:</span> <span class=s2>&#34;reject&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;comment&#34;</span><span class=p>:</span> <span class=s2>&#34;该订单存在异常，需要进一步核查。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}),</span>
+</span></span><span class=line><span class=cl>    <span class=n>config</span><span class=o>=</span><span class=n>config</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>[</span><span class=s2>&#34;final_result&#34;</span><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>路径是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>human_review
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>route_after_human_review
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>cancel_refund
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>END
+</span></span></code></pre></td></tr></table></div></div><p>最终结果类似：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>未执行退款：订单 1001。原因：该订单存在异常，需要进一步核查。
+</span></span></code></pre></td></tr></table></div></div><p>这说明 Human-in-the-loop 可以让人中止 Agent 的计划。</p><h2 id=十八恢复执行修改后批准>十八、恢复执行：修改后批准</h2><p>如果人工认为退款可以执行，但金额需要调整：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>graph</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>Command</span><span class=p>(</span><span class=n>resume</span><span class=o>=</span><span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;action&#34;</span><span class=p>:</span> <span class=s2>&#34;edit&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=mf>89.0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;comment&#34;</span><span class=p>:</span> <span class=s2>&#34;扣除 10 元优惠券后退款。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}),</span>
+</span></span><span class=line><span class=cl>    <span class=n>config</span><span class=o>=</span><span class=n>config</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>[</span><span class=s2>&#34;final_result&#34;</span><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>路径是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>human_review
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>route_after_human_review
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>apply_human_edit
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>execute_refund
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>END
+</span></span></code></pre></td></tr></table></div></div><p>最终结果类似：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>已执行退款：订单 1001，退款金额 89.0 元。审核备注：扣除 10 元优惠券后退款。
+</span></span></code></pre></td></tr></table></div></div><p>这类模式非常常见。</p><p>人不只是“同意或不同意”，还可以修改 Agent 的中间结果。</p><p>例如：</p><ul><li>修改邮件内容。</li><li>修改发布文案。</li><li>修改退款金额。</li><li>修改工具参数。</li><li>修改下一步执行计划。</li></ul><h2 id=十九审核工具调用>十九、审核工具调用</h2><p>前面示例是审核退款建议。</p><p>另一个常见场景是审核工具调用。</p><p>在 Tool Calling Agent 或 ReAct Agent 中，模型可能生成这样的 tool call：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>refund_order(order_id=&#34;1001&#34;, amount=99.0)
+</span></span></code></pre></td></tr></table></div></div><p>对于普通查询工具，可以直接执行。</p><p>但对于退款工具，应该先审核。</p><p>图可以设计成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>llm
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>是否有 tool_calls？
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>review_tool_call
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>  ├── approve -&gt; tools -&gt; llm
+</span></span><span class=line><span class=cl>  ├── edit    -&gt; tools -&gt; llm
+</span></span><span class=line><span class=cl>  └── reject  -&gt; llm / END
+</span></span></code></pre></td></tr></table></div></div><p>其中 <code>review_tool_call</code> 可以使用 <code>interrupt()</code> 把工具名和参数交给人。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>review_tool_call_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>AgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>last_message</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;messages&#34;</span><span class=p>][</span><span class=o>-</span><span class=mi>1</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>tool_call</span> <span class=o>=</span> <span class=n>last_message</span><span class=o>.</span><span class=n>tool_calls</span><span class=p>[</span><span class=mi>0</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>decision</span> <span class=o>=</span> <span class=n>interrupt</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;message&#34;</span><span class=p>:</span> <span class=s2>&#34;请审核工具调用&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;tool_name&#34;</span><span class=p>:</span> <span class=n>tool_call</span><span class=p>[</span><span class=s2>&#34;name&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;tool_args&#34;</span><span class=p>:</span> <span class=n>tool_call</span><span class=p>[</span><span class=s2>&#34;args&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;allowed_actions&#34;</span><span class=p>:</span> <span class=p>[</span><span class=s2>&#34;approve&#34;</span><span class=p>,</span> <span class=s2>&#34;edit&#34;</span><span class=p>,</span> <span class=s2>&#34;reject&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>    <span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;human_decision&#34;</span><span class=p>:</span> <span class=n>decision</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>人工可以：</p><ul><li>批准原始工具调用。</li><li>修改工具参数后再执行。</li><li>拒绝工具调用并让模型重新回答。</li></ul><p>这比简单地把所有工具交给模型安全得多。</p><h2 id=二十human-in-the-loop-的设计原则>二十、Human-in-the-loop 的设计原则</h2><p>Human-in-the-loop 不是随便在流程中插一个人工节点。</p><p>它需要清楚地设计边界。</p><h3 id=1-人审核决策不审核噪音>1. 人审核决策，不审核噪音</h3><p>不要让人审核每一个普通步骤。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>解析问题、检索文档、生成草稿
+</span></span></code></pre></td></tr></table></div></div><p>这些可以自动执行。</p><p>应该把人放在真正重要的风险点：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>退款前、发布前、删除前、发送前、修改配置前
+</span></span></code></pre></td></tr></table></div></div><h3 id=2-给人足够上下文>2. 给人足够上下文</h3><p><code>interrupt()</code> 里不要只返回一句：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>是否同意？
+</span></span></code></pre></td></tr></table></div></div><p>应该提供：</p><ul><li>当前任务是什么。</li><li>Agent 的建议是什么。</li><li>关键数据是什么。</li><li>可选动作有哪些。</li><li>每个动作会导致什么后果。</li></ul><p>否则人工审核也会变成猜。</p><h3 id=3-人工输入要结构化>3. 人工输入要结构化</h3><p>不建议只让人输入自由文本。</p><p>更好的方式是结构化：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;action&#34;</span><span class=p>:</span> <span class=s2>&#34;approve&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;comment&#34;</span><span class=p>:</span> <span class=s2>&#34;同意。&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>或者：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;action&#34;</span><span class=p>:</span> <span class=s2>&#34;edit&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;refund_amount&#34;</span><span class=p>:</span> <span class=mf>89.0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;comment&#34;</span><span class=p>:</span> <span class=s2>&#34;扣除优惠券。&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>结构化结果更适合条件边路由。</p><h3 id=4-高风险动作默认拒绝>4. 高风险动作默认拒绝</h3><p>如果人工输入不合法，或者缺少 <code>action</code>，不要默认批准。</p><p>例如本文的路由函数：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>action</span> <span class=o>=</span> <span class=n>decision</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=s2>&#34;action&#34;</span><span class=p>,</span> <span class=s2>&#34;reject&#34;</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这是高风险流程里的安全默认值。</p><h3 id=5-副作用节点要放在审核后>5. 副作用节点要放在审核后</h3><p>不要在 <code>interrupt()</code> 之前执行真实副作用。</p><p>尤其不要这样：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>先退款 -&gt; 再 interrupt 让人确认
+</span></span></code></pre></td></tr></table></div></div><p>正确顺序应该是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>先 interrupt 审核 -&gt; 再退款
+</span></span></code></pre></td></tr></table></div></div><p>因为恢复执行时，节点可能重新进入。</p><p>高风险副作用要放在明确批准之后，并做好幂等控制。</p><h2 id=二十一常见问题>二十一、常见问题</h2><h3 id=1-interrupt-后为什么要同一个-thread_id>1. interrupt 后为什么要同一个 thread_id？</h3><p>因为恢复执行时，LangGraph 需要找到之前保存的暂停状态。</p><p>这个状态由 checkpointer 和 <code>thread_id</code> 共同定位。</p><p>如果第一次调用使用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>thread_id</span> <span class=o>=</span> <span class=s2>&#34;refund-1001&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>恢复时也必须使用同一个 <code>thread_id</code>。</p><h3 id=2-没有-checkpointer-能不能用-interrupt>2. 没有 checkpointer 能不能用 interrupt？</h3><p>对于需要暂停后再恢复的流程，通常需要 checkpointer。</p><p>否则图无法可靠保存暂停点和状态。</p><p>Human-in-the-loop、长流程、跨请求恢复，都应该配置 checkpointer。</p><h3 id=3-人工审核节点里能不能调用外部-api>3. 人工审核节点里能不能调用外部 API？</h3><p>可以，但要谨慎。</p><p>尤其要避免在 <code>interrupt()</code> 之前做不可逆副作用。</p><p>比较安全的做法是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>准备审核信息 -&gt; interrupt -&gt; 根据人工结果执行副作用
+</span></span></code></pre></td></tr></table></div></div><h3 id=4-人工可以修改-state-吗>4. 人工可以修改 State 吗？</h3><p>可以。</p><p>人工输入通过 <code>Command(resume=...)</code> 返回给图。</p><p>节点可以把这些输入写入 State。</p><p>例如本文的 <code>apply_human_edit_node</code> 就会修改 <code>refund_amount</code>。</p><h3 id=5-human-in-the-loop-会不会让-agent-变慢>5. Human-in-the-loop 会不会让 Agent 变慢？</h3><p>会。</p><p>但这是有意的。</p><p>Human-in-the-loop 不是为了提升吞吐，而是为了控制风险。</p><p>对于低风险流程，可以全自动。</p><p>对于高风险流程，等待人工审核是合理成本。</p><h2 id=二十二最佳实践>二十二、最佳实践</h2><h3 id=1-把人工审核作为图节点>1. 把人工审核作为图节点</h3><p>不要把人工审核藏在图外部。</p><p>把它建模成节点后，流程更清晰，也更容易恢复和调试。</p><h3 id=2-用-checkpoint-保存暂停状态>2. 用 checkpoint 保存暂停状态</h3><p>只要需要跨请求恢复，就使用 checkpointer。</p><p>本地可以用 <code>InMemorySaver</code>，生产环境要使用可靠持久化方案。</p><h3 id=3-为每个流程设计稳定-thread_id>3. 为每个流程设计稳定 thread_id</h3><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>refund-订单号
+</span></span><span class=line><span class=cl>content-review-文章 ID
+</span></span><span class=line><span class=cl>ticket-工单 ID
+</span></span></code></pre></td></tr></table></div></div><p>不要每次恢复都生成新的随机 ID。</p><h3 id=4-审核信息要可读>4. 审核信息要可读</h3><p>给人工看的信息要清楚。</p><p>不要只展示内部字段名。</p><p>应该展示业务含义、建议原因和可选动作。</p><h3 id=5-审核结果要结构化>5. 审核结果要结构化</h3><p>建议统一格式：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;action&#34;</span><span class=p>:</span> <span class=s2>&#34;approve | reject | edit&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;comment&#34;</span><span class=p>:</span> <span class=s2>&#34;审核备注&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;patch&#34;</span><span class=p>:</span> <span class=p>{}</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这样更容易扩展。</p><h3 id=6-对副作用节点做幂等>6. 对副作用节点做幂等</h3><p>恢复、重试、网络超时都可能导致重复执行风险。</p><p>退款、发邮件、发布内容这类节点必须有幂等设计。</p><h3 id=7-保留审计记录>7. 保留审计记录</h3><p>真实系统中，应该记录：</p><ul><li>谁审核的。</li><li>审核时间。</li><li>审核前建议。</li><li>审核后动作。</li><li>最终执行结果。</li></ul><p>这些信息不一定只放在 LangGraph State 里，也应该进入业务审计系统。</p><h2 id=二十三总结>二十三、总结</h2><p>本文讲了如何在 LangGraph 中让人参与 Agent 决策。</p><p>核心结论是：</p><blockquote><p>Human-in-the-loop 不是削弱 Agent，而是给 Agent 加上风险边界。Agent 负责分析和生成建议，人负责关键决策，程序负责可靠执行。</p></blockquote><p>本文重点包括：</p><ul><li>高风险 Agent 不能只依赖模型自动决策。</li><li>Human-in-the-loop 适合退款、删除、发布、发送、修改配置等场景。</li><li>LangGraph 可以用 <code>interrupt()</code> 暂停图执行。</li><li>使用 checkpointer 和稳定的 <code>thread_id</code> 保存暂停状态。</li><li>使用 <code>Command(resume=...)</code> 带着人工输入恢复执行。</li><li>人工审核结果可以进入 State，并通过条件边决定后续路径。</li><li>人工不只能批准或拒绝，也可以修改 Agent 的计划或工具参数。</li><li>高风险动作应该放在人工批准之后执行，并做好幂等和审计。</li></ul><p>到这里，我们已经掌握了 Human-in-the-loop 的基础模式。</p><p>下一篇文章，我们会把这个能力放进一个更完整的内容生成场景：构建带人工审核的内容生成工作流，从选题、生成、AI 自检、人工修改到最终发布，串成一张更接近真实业务的 LangGraph 状态图。</p><h2 id=参考资料>参考资料</h2><ul><li><a class=link href=https://docs.langchain.com/oss/python/langgraph/human-in-the-loop target=_blank rel=noopener>Interrupts — LangGraph Python docs</a></li><li><a class=link href=https://langchain-ai.github.io/langgraph/how-tos/human_in_the_loop/review-tool-calls/ target=_blank rel=noopener>How to review tool calls — LangGraph how-to</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langchain/human-in-the-loop target=_blank rel=noopener>Human-in-the-loop — LangChain Python docs</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langgraph/interrupts target=_blank rel=noopener>Interrupts reference — LangGraph Python docs</a></li><li><a class=link href=https://docs.langchain.com/langgraph-platform/add-human-in-the-loop target=_blank rel=noopener>Human-in-the-loop using Server API — LangGraph Platform docs</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langgraph/use-functional-api target=_blank rel=noopener>Use the Functional API — LangGraph Python docs</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langchain/frontend/human-in-the-loop target=_blank rel=noopener>Human-in-the-loop frontend docs</a></li></ul></section><footer class=article-footer><section class=article-tags><a href=/tags/langgraph/>LangGraph</a>
+<a href=/tags/human-in-the-loop/>Human-in-the-Loop</a>
+<a href=/tags/interrupt/>Interrupt</a>
+<a href=/tags/agent/>Agent</a>
+<a href=/tags/%E4%BA%BA%E5%B7%A5%E5%AE%A1%E6%A0%B8/>人工审核</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/langgraph-human-review-content-workflow/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 16：构建带人工审核的内容生成工作流</h2></div></a></article><article><a href=/p/langgraph-interrupt-resume-long-running-agent/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 09：构建可靠的长流程 Agent</h2></div></a></article><article><a href=/p/langgraph-series-summary/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 20：从状态图到复杂 Agent 工程化</h2></div></a></article><article><a href=/p/langgraph-engineering-practice/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 19：从 Demo 到可维护 Agent 系统</h2></div></a></article><article><a href=/p/langgraph-supervisor-pattern-multi-agent/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 18：构建多 Agent 调度中心</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

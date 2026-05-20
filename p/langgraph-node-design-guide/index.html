@@ -1,0 +1,645 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="前面几篇文章里，我们已经建立了 LangGraph 的基本心智模型：\nState 管数据，Node 管动作，Edge 管流程。\n上一篇重点讲了 State：如何设计 Agent 的运行状态，哪些字段应该放进 State，什么时候使用 TypedDict，什么时候使用 MessagesState，以及 reducer 解决什么问题。\n这一篇，我们继续看第二个核心概念：Node。\nNode 是图中真正“做事情”的地方。\n它可以是一个普通函数，也可以调用 LLM、Retriever、Tool、数据库或外部 API。\n一个 LangGraph 应用是否清晰，很大程度上取决于节点拆得是否合理。\n"><title>LangGraph 实战笔记 05：如何设计可复用的执行节点？</title><link rel=canonical href=https://tkdwbiao.github.io/p/langgraph-node-design-guide/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="LangGraph 实战笔记 05：如何设计可复用的执行节点？"><meta property='og:description' content="前面几篇文章里，我们已经建立了 LangGraph 的基本心智模型：\nState 管数据，Node 管动作，Edge 管流程。\n上一篇重点讲了 State：如何设计 Agent 的运行状态，哪些字段应该放进 State，什么时候使用 TypedDict，什么时候使用 MessagesState，以及 reducer 解决什么问题。\n这一篇，我们继续看第二个核心概念：Node。\nNode 是图中真正“做事情”的地方。\n它可以是一个普通函数，也可以调用 LLM、Retriever、Tool、数据库或外部 API。\n一个 LangGraph 应用是否清晰，很大程度上取决于节点拆得是否合理。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/langgraph-node-design-guide/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='LangGraph'><meta property='article:tag' content='Node'><meta property='article:tag' content='Agent'><meta property='article:tag' content='Tool'><meta property='article:tag' content='LLM'><meta property='article:published_time' content='2025-11-09T10:00:00+08:00'><meta property='article:modified_time' content='2025-11-09T10:00:00+08:00'><meta name=twitter:title content="LangGraph 实战笔记 05：如何设计可复用的执行节点？"><meta name=twitter:description content="前面几篇文章里，我们已经建立了 LangGraph 的基本心智模型：\nState 管数据，Node 管动作，Edge 管流程。\n上一篇重点讲了 State：如何设计 Agent 的运行状态，哪些字段应该放进 State，什么时候使用 TypedDict，什么时候使用 MessagesState，以及 reducer 解决什么问题。\n这一篇，我们继续看第二个核心概念：Node。\nNode 是图中真正“做事情”的地方。\n它可以是一个普通函数，也可以调用 LLM、Retriever、Tool、数据库或外部 API。\n一个 LangGraph 应用是否清晰，很大程度上取决于节点拆得是否合理。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二node-到底是什么>二、Node 到底是什么？</a></li><li><a href=#三node-的基本输入输出模型>三、Node 的基本输入输出模型</a></li><li><a href=#四普通函数节点>四、普通函数节点</a></li><li><a href=#五llm-节点>五、LLM 节点</a><ol><li><a href=#llm-节点要注意什么>LLM 节点要注意什么？</a></li></ol></li><li><a href=#六retriever-节点>六、Retriever 节点</a></li><li><a href=#七tool-节点>七、Tool 节点</a><ol><li><a href=#tool-节点要注意风险边界>Tool 节点要注意风险边界</a></li></ol></li><li><a href=#八检查节点和路由节点的区别>八、检查节点和路由节点的区别</a></li><li><a href=#九节点命名让图可读>九、节点命名：让图可读</a></li><li><a href=#十节点可复用的前提>十、节点可复用的前提</a><ol><li><a href=#可复用节点的几个特征>可复用节点的几个特征</a></li></ol></li><li><a href=#十一什么时候不要复用>十一、什么时候不要复用？</a></li><li><a href=#十二一个完整示例可检查和重写的回答流程>十二、一个完整示例：可检查和重写的回答流程</a></li><li><a href=#十三节点设计中的常见问题>十三、节点设计中的常见问题</a><ol><li><a href=#1-一个节点做太多事>1. 一个节点做太多事</a></li><li><a href=#2-节点返回字段不稳定>2. 节点返回字段不稳定</a></li><li><a href=#3-节点依赖没有声明的字段>3. 节点依赖没有声明的字段</a></li><li><a href=#4-把路由逻辑藏在节点内部>4. 把路由逻辑藏在节点内部</a></li><li><a href=#5-过度依赖-llm-节点>5. 过度依赖 LLM 节点</a></li></ol></li><li><a href=#十四节点设计的实用流程>十四、节点设计的实用流程</a><ol><li><a href=#第一步先写流程图>第一步：先写流程图</a></li><li><a href=#第二步给每一步起一个动词名>第二步：给每一步起一个动词名</a></li><li><a href=#第三步写出节点读写字段>第三步：写出节点读写字段</a></li><li><a href=#第四步确认节点职责单一>第四步：确认节点职责单一</a></li><li><a href=#第五步把流程跳转交给-edge>第五步：把流程跳转交给 Edge</a></li></ol></li><li><a href=#十五最佳实践>十五、最佳实践</a><ol><li><a href=#1-节点只做一类动作>1. 节点只做一类动作</a></li><li><a href=#2-明确节点读写字段>2. 明确节点读写字段</a></li><li><a href=#3-节点名使用动作短语>3. 节点名使用动作短语</a></li><li><a href=#4-llm-节点输出尽量结构化>4. LLM 节点输出尽量结构化</a></li><li><a href=#5-普通逻辑不要交给模型>5. 普通逻辑不要交给模型</a></li><li><a href=#6-tool-节点明确风险边界>6. Tool 节点明确风险边界</a></li><li><a href=#7-不要为了复用过早抽象>7. 不要为了复用过早抽象</a></li></ol></li><li><a href=#十六总结>十六、总结</a></li><li><a href=#参考资料>参考资料</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/agent-%E7%B3%BB%E5%88%97/ style=background-color:#beefe2;color:#0f3d32>Agent 系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/langgraph-node-design-guide/>LangGraph 实战笔记 05：如何设计可复用的执行节点？</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2025-11-09T10:00:00+08:00>2025-11-09 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 11 分钟</time></div></footer></div></header><section class=article-content><p>前面几篇文章里，我们已经建立了 LangGraph 的基本心智模型：</p><blockquote><p>State 管数据，Node 管动作，Edge 管流程。</p></blockquote><p>上一篇重点讲了 State：如何设计 Agent 的运行状态，哪些字段应该放进 State，什么时候使用 <code>TypedDict</code>，什么时候使用 <code>MessagesState</code>，以及 reducer 解决什么问题。</p><p>这一篇，我们继续看第二个核心概念：Node。</p><p>Node 是图中真正“做事情”的地方。</p><p>它可以是一个普通函数，也可以调用 LLM、Retriever、Tool、数据库或外部 API。</p><p>一个 LangGraph 应用是否清晰，很大程度上取决于节点拆得是否合理。</p><h2 id=一前言>一、前言</h2><p>如果说 State 是工作流的数据骨架，那么 Node 就是工作流的执行单元。</p><p>在 LangGraph 里，一个节点通常对应流程中的一步：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>分类意图
+</span></span><span class=line><span class=cl>检索文档
+</span></span><span class=line><span class=cl>调用工具
+</span></span><span class=line><span class=cl>生成回答
+</span></span><span class=line><span class=cl>检查质量
+</span></span><span class=line><span class=cl>重写结果
+</span></span><span class=line><span class=cl>等待人工审核
+</span></span></code></pre></td></tr></table></div></div><p>这些步骤都可以被建模成节点。</p><p>节点设计得好，整张图会非常清楚。</p><p>节点设计得不好，图也会变成另一种形式的“大泥球”。</p><p>常见问题包括：</p><ul><li>一个节点做太多事。</li><li>节点之间依赖隐式变量。</li><li>节点返回字段不稳定。</li><li>LLM 调用和业务判断混在一起。</li><li>Tool 调用结果没有结构化保存。</li><li>节点名看不出职责。</li><li>很多节点看起来可复用，实际耦合很深。</li></ul><p>所以这一篇不只是讲 <code>add_node</code> 怎么用。</p><p>更重要的是讲：</p><blockquote><p>如何把复杂 Agent 的执行步骤拆成清晰、可观察、可维护、可复用的节点。</p></blockquote><h2 id=二node-到底是什么>二、Node 到底是什么？</h2><p>在 LangGraph 里，Node 是图中的执行节点。</p><p>最常见的形式是一个函数：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>some_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>AgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=o>...</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;some_field&#34;</span><span class=p>:</span> <span class=n>some_value</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个函数有三个关键点：</p><ol><li>接收当前 State。</li><li>执行某个动作。</li><li>返回状态更新。</li></ol><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>classify_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>AgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;订单&#34;</span> <span class=ow>in</span> <span class=n>question</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;intent&#34;</span><span class=p>:</span> <span class=s2>&#34;order&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;制度&#34;</span> <span class=ow>in</span> <span class=n>question</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;intent&#34;</span><span class=p>:</span> <span class=s2>&#34;knowledge&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;intent&#34;</span><span class=p>:</span> <span class=s2>&#34;chat&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点读取 <code>question</code>，写入 <code>intent</code>。</p><p>再例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>AgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=sa>f</span><span class=s2>&#34;你问的是：</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;question&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2>&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点读取 <code>question</code>，写入 <code>answer</code>。</p><p>从形式上看，Node 很简单。</p><p>但在真实 Agent 中，Node 的设计质量会直接影响整个系统的复杂度。</p><h2 id=三node-的基本输入输出模型>三、Node 的基本输入输出模型</h2><p>一个推荐的节点模型是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>读取 State 中需要的字段
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>执行一个明确动作
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>返回少量状态更新
+</span></span></code></pre></td></tr></table></div></div><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>WritingState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>topic</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>draft</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>review</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>write_draft_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>WritingState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>topic</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;topic&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>draft</span> <span class=o>=</span> <span class=sa>f</span><span class=s2>&#34;这是一篇关于 </span><span class=si>{</span><span class=n>topic</span><span class=si>}</span><span class=s2> 的初稿。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;draft&#34;</span><span class=p>:</span> <span class=n>draft</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点很清楚：</p><div class=table-wrapper><table><thead><tr><th>项目</th><th>内容</th></tr></thead><tbody><tr><td>读取</td><td><code>topic</code></td></tr><tr><td>执行</td><td>生成初稿</td></tr><tr><td>写入</td><td><code>draft</code></td></tr></tbody></table></div><p>再看一个检查节点：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>review_draft_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>WritingState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>draft</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;draft&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>review</span> <span class=o>=</span> <span class=s2>&#34;通过&#34;</span> <span class=k>if</span> <span class=nb>len</span><span class=p>(</span><span class=n>draft</span><span class=p>)</span> <span class=o>&gt;</span> <span class=mi>10</span> <span class=k>else</span> <span class=s2>&#34;需要补充&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;review&#34;</span><span class=p>:</span> <span class=n>review</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>它读取 <code>draft</code>，写入 <code>review</code>。</p><p>只要每个节点都能说清楚“读什么、做什么、写什么”，图就会更容易维护。</p><h2 id=四普通函数节点>四、普通函数节点</h2><p>最简单的节点就是普通 Python 函数。</p><p>适合放在普通函数节点里的逻辑包括：</p><ul><li>字符串清洗。</li><li>意图规则判断。</li><li>数据格式转换。</li><li>简单业务计算。</li><li>状态字段初始化。</li><li>工具结果解析。</li></ul><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>AgentState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>normalized_question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>intent</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>normalize_question_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>AgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]</span><span class=o>.</span><span class=n>strip</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;normalized_question&#34;</span><span class=p>:</span> <span class=n>question</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>rule_based_intent_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>AgentState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;normalized_question&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;订单&#34;</span> <span class=ow>in</span> <span class=n>question</span> <span class=ow>or</span> <span class=s2>&#34;物流&#34;</span> <span class=ow>in</span> <span class=n>question</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;intent&#34;</span><span class=p>:</span> <span class=s2>&#34;order&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;制度&#34;</span> <span class=ow>in</span> <span class=n>question</span> <span class=ow>or</span> <span class=s2>&#34;文档&#34;</span> <span class=ow>in</span> <span class=n>question</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;intent&#34;</span><span class=p>:</span> <span class=s2>&#34;knowledge&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;intent&#34;</span><span class=p>:</span> <span class=s2>&#34;chat&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这类节点的优点是：</p><ul><li>可预测。</li><li>容易测试。</li><li>成本低。</li><li>不依赖模型。</li></ul><p>不要把所有判断都交给 LLM。</p><p>如果一个规则可以用普通代码稳定表达，就优先用普通函数节点。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户问题里是否包含订单号
+</span></span><span class=line><span class=cl>重试次数是否超过上限
+</span></span><span class=line><span class=cl>回答是否为空
+</span></span><span class=line><span class=cl>人工审核结果是否通过
+</span></span></code></pre></td></tr></table></div></div><p>这些都不需要模型参与。</p><h2 id=五llm-节点>五、LLM 节点</h2><p>当节点需要自然语言理解或生成时，就可以调用 LLM。</p><p>例如：</p><ul><li>生成回答。</li><li>改写问题。</li><li>总结文档。</li><li>判断复杂意图。</li><li>评估回答质量。</li><li>生成结构化计划。</li></ul><p>一个 LLM 节点可以这样写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.prompts</span> <span class=kn>import</span> <span class=n>ChatPromptTemplate</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_core.output_parsers</span> <span class=kn>import</span> <span class=n>StrOutputParser</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langchain_openai</span> <span class=kn>import</span> <span class=n>ChatOpenAI</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>QAState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>context</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>prompt</span> <span class=o>=</span> <span class=n>ChatPromptTemplate</span><span class=o>.</span><span class=n>from_messages</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;system&#34;</span><span class=p>,</span> <span class=s2>&#34;你是一个严谨的问答助手，请只基于给定上下文回答。&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>(</span><span class=s2>&#34;human&#34;</span><span class=p>,</span> <span class=s2>&#34;问题：</span><span class=si>{question}</span><span class=se>\n\n</span><span class=s2>上下文：</span><span class=si>{context}</span><span class=s2>&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>])</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>model</span> <span class=o>=</span> <span class=n>ChatOpenAI</span><span class=p>(</span><span class=n>model</span><span class=o>=</span><span class=s2>&#34;gpt-4o-mini&#34;</span><span class=p>,</span> <span class=n>temperature</span><span class=o>=</span><span class=mi>0</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>chain</span> <span class=o>=</span> <span class=n>prompt</span> <span class=o>|</span> <span class=n>model</span> <span class=o>|</span> <span class=n>StrOutputParser</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>generate_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>QAState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span> <span class=o>=</span> <span class=n>chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;context&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;context&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>    <span class=p>})</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=n>answer</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点把 LCEL Chain 包在 LangGraph Node 里。</p><p>这也体现了 LangChain 和 LangGraph 的关系：</p><blockquote><p>LangChain 组件可以放进 LangGraph 的节点里，LangGraph 负责组织这些节点的流程。</p></blockquote><h3 id=llm-节点要注意什么>LLM 节点要注意什么？</h3><p>第一，输入要清楚。</p><p>不要让 LLM 节点从一堆模糊 State 里自己猜该用什么。</p><p>第二，输出要稳定。</p><p>如果后续节点需要结构化结果，就不要只返回一段自然语言。</p><p>例如，如果后续要根据质量判断路由，可以返回：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span><span class=s2>&#34;is_answer_valid&#34;</span><span class=p>:</span> <span class=kc>True</span><span class=p>,</span> <span class=s2>&#34;review_reason&#34;</span><span class=p>:</span> <span class=s2>&#34;回答覆盖了主要问题&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>而不是只返回：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>这个回答看起来不错。
+</span></span></code></pre></td></tr></table></div></div><p>第三，LLM 节点不要承担太多职责。</p><p>不要一个节点同时完成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>理解问题 + 检索策略 + 生成回答 + 自我检查 + 决定下一步
+</span></span></code></pre></td></tr></table></div></div><p>这会让图失去结构。</p><h2 id=六retriever-节点>六、Retriever 节点</h2><p>RAG 工作流里常见一种节点：Retriever 节点。</p><p>它负责根据问题检索相关文档，并把结果写入 State。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>RagState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>retrieve_docs_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs</span> <span class=o>=</span> <span class=n>retriever</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>    <span class=n>formatted_docs</span> <span class=o>=</span> <span class=p>[</span><span class=n>doc</span><span class=o>.</span><span class=n>page_content</span> <span class=k>for</span> <span class=n>doc</span> <span class=ow>in</span> <span class=n>docs</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;docs&#34;</span><span class=p>:</span> <span class=n>formatted_docs</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点的职责很单一：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>读取 question -&gt; 调用 retriever -&gt; 写入 docs
+</span></span></code></pre></td></tr></table></div></div><p>生成回答则交给另一个节点：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>generate_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>context</span> <span class=o>=</span> <span class=s2>&#34;</span><span class=se>\n\n</span><span class=s2>&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>(</span><span class=n>state</span><span class=p>[</span><span class=s2>&#34;docs&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span> <span class=o>=</span> <span class=n>rag_chain</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;context&#34;</span><span class=p>:</span> <span class=n>context</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>})</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=n>answer</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>不要把检索和生成总是塞进一个节点。</p><p>拆开之后，你可以更清楚地观察：</p><ul><li>检索到了什么文档。</li><li>文档是否相关。</li><li>生成失败是检索问题还是模型问题。</li></ul><h2 id=七tool-节点>七、Tool 节点</h2><p>Tool 节点负责连接外部动作。</p><p>例如：</p><ul><li>查询订单。</li><li>查询天气。</li><li>计算数值。</li><li>查询数据库。</li><li>调用内部 API。</li><li>创建工单。</li></ul><p>最简单的工具节点可以是普通函数：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>OrderState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>question</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>query_order_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>OrderState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_id</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;order_id&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>order_status</span> <span class=o>=</span> <span class=sa>f</span><span class=s2>&#34;订单 </span><span class=si>{</span><span class=n>order_id</span><span class=si>}</span><span class=s2> 当前状态：已发货。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;order_status&#34;</span><span class=p>:</span> <span class=n>order_status</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>如果你使用 LangChain Tool Calling，后面还会遇到 LangGraph 提供的 <code>ToolNode</code>。</p><p>不过在理解 <code>ToolNode</code> 之前，先掌握一个原则：</p><blockquote><p>工具节点应该把外部结果结构化写回 State，而不是只把一段杂乱文本塞进 messages。</p></blockquote><p>例如推荐：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;order_status&#34;</span><span class=p>:</span> <span class=s2>&#34;已发货&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;tracking_number&#34;</span><span class=p>:</span> <span class=s2>&#34;SF1001&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>而不是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;context&#34;</span><span class=p>:</span> <span class=s2>&#34;查了一下订单，是已发货，单号好像是 SF1001&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>前者更容易被后续节点判断。</p><h3 id=tool-节点要注意风险边界>Tool 节点要注意风险边界</h3><p>工具调用常常意味着系统要连接真实世界。</p><p>例如：</p><ul><li>删除数据。</li><li>发送邮件。</li><li>修改配置。</li><li>创建订单。</li><li>发起退款。</li></ul><p>这类动作不要直接让模型自由执行。</p><p>更好的做法是拆成多个节点：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生成操作建议 -&gt; 风险检查 -&gt; 人工确认 -&gt; 执行工具
+</span></span></code></pre></td></tr></table></div></div><p>这样才能把风险边界显式表达出来。</p><p>后面讲 Human-in-the-loop 时，我们会专门讨论这一点。</p><h2 id=八检查节点和路由节点的区别>八、检查节点和路由节点的区别</h2><p>很多 LangGraph 流程都会有检查节点。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生成回答 -&gt; 检查回答质量 -&gt; 通过则结束，不通过则重写
+</span></span></code></pre></td></tr></table></div></div><p>检查节点负责判断并写入状态：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ReviewState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>is_answer_valid</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>review_reason</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>check_answer_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReviewState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>answer</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;answer&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=nb>len</span><span class=p>(</span><span class=n>answer</span><span class=p>)</span> <span class=o>&lt;</span> <span class=mi>20</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;is_answer_valid&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;review_reason&#34;</span><span class=p>:</span> <span class=s2>&#34;回答太短，需要补充细节。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;is_answer_valid&#34;</span><span class=p>:</span> <span class=kc>True</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;review_reason&#34;</span><span class=p>:</span> <span class=s2>&#34;回答长度基本合理。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>路由函数负责根据状态选择下一步：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>Literal</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>route_after_check</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>ReviewState</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>Literal</span><span class=p>[</span><span class=s2>&#34;end&#34;</span><span class=p>,</span> <span class=s2>&#34;rewrite&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;is_answer_valid&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;end&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;rewrite&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>然后用条件边连接：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_conditional_edges</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;check_answer&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>route_after_check</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;end&#34;</span><span class=p>:</span> <span class=n>END</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;rewrite&#34;</span><span class=p>:</span> <span class=s2>&#34;rewrite_answer&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里要注意边界：</p><ul><li><code>check_answer_node</code> 负责检查。</li><li><code>route_after_check</code> 负责路由。</li></ul><p>不要在路由函数里做复杂检查，也不要让检查节点直接控制流程跳转。</p><h2 id=九节点命名让图可读>九、节点命名：让图可读</h2><p>节点名不是随便起的。</p><p>它会出现在图结构、日志、trace 和调试信息里。</p><p>好的节点名应该表达动作。</p><p>推荐：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>classify_intent
+</span></span><span class=line><span class=cl>retrieve_docs
+</span></span><span class=line><span class=cl>generate_answer
+</span></span><span class=line><span class=cl>check_answer
+</span></span><span class=line><span class=cl>rewrite_answer
+</span></span><span class=line><span class=cl>query_order
+</span></span><span class=line><span class=cl>request_human_review
+</span></span></code></pre></td></tr></table></div></div><p>不推荐：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>node1
+</span></span><span class=line><span class=cl>step2
+</span></span><span class=line><span class=cl>process
+</span></span><span class=line><span class=cl>do_work
+</span></span><span class=line><span class=cl>handler
+</span></span><span class=line><span class=cl>main
+</span></span></code></pre></td></tr></table></div></div><p>当你在 LangSmith 或日志里看到：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>classify_intent -&gt; retrieve_docs -&gt; generate_answer -&gt; check_answer
+</span></span></code></pre></td></tr></table></div></div><p>你能立刻知道流程在做什么。</p><p>如果看到：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>step1 -&gt; process -&gt; handler -&gt; node4
+</span></span></code></pre></td></tr></table></div></div><p>后面排查问题会非常痛苦。</p><h2 id=十节点可复用的前提>十、节点可复用的前提</h2><p>很多人会问：</p><blockquote><p>怎么设计可复用节点？</p></blockquote><p>这里要先说一个原则：</p><blockquote><p>可复用不是靠抽象出来的，而是靠边界清楚自然形成的。</p></blockquote><p>如果一个节点只读取明确字段、只做一类动作、只返回明确字段，它就更容易复用。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>normalize_question_node</span><span class=p>(</span><span class=n>state</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;question&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>]</span><span class=o>.</span><span class=n>strip</span><span class=p>()}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个节点很容易复用。</p><p>但下面这种节点很难复用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>process_node</span><span class=p>(</span><span class=n>state</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=c1># 读取 question、user_id、docs、history、config</span>
+</span></span><span class=line><span class=cl>    <span class=c1># 判断意图</span>
+</span></span><span class=line><span class=cl>    <span class=c1># 检索文档</span>
+</span></span><span class=line><span class=cl>    <span class=c1># 调用模型</span>
+</span></span><span class=line><span class=cl>    <span class=c1># 更新多个字段</span>
+</span></span><span class=line><span class=cl>    <span class=o>...</span>
+</span></span></code></pre></td></tr></table></div></div><p>因为它依赖太多上下文。</p><h3 id=可复用节点的几个特征>可复用节点的几个特征</h3><p>一个可复用节点通常有这些特点：</p><ul><li>输入字段少而明确。</li><li>输出字段少而稳定。</li><li>不依赖外部隐式状态。</li><li>节点名表达清楚。</li><li>只做一类事情。</li><li>失败模式可预期。</li></ul><p>例如检索节点可以设计成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>retrieve_docs_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>RagState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>docs</span> <span class=o>=</span> <span class=n>retriever</span><span class=o>.</span><span class=n>invoke</span><span class=p>(</span><span class=n>state</span><span class=p>[</span><span class=s2>&#34;question&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;docs&#34;</span><span class=p>:</span> <span class=n>docs</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>如果后续换模型、换生成 Prompt，这个节点不需要变。</p><h2 id=十一什么时候不要复用>十一、什么时候不要复用？</h2><p>不要为了复用而牺牲可读性。</p><p>如果两个节点只是看起来相似，但业务语义不同，不一定要强行合并。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>check_answer
+</span></span><span class=line><span class=cl>check_risk
+</span></span><span class=line><span class=cl>check_user_permission
+</span></span></code></pre></td></tr></table></div></div><p>它们都是“检查”，但含义不同。</p><p>强行抽象成一个 <code>check_node</code> 可能会让代码更难懂。</p><p>在 Agent 工作流里，清晰通常比过度复用更重要。</p><p>尤其是早期设计图时，宁可多写几个明确节点，也不要过早封装成复杂通用节点。</p><h2 id=十二一个完整示例可检查和重写的回答流程>十二、一个完整示例：可检查和重写的回答流程</h2><p>下面写一个小型工作流。</p><p>需求是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>接收一个主题
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>生成初稿
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>检查初稿是否足够详细
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>如果通过，结束
+</span></span><span class=line><span class=cl>如果不通过，重写后结束
+</span></span></code></pre></td></tr></table></div></div><p>代码如下：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span><span class=lnt>46
+</span><span class=lnt>47
+</span><span class=lnt>48
+</span><span class=lnt>49
+</span><span class=lnt>50
+</span><span class=lnt>51
+</span><span class=lnt>52
+</span><span class=lnt>53
+</span><span class=lnt>54
+</span><span class=lnt>55
+</span><span class=lnt>56
+</span><span class=lnt>57
+</span><span class=lnt>58
+</span><span class=lnt>59
+</span><span class=lnt>60
+</span><span class=lnt>61
+</span><span class=lnt>62
+</span><span class=lnt>63
+</span><span class=lnt>64
+</span><span class=lnt>65
+</span><span class=lnt>66
+</span><span class=lnt>67
+</span><span class=lnt>68
+</span><span class=lnt>69
+</span><span class=lnt>70
+</span><span class=lnt>71
+</span><span class=lnt>72
+</span><span class=lnt>73
+</span><span class=lnt>74
+</span><span class=lnt>75
+</span><span class=lnt>76
+</span><span class=lnt>77
+</span><span class=lnt>78
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>typing</span> <span class=kn>import</span> <span class=n>Literal</span><span class=p>,</span> <span class=n>TypedDict</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>langgraph.graph</span> <span class=kn>import</span> <span class=n>StateGraph</span><span class=p>,</span> <span class=n>START</span><span class=p>,</span> <span class=n>END</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>WritingState</span><span class=p>(</span><span class=n>TypedDict</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>topic</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>draft</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>is_draft_valid</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>review_reason</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>final_answer</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>write_draft_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>WritingState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>draft</span> <span class=o>=</span> <span class=sa>f</span><span class=s2>&#34;</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;topic&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2> 是一个重要概念。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;draft&#34;</span><span class=p>:</span> <span class=n>draft</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>check_draft_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>WritingState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>draft</span> <span class=o>=</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;draft&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=nb>len</span><span class=p>(</span><span class=n>draft</span><span class=p>)</span> <span class=o>&lt;</span> <span class=mi>30</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;is_draft_valid&#34;</span><span class=p>:</span> <span class=kc>False</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=s2>&#34;review_reason&#34;</span><span class=p>:</span> <span class=s2>&#34;初稿太短，需要补充解释和例子。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;is_draft_valid&#34;</span><span class=p>:</span> <span class=kc>True</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;review_reason&#34;</span><span class=p>:</span> <span class=s2>&#34;初稿内容足够。&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>route_after_check</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>WritingState</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>Literal</span><span class=p>[</span><span class=s2>&#34;finish&#34;</span><span class=p>,</span> <span class=s2>&#34;rewrite&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;is_draft_valid&#34;</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;finish&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;rewrite&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>rewrite_draft_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>WritingState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>final_answer</span> <span class=o>=</span> <span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;draft&#39;</span><span class=p>]</span><span class=si>}</span><span class=se>\n\n</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=sa>f</span><span class=s2>&#34;进一步说明：</span><span class=si>{</span><span class=n>state</span><span class=p>[</span><span class=s1>&#39;topic&#39;</span><span class=p>]</span><span class=si>}</span><span class=s2> 的关键价值在于把复杂流程拆成清晰步骤，&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;让系统更容易观察、控制和维护。&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;final_answer&#34;</span><span class=p>:</span> <span class=n>final_answer</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>finish_node</span><span class=p>(</span><span class=n>state</span><span class=p>:</span> <span class=n>WritingState</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;final_answer&#34;</span><span class=p>:</span> <span class=n>state</span><span class=p>[</span><span class=s2>&#34;draft&#34;</span><span class=p>]}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span> <span class=o>=</span> <span class=n>StateGraph</span><span class=p>(</span><span class=n>WritingState</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;write_draft&#34;</span><span class=p>,</span> <span class=n>write_draft_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;check_draft&#34;</span><span class=p>,</span> <span class=n>check_draft_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;rewrite_draft&#34;</span><span class=p>,</span> <span class=n>rewrite_draft_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_node</span><span class=p>(</span><span class=s2>&#34;finish&#34;</span><span class=p>,</span> <span class=n>finish_node</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=n>START</span><span class=p>,</span> <span class=s2>&#34;write_draft&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;write_draft&#34;</span><span class=p>,</span> <span class=s2>&#34;check_draft&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_conditional_edges</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;check_draft&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>route_after_check</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;finish&#34;</span><span class=p>:</span> <span class=s2>&#34;finish&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;rewrite&#34;</span><span class=p>:</span> <span class=s2>&#34;rewrite_draft&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;finish&#34;</span><span class=p>,</span> <span class=n>END</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>builder</span><span class=o>.</span><span class=n>add_edge</span><span class=p>(</span><span class=s2>&#34;rewrite_draft&#34;</span><span class=p>,</span> <span class=n>END</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>graph</span> <span class=o>=</span> <span class=n>builder</span><span class=o>.</span><span class=n>compile</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>result</span> <span class=o>=</span> <span class=n>graph</span><span class=o>.</span><span class=n>invoke</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;topic&#34;</span><span class=p>:</span> <span class=s2>&#34;LangGraph Node&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>})</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>result</span><span class=p>[</span><span class=s2>&#34;final_answer&#34;</span><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个例子里有几个清晰的节点：</p><div class=table-wrapper><table><thead><tr><th>节点</th><th>职责</th></tr></thead><tbody><tr><td><code>write_draft</code></td><td>生成初稿</td></tr><tr><td><code>check_draft</code></td><td>检查初稿质量</td></tr><tr><td><code>rewrite_draft</code></td><td>根据检查结果重写</td></tr><tr><td><code>finish</code></td><td>直接把初稿作为最终答案</td></tr></tbody></table></div><p>每个节点都只做一类事情。</p><p>条件边只负责根据 <code>is_draft_valid</code> 决定下一步。</p><p>这就是一个比较健康的 LangGraph 节点设计。</p><h2 id=十三节点设计中的常见问题>十三、节点设计中的常见问题</h2><h3 id=1-一个节点做太多事>1. 一个节点做太多事</h3><p>最常见的问题是把多个步骤塞进一个节点。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>classify_retrieve_generate_check_node
+</span></span></code></pre></td></tr></table></div></div><p>这会导致：</p><ul><li>中间结果不可观察。</li><li>失败原因不好定位。</li><li>后续无法插入人工审核。</li><li>无法单独替换某一步。</li></ul><h3 id=2-节点返回字段不稳定>2. 节点返回字段不稳定</h3><p>例如某个节点有时返回：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span><span class=s2>&#34;answer&#34;</span><span class=p>:</span> <span class=s2>&#34;...&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>有时返回：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=p>{</span><span class=s2>&#34;result&#34;</span><span class=p>:</span> <span class=s2>&#34;...&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>后续节点就会很难写。</p><p>节点输出字段应该稳定。</p><h3 id=3-节点依赖没有声明的字段>3. 节点依赖没有声明的字段</h3><p>如果节点读取 <code>state["context"]</code>，就要确保所有到达该节点的路径都会写入 <code>context</code>。</p><p>否则某些分支会在运行时失败。</p><h3 id=4-把路由逻辑藏在节点内部>4. 把路由逻辑藏在节点内部</h3><p>如果节点内部决定“下一步该去哪”，但图上没有体现，读者就看不出流程。</p><p>LangGraph 的优势是流程显式化。</p><p>不要把流程又藏回节点里。</p><h3 id=5-过度依赖-llm-节点>5. 过度依赖 LLM 节点</h3><p>不是所有判断都需要 LLM。</p><p>规则清楚的事情，用普通函数节点更稳定。</p><p>把 LLM 留给真正需要自然语言理解和生成的步骤。</p><h2 id=十四节点设计的实用流程>十四、节点设计的实用流程</h2><p>设计节点时，可以按下面流程来。</p><h3 id=第一步先写流程图>第一步：先写流程图</h3><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>classify_intent -&gt; retrieve_docs -&gt; generate_answer -&gt; check_answer
+</span></span></code></pre></td></tr></table></div></div><h3 id=第二步给每一步起一个动词名>第二步：给每一步起一个动词名</h3><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>classify_intent
+</span></span><span class=line><span class=cl>retrieve_docs
+</span></span><span class=line><span class=cl>generate_answer
+</span></span><span class=line><span class=cl>check_answer
+</span></span></code></pre></td></tr></table></div></div><p>如果名字里出现太多 <code>and</code>，通常说明节点该拆了。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>retrieve_and_generate_and_check
+</span></span></code></pre></td></tr></table></div></div><h3 id=第三步写出节点读写字段>第三步：写出节点读写字段</h3><div class=table-wrapper><table><thead><tr><th>节点</th><th>读取</th><th>写入</th></tr></thead><tbody><tr><td>classify_intent</td><td>question</td><td>intent</td></tr><tr><td>retrieve_docs</td><td>question</td><td>docs</td></tr><tr><td>generate_answer</td><td>question, docs</td><td>answer</td></tr><tr><td>check_answer</td><td>answer</td><td>is_answer_valid</td></tr></tbody></table></div><h3 id=第四步确认节点职责单一>第四步：确认节点职责单一</h3><p>问自己：</p><blockquote><p>这个节点能不能用一句话说明？</p></blockquote><p>如果不能，说明它可能太大。</p><h3 id=第五步把流程跳转交给-edge>第五步：把流程跳转交给 Edge</h3><p>节点写状态。</p><p>Edge 根据状态决定下一步。</p><p>这能保持图的结构清晰。</p><h2 id=十五最佳实践>十五、最佳实践</h2><h3 id=1-节点只做一类动作>1. 节点只做一类动作</h3><p>这是最重要的原则。</p><p>一个节点可以复杂，但职责要单一。</p><h3 id=2-明确节点读写字段>2. 明确节点读写字段</h3><p>设计节点前先想清楚：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>它读哪些 State 字段？
+</span></span><span class=line><span class=cl>它写哪些 State 字段？
+</span></span></code></pre></td></tr></table></div></div><h3 id=3-节点名使用动作短语>3. 节点名使用动作短语</h3><p>推荐动词开头：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>classify_intent
+</span></span><span class=line><span class=cl>retrieve_docs
+</span></span><span class=line><span class=cl>generate_answer
+</span></span><span class=line><span class=cl>check_answer
+</span></span></code></pre></td></tr></table></div></div><h3 id=4-llm-节点输出尽量结构化>4. LLM 节点输出尽量结构化</h3><p>如果后续要路由或判断，不要只返回自然语言。</p><p>结构化字段更可靠。</p><h3 id=5-普通逻辑不要交给模型>5. 普通逻辑不要交给模型</h3><p>规则判断、计数、格式转换、字段提取，能用代码稳定完成就用代码。</p><h3 id=6-tool-节点明确风险边界>6. Tool 节点明确风险边界</h3><p>涉及真实动作的工具节点，最好配合风险检查和人工确认。</p><p>不要让模型直接执行高风险操作。</p><h3 id=7-不要为了复用过早抽象>7. 不要为了复用过早抽象</h3><p>先让节点职责清晰，再谈复用。</p><p>过早抽象会让图变得不直观。</p><h2 id=十六总结>十六、总结</h2><p>本文重点讲了 LangGraph 中的 Node 设计。</p><p>核心结论是：</p><blockquote><p>Node 管动作。一个好的节点应该读取明确的 State 字段，执行一个清晰动作，并返回稳定的状态更新。</p></blockquote><p>本文重点包括：</p><ul><li>Node 是 LangGraph 的执行单元，通常是接收 State、返回状态更新的函数。</li><li>普通函数节点适合规则判断、格式转换和简单业务逻辑。</li><li>LLM 节点适合自然语言理解、生成、总结和评估。</li><li>Retriever 节点负责检索资料，并把结果写入 State。</li><li>Tool 节点负责连接外部能力，但要注意风险边界。</li><li>检查节点负责写入判断结果，条件边负责根据结果路由。</li><li>节点命名会影响图的可读性和可观测性。</li><li>可复用节点来自清晰边界，而不是过早抽象。</li><li>一个节点只做一类事情，是最重要的设计原则。</li></ul><p>到这里，我们已经分别深入了 State 和 Node。</p><p>下一篇文章，我们会继续看 Edge：普通边、条件边与流程控制。也就是 LangGraph 如何表达顺序执行、条件分支、结束路径，以及后面构建循环和复杂 Agent 工作流的基础。</p><h2 id=参考资料>参考资料</h2><ul><li><a class=link href=https://docs.langchain.com/oss/python/langgraph/graph-api target=_blank rel=noopener>Graph API overview — LangGraph Python docs</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langgraph/use-graph-api target=_blank rel=noopener>Use the graph API — LangGraph Python docs</a></li><li><a class=link href=https://langchain-ai.github.io/langgraph/concepts/low_level/ target=_blank rel=noopener>LangGraph low-level concepts</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langchain/tools target=_blank rel=noopener>Tools — LangChain Python docs</a></li><li><a class=link href=https://docs.langchain.com/oss/python/langchain/models target=_blank rel=noopener>Chat models — LangChain Python docs</a></li></ul></section><footer class=article-footer><section class=article-tags><a href=/tags/langgraph/>LangGraph</a>
+<a href=/tags/node/>Node</a>
+<a href=/tags/agent/>Agent</a>
+<a href=/tags/tool/>Tool</a>
+<a href=/tags/llm/>LLM</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/langgraph-state-node-edge-core-concepts/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 03：State、Node 与 Edge 核心概念详解</h2></div></a></article><article><a href=/p/langgraph-series-summary/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 20：从状态图到复杂 Agent 工程化</h2></div></a></article><article><a href=/p/langgraph-engineering-practice/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 19：从 Demo 到可维护 Agent 系统</h2></div></a></article><article><a href=/p/langgraph-supervisor-pattern-multi-agent/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 18：构建多 Agent 调度中心</h2></div></a></article><article><a href=/p/langgraph-multi-agent-introduction/><div class=article-details><h2 class=article-title>LangGraph 实战笔记 17：让多个 Agent 分工协作</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>
