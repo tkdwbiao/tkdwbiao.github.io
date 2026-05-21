@@ -1,0 +1,1170 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="前面几篇文章里，我们已经完成了网页数据采集的基础链路：\n1 2 3 4 5 Requests 获取页面。 Cookie / Session 维持状态。 BeautifulSoup 解析 HTML。 XPath / CSS Selector 定位字段。 正则表达式提取局部模式。 到这里，我们已经能从页面中拿到很多字段。\n但真实项目里，字段刚被提取出来时，往往并不干净。\n例如：\n1 2 3 4 5 6 7 标题前后有多余空格。 正文里混着换行、制表符、广告和免责声明。 价格有 ¥、￥、元、万、面议、免费等不同格式。 发布时间有多种写法。 字段有时缺失，有时是“暂无”。 HTML 里有隐藏文本、脚本、样式和无关标签。 不同页面同一个字段格式不一致。 这就是数据清洗要解决的问题。\n这一篇，我们专门讲：\n如何把爬虫提取出来的非结构化网页数据，清洗成稳定、统一、可校验、可入库的结构化数据。\n"><title>大模型时代的数据采集工程 08：非结构化网页数据清洗</title><link rel=canonical href=https://tkdwbiao.github.io/p/crawler-unstructured-data-cleaning/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="大模型时代的数据采集工程 08：非结构化网页数据清洗"><meta property='og:description' content="前面几篇文章里，我们已经完成了网页数据采集的基础链路：\n1 2 3 4 5 Requests 获取页面。 Cookie / Session 维持状态。 BeautifulSoup 解析 HTML。 XPath / CSS Selector 定位字段。 正则表达式提取局部模式。 到这里，我们已经能从页面中拿到很多字段。\n但真实项目里，字段刚被提取出来时，往往并不干净。\n例如：\n1 2 3 4 5 6 7 标题前后有多余空格。 正文里混着换行、制表符、广告和免责声明。 价格有 ¥、￥、元、万、面议、免费等不同格式。 发布时间有多种写法。 字段有时缺失，有时是“暂无”。 HTML 里有隐藏文本、脚本、样式和无关标签。 不同页面同一个字段格式不一致。 这就是数据清洗要解决的问题。\n这一篇，我们专门讲：\n如何把爬虫提取出来的非结构化网页数据，清洗成稳定、统一、可校验、可入库的结构化数据。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/crawler-unstructured-data-cleaning/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='Python'><meta property='article:tag' content='爬虫'><meta property='article:tag' content='数据清洗'><meta property='article:tag' content='非结构化数据'><meta property='article:tag' content='数据质量'><meta property='article:tag' content='Schema'><meta property='article:published_time' content='2025-12-25T10:00:00+08:00'><meta property='article:modified_time' content='2025-12-25T10:00:00+08:00'><meta name=twitter:title content="大模型时代的数据采集工程 08：非结构化网页数据清洗"><meta name=twitter:description content="前面几篇文章里，我们已经完成了网页数据采集的基础链路：\n1 2 3 4 5 Requests 获取页面。 Cookie / Session 维持状态。 BeautifulSoup 解析 HTML。 XPath / CSS Selector 定位字段。 正则表达式提取局部模式。 到这里，我们已经能从页面中拿到很多字段。\n但真实项目里，字段刚被提取出来时，往往并不干净。\n例如：\n1 2 3 4 5 6 7 标题前后有多余空格。 正文里混着换行、制表符、广告和免责声明。 价格有 ¥、￥、元、万、面议、免费等不同格式。 发布时间有多种写法。 字段有时缺失，有时是“暂无”。 HTML 里有隐藏文本、脚本、样式和无关标签。 不同页面同一个字段格式不一致。 这就是数据清洗要解决的问题。\n这一篇，我们专门讲：\n如何把爬虫提取出来的非结构化网页数据，清洗成稳定、统一、可校验、可入库的结构化数据。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二什么是非结构化网页数据>二、什么是非结构化网页数据？</a></li><li><a href=#三数据清洗在采集链路中的位置>三、数据清洗在采集链路中的位置</a></li><li><a href=#四清洗前先保留原始数据>四、清洗前先保留原始数据</a></li><li><a href=#五文本空白清洗>五、文本空白清洗</a></li><li><a href=#六html-标签清洗>六、HTML 标签清洗</a></li><li><a href=#七正文清洗先定位主体再清理内容>七、正文清洗：先定位主体，再清理内容</a></li><li><a href=#八缺失值处理>八、缺失值处理</a></li><li><a href=#九日期时间归一化>九、日期时间归一化</a></li><li><a href=#十金额和单位归一化>十、金额和单位归一化</a></li><li><a href=#十一列表和标签清洗>十一、列表和标签清洗</a></li><li><a href=#十二html-实体和特殊符号>十二、HTML 实体和特殊符号</a></li><li><a href=#十三字段级清洗函数>十三、字段级清洗函数</a></li><li><a href=#十四从-rawitem-到-cleanitem>十四、从 RawItem 到 CleanItem</a></li><li><a href=#十五用-pydantic-做最终校验>十五、用 Pydantic 做最终校验</a></li><li><a href=#十六数据质量日志>十六、数据质量日志</a></li><li><a href=#十七不要过度清洗>十七、不要过度清洗</a></li><li><a href=#十八清洗规则版本化>十八、清洗规则版本化</a></li><li><a href=#十九llm-在数据清洗中的作用>十九、LLM 在数据清洗中的作用</a></li><li><a href=#二十agent-如何参与清洗诊断>二十、Agent 如何参与清洗诊断？</a></li><li><a href=#二十一常见错误写法>二十一、常见错误写法</a><ol><li><a href=#1-不保留原始字段>1. 不保留原始字段</a></li><li><a href=#2-所有字段共用一个清洗函数>2. 所有字段共用一个清洗函数</a></li><li><a href=#3-把缺失值都变成空字符串>3. 把缺失值都变成空字符串</a></li><li><a href=#4-把特殊语义误清洗>4. 把特殊语义误清洗</a></li><li><a href=#5-没有数据质量指标>5. 没有数据质量指标</a></li></ol></li><li><a href=#二十二面试表达>二十二、面试表达</a></li><li><a href=#二十三总结>二十三、总结</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/%E7%88%AC%E8%99%AB%E7%B3%BB%E5%88%97/ style=background-color:#efcfbe;color:#3d1f0f>爬虫系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/crawler-unstructured-data-cleaning/>大模型时代的数据采集工程 08：非结构化网页数据清洗</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2025-12-25T10:00:00+08:00>2025-12-25 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 15 分钟</time></div></footer></div></header><section class=article-content><p>前面几篇文章里，我们已经完成了网页数据采集的基础链路：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Requests 获取页面。
+</span></span><span class=line><span class=cl>Cookie / Session 维持状态。
+</span></span><span class=line><span class=cl>BeautifulSoup 解析 HTML。
+</span></span><span class=line><span class=cl>XPath / CSS Selector 定位字段。
+</span></span><span class=line><span class=cl>正则表达式提取局部模式。
+</span></span></code></pre></td></tr></table></div></div><p>到这里，我们已经能从页面中拿到很多字段。</p><p>但真实项目里，字段刚被提取出来时，往往并不干净。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>标题前后有多余空格。
+</span></span><span class=line><span class=cl>正文里混着换行、制表符、广告和免责声明。
+</span></span><span class=line><span class=cl>价格有 ¥、￥、元、万、面议、免费等不同格式。
+</span></span><span class=line><span class=cl>发布时间有多种写法。
+</span></span><span class=line><span class=cl>字段有时缺失，有时是“暂无”。
+</span></span><span class=line><span class=cl>HTML 里有隐藏文本、脚本、样式和无关标签。
+</span></span><span class=line><span class=cl>不同页面同一个字段格式不一致。
+</span></span></code></pre></td></tr></table></div></div><p>这就是数据清洗要解决的问题。</p><p>这一篇，我们专门讲：</p><blockquote><p>如何把爬虫提取出来的非结构化网页数据，清洗成稳定、统一、可校验、可入库的结构化数据。</p></blockquote><h2 id=一前言>一、前言</h2><p>很多爬虫示例会在提取字段后直接保存：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>item</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;title&#34;</span><span class=p>:</span> <span class=n>title</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;content&#34;</span><span class=p>:</span> <span class=n>content</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;price&#34;</span><span class=p>:</span> <span class=n>price</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;publish_time&#34;</span><span class=p>:</span> <span class=n>publish_time</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>但真实工程里，这样还不够。</p><p>因为你拿到的 <code>title</code> 可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>&#34;  \n  大模型时代的数据采集工程  \t &#34;
+</span></span></code></pre></td></tr></table></div></div><p><code>price</code> 可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>&#34;￥1,299.50 元&#34;
+</span></span><span class=line><span class=cl>&#34;免费&#34;
+</span></span><span class=line><span class=cl>&#34;价格面议&#34;
+</span></span><span class=line><span class=cl>&#34;1.2万&#34;
+</span></span></code></pre></td></tr></table></div></div><p><code>publish_time</code> 可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>&#34;2025-12-25&#34;
+</span></span><span class=line><span class=cl>&#34;2025年12月25日 10:00&#34;
+</span></span><span class=line><span class=cl>&#34;昨天 18:30&#34;
+</span></span><span class=line><span class=cl>&#34;3小时前&#34;
+</span></span></code></pre></td></tr></table></div></div><p><code>content</code> 可能混着：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>正文。
+</span></span><span class=line><span class=cl>广告。
+</span></span><span class=line><span class=cl>版权声明。
+</span></span><span class=line><span class=cl>相关推荐。
+</span></span><span class=line><span class=cl>多余空白。
+</span></span><span class=line><span class=cl>HTML 标签。
+</span></span><span class=line><span class=cl>脚本内容。
+</span></span></code></pre></td></tr></table></div></div><p>所以数据清洗不是可有可无的步骤。</p><p>它决定了后续能不能：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>去重。
+</span></span><span class=line><span class=cl>检索。
+</span></span><span class=line><span class=cl>统计。
+</span></span><span class=line><span class=cl>入库。
+</span></span><span class=line><span class=cl>训练模型。
+</span></span><span class=line><span class=cl>交给 LLM 做 Schema 化抽取。
+</span></span><span class=line><span class=cl>做可视化分析。
+</span></span></code></pre></td></tr></table></div></div><p>在面试中，如果你只说“我能爬到数据”，还不够。</p><p>更成熟的表达应该是：</p><blockquote><p>我能把采集到的非结构化网页内容清洗、归一化、校验，并形成可稳定入库的数据结构。</p></blockquote><h2 id=二什么是非结构化网页数据>二、什么是非结构化网页数据？</h2><p>非结构化数据不是完全没有结构。</p><p>它通常是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>人能看懂，但机器不好直接处理。
+</span></span></code></pre></td></tr></table></div></div><p>例如一段商品描述：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>【限时优惠】Python 爬虫课程，原价 ¥399，现价 ¥199，适合有 Python 基础的同学，支持长期观看。
+</span></span></code></pre></td></tr></table></div></div><p>人可以看出：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>商品：Python 爬虫课程
+</span></span><span class=line><span class=cl>原价：399
+</span></span><span class=line><span class=cl>现价：199
+</span></span><span class=line><span class=cl>适合人群：有 Python 基础
+</span></span><span class=line><span class=cl>权益：长期观看
+</span></span></code></pre></td></tr></table></div></div><p>但机器拿到的是一整段文本。</p><p>你需要通过规则、正则、Schema、甚至 LLM，把它变成结构化字段。</p><p>网页中的非结构化数据常见来源：</p><ul><li>新闻正文。</li><li>商品描述。</li><li>评论内容。</li><li>论坛帖子。</li><li>简历信息。</li><li>招聘要求。</li><li>表格备注。</li><li>页面 meta 描述。</li><li>混合 HTML 文本。</li><li>script 中的状态片段。</li></ul><p>清洗的目标不是“把文本变短”，而是让数据更可用。</p><h2 id=三数据清洗在采集链路中的位置>三、数据清洗在采集链路中的位置</h2><p>完整链路可以这样理解：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>采集层：Requests / 浏览器自动化拿到原始内容
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>解析层：BeautifulSoup / XPath / CSS Selector 提取候选字段
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>清洗层：空白、HTML、日期、价格、单位、缺失值处理
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>校验层：Pydantic / JSON Schema / 业务规则
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>存储层：MySQL / Redis / 文件 / 搜索引擎
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>诊断层：日志、监控、LLM / Agent 辅助排查
+</span></span></code></pre></td></tr></table></div></div><p>清洗层位于解析层之后、校验层之前。</p><p>它的输入通常是“候选字段”。</p><p>它的输出应该是“更接近业务结构的数据”。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>输入：&#34; ￥1,299.50 元 &#34;
+</span></span><span class=line><span class=cl>清洗：1299.5
+</span></span><span class=line><span class=cl>校验：price 是 float，且大于等于 0
+</span></span></code></pre></td></tr></table></div></div><p>再比如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>输入：&#34;2025年12月25日 10:00&#34;
+</span></span><span class=line><span class=cl>清洗：&#34;2025-12-25 10:00:00&#34;
+</span></span><span class=line><span class=cl>校验：符合 datetime 格式
+</span></span></code></pre></td></tr></table></div></div><h2 id=四清洗前先保留原始数据>四、清洗前先保留原始数据</h2><p>一个重要工程原则是：</p><blockquote><p>清洗前的原始数据不要轻易丢掉。</p></blockquote><p>因为清洗规则可能出错。</p><p>页面结构可能变化。</p><p>字段含义可能需要回溯。</p><p>所以建议保存两类数据：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>raw_data：原始响应或原始字段。
+</span></span><span class=line><span class=cl>clean_data：清洗后的结构化字段。
+</span></span></code></pre></td></tr></table></div></div><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>RawArticle</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>url</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>raw_title</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>raw_content</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>raw_publish_time</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>CleanArticle</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>url</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>title</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>content</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>publish_time</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><p>这样当线上发现字段异常时，你可以回看：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>原始页面到底是什么样？
+</span></span><span class=line><span class=cl>是解析错了，还是清洗错了？
+</span></span><span class=line><span class=cl>是页面改版，还是规则不覆盖？
+</span></span></code></pre></td></tr></table></div></div><p>没有 raw 数据，很多问题只能靠猜。</p><h2 id=五文本空白清洗>五、文本空白清洗</h2><p>网页文本中最常见的问题是空白混乱。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>&#34;  Python   爬虫\n\t数据采集   工程化  &#34;
+</span></span></code></pre></td></tr></table></div></div><p>可以封装一个通用函数：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>re</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>normalize_space</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>text</span> <span class=ow>is</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>cleaned</span> <span class=o>=</span> <span class=n>re</span><span class=o>.</span><span class=n>sub</span><span class=p>(</span><span class=sa>r</span><span class=s2>&#34;\s+&#34;</span><span class=p>,</span> <span class=s2>&#34; &#34;</span><span class=p>,</span> <span class=n>text</span><span class=p>)</span><span class=o>.</span><span class=n>strip</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>cleaned</span> <span class=ow>or</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><p>使用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>text</span> <span class=o>=</span> <span class=s2>&#34;  Python   爬虫</span><span class=se>\n\t</span><span class=s2>数据采集   工程化  &#34;</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>normalize_space</span><span class=p>(</span><span class=n>text</span><span class=p>))</span>
+</span></span></code></pre></td></tr></table></div></div><p>输出：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Python 爬虫 数据采集 工程化
+</span></span></code></pre></td></tr></table></div></div><p>但正文清洗不能总是把换行全部变成空格。</p><p>正文通常要保留段落。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>re</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>normalize_paragraphs</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>text</span> <span class=ow>is</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>lines</span> <span class=o>=</span> <span class=p>[]</span>
+</span></span><span class=line><span class=cl>    <span class=k>for</span> <span class=n>line</span> <span class=ow>in</span> <span class=n>text</span><span class=o>.</span><span class=n>splitlines</span><span class=p>():</span>
+</span></span><span class=line><span class=cl>        <span class=n>line</span> <span class=o>=</span> <span class=n>re</span><span class=o>.</span><span class=n>sub</span><span class=p>(</span><span class=sa>r</span><span class=s2>&#34;\s+&#34;</span><span class=p>,</span> <span class=s2>&#34; &#34;</span><span class=p>,</span> <span class=n>line</span><span class=p>)</span><span class=o>.</span><span class=n>strip</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>        <span class=k>if</span> <span class=n>line</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>            <span class=n>lines</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=n>line</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>(</span><span class=n>lines</span><span class=p>)</span> <span class=ow>or</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><p>字段不同，清洗策略不同：</p><div class=table-wrapper><table><thead><tr><th>字段</th><th>清洗策略</th></tr></thead><tbody><tr><td>标题</td><td>合并空白，去掉前后空白</td></tr><tr><td>摘要</td><td>合并空白</td></tr><tr><td>正文</td><td>保留段落，清理段内空白</td></tr><tr><td>标签</td><td>去空白、去重、统一大小写</td></tr><tr><td>价格</td><td>提取数字和单位，转数值</td></tr><tr><td>日期</td><td>解析并统一格式</td></tr></tbody></table></div><h2 id=六html-标签清洗>六、HTML 标签清洗</h2><p>有时你拿到的不是纯文本，而是 HTML 片段。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-html data-lang=html><span class=line><span class=cl><span class=p>&lt;</span><span class=nt>div</span> <span class=na>class</span><span class=o>=</span><span class=s>&#34;content&#34;</span><span class=p>&gt;</span>
+</span></span><span class=line><span class=cl>  <span class=p>&lt;</span><span class=nt>p</span><span class=p>&gt;</span>第一段正文。<span class=p>&lt;/</span><span class=nt>p</span><span class=p>&gt;</span>
+</span></span><span class=line><span class=cl>  <span class=p>&lt;</span><span class=nt>p</span><span class=p>&gt;</span>第二段正文，包含 <span class=p>&lt;</span><span class=nt>strong</span><span class=p>&gt;</span>重点<span class=p>&lt;/</span><span class=nt>strong</span><span class=p>&gt;</span>。<span class=p>&lt;/</span><span class=nt>p</span><span class=p>&gt;</span>
+</span></span><span class=line><span class=cl>  <span class=p>&lt;</span><span class=nt>script</span><span class=p>&gt;</span><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s2>&#34;ignore&#34;</span><span class=p>)&lt;/</span><span class=nt>script</span><span class=p>&gt;</span>
+</span></span><span class=line><span class=cl>  <span class=p>&lt;</span><span class=nt>style</span><span class=p>&gt;.</span><span class=nc>ad</span> <span class=p>{</span> <span class=k>display</span><span class=p>:</span> <span class=kc>none</span><span class=p>;</span> <span class=p>}&lt;/</span><span class=nt>style</span><span class=p>&gt;</span>
+</span></span><span class=line><span class=cl><span class=p>&lt;/</span><span class=nt>div</span><span class=p>&gt;</span>
+</span></span></code></pre></td></tr></table></div></div><p>可以用 BeautifulSoup 清理。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>bs4</span> <span class=kn>import</span> <span class=n>BeautifulSoup</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>html_to_text</span><span class=p>(</span><span class=n>html</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>html</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>soup</span> <span class=o>=</span> <span class=n>BeautifulSoup</span><span class=p>(</span><span class=n>html</span><span class=p>,</span> <span class=s2>&#34;lxml&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>for</span> <span class=n>tag</span> <span class=ow>in</span> <span class=n>soup</span><span class=p>([</span><span class=s2>&#34;script&#34;</span><span class=p>,</span> <span class=s2>&#34;style&#34;</span><span class=p>,</span> <span class=s2>&#34;noscript&#34;</span><span class=p>]):</span>
+</span></span><span class=line><span class=cl>        <span class=n>tag</span><span class=o>.</span><span class=n>decompose</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>text</span> <span class=o>=</span> <span class=n>soup</span><span class=o>.</span><span class=n>get_text</span><span class=p>(</span><span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=p>,</span> <span class=n>strip</span><span class=o>=</span><span class=kc>True</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>normalize_paragraphs</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里做了几件事：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>移除 script。
+</span></span><span class=line><span class=cl>移除 style。
+</span></span><span class=line><span class=cl>移除 noscript。
+</span></span><span class=line><span class=cl>提取文本。
+</span></span><span class=line><span class=cl>保留段落换行。
+</span></span><span class=line><span class=cl>清理空白。
+</span></span></code></pre></td></tr></table></div></div><p>对于正文类页面，还可能需要移除：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>广告区。
+</span></span><span class=line><span class=cl>相关推荐。
+</span></span><span class=line><span class=cl>评论区。
+</span></span><span class=line><span class=cl>导航。
+</span></span><span class=line><span class=cl>页脚。
+</span></span><span class=line><span class=cl>分享按钮。
+</span></span><span class=line><span class=cl>版权声明。
+</span></span></code></pre></td></tr></table></div></div><p>这些通常需要先用选择器限定正文容器，而不是对整页 HTML 直接 <code>get_text()</code>。</p><h2 id=七正文清洗先定位主体再清理内容>七、正文清洗：先定位主体，再清理内容</h2><p>不推荐：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>text</span> <span class=o>=</span> <span class=n>soup</span><span class=o>.</span><span class=n>get_text</span><span class=p>(</span><span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=p>,</span> <span class=n>strip</span><span class=o>=</span><span class=kc>True</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这会把整页的导航、菜单、页脚、推荐内容都提取出来。</p><p>更推荐：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>article</span> <span class=o>=</span> <span class=n>soup</span><span class=o>.</span><span class=n>select_one</span><span class=p>(</span><span class=s2>&#34;article.content&#34;</span><span class=p>)</span> <span class=ow>or</span> <span class=n>soup</span><span class=o>.</span><span class=n>select_one</span><span class=p>(</span><span class=s2>&#34;.post-content&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>text</span> <span class=o>=</span> <span class=n>article</span><span class=o>.</span><span class=n>get_text</span><span class=p>(</span><span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=p>,</span> <span class=n>strip</span><span class=o>=</span><span class=kc>True</span><span class=p>)</span> <span class=k>if</span> <span class=n>article</span> <span class=k>else</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><p>完整示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>bs4</span> <span class=kn>import</span> <span class=n>BeautifulSoup</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>extract_article_content</span><span class=p>(</span><span class=n>html</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>soup</span> <span class=o>=</span> <span class=n>BeautifulSoup</span><span class=p>(</span><span class=n>html</span><span class=p>,</span> <span class=s2>&#34;lxml&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>for</span> <span class=n>tag</span> <span class=ow>in</span> <span class=n>soup</span><span class=p>([</span><span class=s2>&#34;script&#34;</span><span class=p>,</span> <span class=s2>&#34;style&#34;</span><span class=p>,</span> <span class=s2>&#34;noscript&#34;</span><span class=p>]):</span>
+</span></span><span class=line><span class=cl>        <span class=n>tag</span><span class=o>.</span><span class=n>decompose</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>article</span> <span class=o>=</span> <span class=n>soup</span><span class=o>.</span><span class=n>select_one</span><span class=p>(</span><span class=s2>&#34;article&#34;</span><span class=p>)</span> <span class=ow>or</span> <span class=n>soup</span><span class=o>.</span><span class=n>select_one</span><span class=p>(</span><span class=s2>&#34;.post-content&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>article</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>for</span> <span class=n>unwanted</span> <span class=ow>in</span> <span class=n>article</span><span class=o>.</span><span class=n>select</span><span class=p>(</span><span class=s2>&#34;.ad, .recommend, .share, .comments&#34;</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>        <span class=n>unwanted</span><span class=o>.</span><span class=n>decompose</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>normalize_paragraphs</span><span class=p>(</span><span class=n>article</span><span class=o>.</span><span class=n>get_text</span><span class=p>(</span><span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=p>,</span> <span class=n>strip</span><span class=o>=</span><span class=kc>True</span><span class=p>))</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里体现了一个重要原则：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>清洗不是越粗暴越好，而是先定位业务主体，再移除已知噪声。
+</span></span></code></pre></td></tr></table></div></div><h2 id=八缺失值处理>八、缺失值处理</h2><p>网页字段缺失很常见。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>暂无
+</span></span><span class=line><span class=cl>无
+</span></span><span class=line><span class=cl>--
+</span></span><span class=line><span class=cl>N/A
+</span></span><span class=line><span class=cl>null
+</span></span><span class=line><span class=cl>未知
+</span></span><span class=line><span class=cl>价格面议
+</span></span></code></pre></td></tr></table></div></div><p>可以定义统一缺失值集合：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>MISSING_VALUES</span> <span class=o>=</span> <span class=p>{</span><span class=s2>&#34;&#34;</span><span class=p>,</span> <span class=s2>&#34;-&#34;</span><span class=p>,</span> <span class=s2>&#34;--&#34;</span><span class=p>,</span> <span class=s2>&#34;暂无&#34;</span><span class=p>,</span> <span class=s2>&#34;无&#34;</span><span class=p>,</span> <span class=s2>&#34;未知&#34;</span><span class=p>,</span> <span class=s2>&#34;N/A&#34;</span><span class=p>,</span> <span class=s2>&#34;null&#34;</span><span class=p>,</span> <span class=s2>&#34;None&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>none_if_missing</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>cleaned</span> <span class=o>=</span> <span class=n>normalize_space</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>cleaned</span> <span class=ow>is</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>cleaned</span> <span class=ow>in</span> <span class=n>MISSING_VALUES</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>cleaned</span>
+</span></span></code></pre></td></tr></table></div></div><p>使用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>none_if_missing</span><span class=p>(</span><span class=s2>&#34; 暂无 &#34;</span><span class=p>))</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>none_if_missing</span><span class=p>(</span><span class=s2>&#34; 阿彪 &#34;</span><span class=p>))</span>
+</span></span></code></pre></td></tr></table></div></div><p>缺失值处理要区分字段语义。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>价格：&#34;免费&#34; 可能应该是 0。
+</span></span><span class=line><span class=cl>价格：&#34;面议&#34; 可能应该是 None 或特殊状态。
+</span></span><span class=line><span class=cl>库存：&#34;无&#34; 可能应该是 0。
+</span></span><span class=line><span class=cl>作者：&#34;未知&#34; 可以是 None。
+</span></span></code></pre></td></tr></table></div></div><p>不能把所有特殊文本都简单删掉。</p><h2 id=九日期时间归一化>九、日期时间归一化</h2><p>日期字段是最容易混乱的字段之一。</p><p>可能有：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>2025-12-25
+</span></span><span class=line><span class=cl>2025/12/25
+</span></span><span class=line><span class=cl>2025年12月25日
+</span></span><span class=line><span class=cl>2025-12-25 10:00
+</span></span><span class=line><span class=cl>昨天 18:30
+</span></span><span class=line><span class=cl>3小时前
+</span></span><span class=line><span class=cl>刚刚
+</span></span></code></pre></td></tr></table></div></div><p>先处理绝对时间。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>re</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>datetime</span> <span class=kn>import</span> <span class=n>datetime</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>DATE_PATTERNS</span> <span class=o>=</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=n>re</span><span class=o>.</span><span class=n>compile</span><span class=p>(</span><span class=sa>r</span><span class=s2>&#34;(\d</span><span class=si>{4}</span><span class=s2>)-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{1,2}))?&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>re</span><span class=o>.</span><span class=n>compile</span><span class=p>(</span><span class=sa>r</span><span class=s2>&#34;(\d</span><span class=si>{4}</span><span class=s2>)/(\d{1,2})/(\d{1,2})(?:\s+(\d{1,2}):(\d{1,2}))?&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>re</span><span class=o>.</span><span class=n>compile</span><span class=p>(</span><span class=sa>r</span><span class=s2>&#34;(\d</span><span class=si>{4}</span><span class=s2>)年(\d{1,2})月(\d{1,2})日(?:\s*(\d{1,2}):(\d{1,2}))?&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>parse_absolute_datetime</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>text</span> <span class=o>=</span> <span class=n>normalize_space</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>text</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>for</span> <span class=n>pattern</span> <span class=ow>in</span> <span class=n>DATE_PATTERNS</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>match</span> <span class=o>=</span> <span class=n>pattern</span><span class=o>.</span><span class=n>search</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>if</span> <span class=ow>not</span> <span class=k>match</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>            <span class=k>continue</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>        <span class=n>year</span><span class=p>,</span> <span class=n>month</span><span class=p>,</span> <span class=n>day</span><span class=p>,</span> <span class=n>hour</span><span class=p>,</span> <span class=n>minute</span> <span class=o>=</span> <span class=k>match</span><span class=o>.</span><span class=n>groups</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>        <span class=n>dt</span> <span class=o>=</span> <span class=n>datetime</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>            <span class=nb>int</span><span class=p>(</span><span class=n>year</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>            <span class=nb>int</span><span class=p>(</span><span class=n>month</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>            <span class=nb>int</span><span class=p>(</span><span class=n>day</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>            <span class=nb>int</span><span class=p>(</span><span class=n>hour</span> <span class=ow>or</span> <span class=mi>0</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>            <span class=nb>int</span><span class=p>(</span><span class=n>minute</span> <span class=ow>or</span> <span class=mi>0</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>        <span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>dt</span><span class=o>.</span><span class=n>strftime</span><span class=p>(</span><span class=s2>&#34;%Y-%m-</span><span class=si>%d</span><span class=s2> %H:%M:%S&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><p>相对时间要谨慎。</p><p>例如“昨天”“3小时前”必须依赖采集时间。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>datetime</span> <span class=kn>import</span> <span class=n>datetime</span><span class=p>,</span> <span class=n>timedelta</span>
+</span></span><span class=line><span class=cl><span class=kn>import</span> <span class=nn>re</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>parse_relative_datetime</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>,</span> <span class=n>now</span><span class=p>:</span> <span class=n>datetime</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>text</span> <span class=o>=</span> <span class=n>normalize_space</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>text</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>text</span> <span class=o>==</span> <span class=s2>&#34;刚刚&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>now</span><span class=o>.</span><span class=n>strftime</span><span class=p>(</span><span class=s2>&#34;%Y-%m-</span><span class=si>%d</span><span class=s2> %H:%M:%S&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>match</span> <span class=o>=</span> <span class=n>re</span><span class=o>.</span><span class=n>search</span><span class=p>(</span><span class=sa>r</span><span class=s2>&#34;(\d+)小时前&#34;</span><span class=p>,</span> <span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=k>match</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>dt</span> <span class=o>=</span> <span class=n>now</span> <span class=o>-</span> <span class=n>timedelta</span><span class=p>(</span><span class=n>hours</span><span class=o>=</span><span class=nb>int</span><span class=p>(</span><span class=k>match</span><span class=o>.</span><span class=n>group</span><span class=p>(</span><span class=mi>1</span><span class=p>)))</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>dt</span><span class=o>.</span><span class=n>strftime</span><span class=p>(</span><span class=s2>&#34;%Y-%m-</span><span class=si>%d</span><span class=s2> %H:%M:%S&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>match</span> <span class=o>=</span> <span class=n>re</span><span class=o>.</span><span class=n>search</span><span class=p>(</span><span class=sa>r</span><span class=s2>&#34;昨天\s*(\d{1,2}):(\d{1,2})&#34;</span><span class=p>,</span> <span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=k>match</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>hour</span><span class=p>,</span> <span class=n>minute</span> <span class=o>=</span> <span class=k>match</span><span class=o>.</span><span class=n>groups</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>        <span class=n>dt</span> <span class=o>=</span> <span class=p>(</span><span class=n>now</span> <span class=o>-</span> <span class=n>timedelta</span><span class=p>(</span><span class=n>days</span><span class=o>=</span><span class=mi>1</span><span class=p>))</span><span class=o>.</span><span class=n>replace</span><span class=p>(</span><span class=n>hour</span><span class=o>=</span><span class=nb>int</span><span class=p>(</span><span class=n>hour</span><span class=p>),</span> <span class=n>minute</span><span class=o>=</span><span class=nb>int</span><span class=p>(</span><span class=n>minute</span><span class=p>),</span> <span class=n>second</span><span class=o>=</span><span class=mi>0</span><span class=p>,</span> <span class=n>microsecond</span><span class=o>=</span><span class=mi>0</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>dt</span><span class=o>.</span><span class=n>strftime</span><span class=p>(</span><span class=s2>&#34;%Y-%m-</span><span class=si>%d</span><span class=s2> %H:%M:%S&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><p>工程上建议保存：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>raw_publish_time：原始时间文本。
+</span></span><span class=line><span class=cl>publish_time：归一化后的时间。
+</span></span><span class=line><span class=cl>crawled_at：采集时间。
+</span></span></code></pre></td></tr></table></div></div><p>这样相对时间有可追溯依据。</p><h2 id=十金额和单位归一化>十、金额和单位归一化</h2><p>金额常见格式：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>¥199
+</span></span><span class=line><span class=cl>￥1,299.50
+</span></span><span class=line><span class=cl>199 元
+</span></span><span class=line><span class=cl>1.2万
+</span></span><span class=line><span class=cl>免费
+</span></span><span class=line><span class=cl>面议
+</span></span></code></pre></td></tr></table></div></div><p>可以封装：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>re</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>parse_amount</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>float</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>text</span> <span class=o>=</span> <span class=n>normalize_space</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>text</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;免费&#34;</span> <span class=ow>in</span> <span class=n>text</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=mf>0.0</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;面议&#34;</span> <span class=ow>in</span> <span class=n>text</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>match</span> <span class=o>=</span> <span class=n>re</span><span class=o>.</span><span class=n>search</span><span class=p>(</span><span class=sa>r</span><span class=s2>&#34;([\d,]+(?:\.\d+)?)\s*(万)?&#34;</span><span class=p>,</span> <span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=k>match</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>value</span> <span class=o>=</span> <span class=nb>float</span><span class=p>(</span><span class=k>match</span><span class=o>.</span><span class=n>group</span><span class=p>(</span><span class=mi>1</span><span class=p>)</span><span class=o>.</span><span class=n>replace</span><span class=p>(</span><span class=s2>&#34;,&#34;</span><span class=p>,</span> <span class=s2>&#34;&#34;</span><span class=p>))</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=k>match</span><span class=o>.</span><span class=n>group</span><span class=p>(</span><span class=mi>2</span><span class=p>)</span> <span class=o>==</span> <span class=s2>&#34;万&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>value</span> <span class=o>*=</span> <span class=mi>10000</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>value</span>
+</span></span></code></pre></td></tr></table></div></div><p>使用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>parse_amount</span><span class=p>(</span><span class=s2>&#34;￥1,299.50&#34;</span><span class=p>))</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>parse_amount</span><span class=p>(</span><span class=s2>&#34;1.2万&#34;</span><span class=p>))</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>parse_amount</span><span class=p>(</span><span class=s2>&#34;免费&#34;</span><span class=p>))</span>
+</span></span></code></pre></td></tr></table></div></div><p>注意：金额单位要和业务字段一致。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>价格可以统一成元。
+</span></span><span class=line><span class=cl>面积可以统一成平方米。
+</span></span><span class=line><span class=cl>重量可以统一成克或千克。
+</span></span><span class=line><span class=cl>时长可以统一成秒。
+</span></span></code></pre></td></tr></table></div></div><p>不要只保存原始字符串，否则后续统计会很麻烦。</p><h2 id=十一列表和标签清洗>十一、列表和标签清洗</h2><p>网页标签可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>&#34;Python, 爬虫, 数据采集&#34;
+</span></span><span class=line><span class=cl>&#34;Python / 爬虫 / 数据采集&#34;
+</span></span><span class=line><span class=cl>&#34;#Python #爬虫 #数据采集&#34;
+</span></span></code></pre></td></tr></table></div></div><p>可以统一拆分、去空白、去重。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>re</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>parse_tags</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=n>text</span> <span class=o>=</span> <span class=n>normalize_space</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>text</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>[]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>parts</span> <span class=o>=</span> <span class=n>re</span><span class=o>.</span><span class=n>split</span><span class=p>(</span><span class=sa>r</span><span class=s2>&#34;[,，/、#\s]+&#34;</span><span class=p>,</span> <span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>tags</span> <span class=o>=</span> <span class=p>[]</span>
+</span></span><span class=line><span class=cl>    <span class=n>seen</span> <span class=o>=</span> <span class=nb>set</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>for</span> <span class=n>part</span> <span class=ow>in</span> <span class=n>parts</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>tag</span> <span class=o>=</span> <span class=n>part</span><span class=o>.</span><span class=n>strip</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>        <span class=k>if</span> <span class=ow>not</span> <span class=n>tag</span> <span class=ow>or</span> <span class=n>tag</span> <span class=ow>in</span> <span class=n>seen</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>            <span class=k>continue</span>
+</span></span><span class=line><span class=cl>        <span class=n>seen</span><span class=o>.</span><span class=n>add</span><span class=p>(</span><span class=n>tag</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=n>tags</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=n>tag</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>tags</span>
+</span></span></code></pre></td></tr></table></div></div><p>使用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>parse_tags</span><span class=p>(</span><span class=s2>&#34;#Python #爬虫 #数据采集&#34;</span><span class=p>))</span>
+</span></span></code></pre></td></tr></table></div></div><p>标签清洗时要注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>是否保留大小写？
+</span></span><span class=line><span class=cl>是否做同义词归一？
+</span></span><span class=line><span class=cl>是否限制标签数量？
+</span></span><span class=line><span class=cl>是否过滤无意义词？
+</span></span></code></pre></td></tr></table></div></div><p>这些属于业务清洗规则。</p><h2 id=十二html-实体和特殊符号>十二、HTML 实体和特殊符号</h2><p>网页文本可能包含 HTML 实体：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Python&amp;nbsp;爬虫 &amp;amp; 数据采集
+</span></span></code></pre></td></tr></table></div></div><p>BeautifulSoup 提取文本时通常会处理一部分实体。</p><p>也可以使用 <code>html.unescape</code>。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>html</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>text</span> <span class=o>=</span> <span class=s2>&#34;Python&amp;nbsp;爬虫 &amp;amp; 数据采集&#34;</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>html</span><span class=o>.</span><span class=n>unescape</span><span class=p>(</span><span class=n>text</span><span class=p>))</span>
+</span></span></code></pre></td></tr></table></div></div><p>输出：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Python 爬虫 &amp; 数据采集
+</span></span></code></pre></td></tr></table></div></div><p>注意 <code>&amp;nbsp;</code> 可能变成不间断空格，需要进一步归一化空白。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>text</span> <span class=o>=</span> <span class=n>html</span><span class=o>.</span><span class=n>unescape</span><span class=p>(</span><span class=n>text</span><span class=p>)</span><span class=o>.</span><span class=n>replace</span><span class=p>(</span><span class=s2>&#34;</span><span class=se>\xa0</span><span class=s2>&#34;</span><span class=p>,</span> <span class=s2>&#34; &#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>text</span> <span class=o>=</span> <span class=n>normalize_space</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>常见需要处理的特殊字符包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>\xa0 不间断空格。
+</span></span><span class=line><span class=cl>​ 零宽空格。
+</span></span><span class=line><span class=cl>﻿ BOM。
+</span></span><span class=line><span class=cl>全角符号。
+</span></span><span class=line><span class=cl>重复标点。
+</span></span></code></pre></td></tr></table></div></div><p>可以封装：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>html</span>
+</span></span><span class=line><span class=cl><span class=kn>import</span> <span class=nn>re</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>normalize_text</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>text</span> <span class=ow>is</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>text</span> <span class=o>=</span> <span class=n>html</span><span class=o>.</span><span class=n>unescape</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>text</span> <span class=o>=</span> <span class=n>text</span><span class=o>.</span><span class=n>replace</span><span class=p>(</span><span class=s2>&#34;</span><span class=se>\xa0</span><span class=s2>&#34;</span><span class=p>,</span> <span class=s2>&#34; &#34;</span><span class=p>)</span><span class=o>.</span><span class=n>replace</span><span class=p>(</span><span class=s2>&#34;​&#34;</span><span class=p>,</span> <span class=s2>&#34;&#34;</span><span class=p>)</span><span class=o>.</span><span class=n>replace</span><span class=p>(</span><span class=s2>&#34;﻿&#34;</span><span class=p>,</span> <span class=s2>&#34;&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>text</span> <span class=o>=</span> <span class=n>re</span><span class=o>.</span><span class=n>sub</span><span class=p>(</span><span class=sa>r</span><span class=s2>&#34;\s+&#34;</span><span class=p>,</span> <span class=s2>&#34; &#34;</span><span class=p>,</span> <span class=n>text</span><span class=p>)</span><span class=o>.</span><span class=n>strip</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>text</span> <span class=ow>or</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><h2 id=十三字段级清洗函数>十三、字段级清洗函数</h2><p>不要把所有清洗逻辑都写在一个大函数里。</p><p>更推荐按字段类型拆分：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>clean_title</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>normalize_text</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>clean_summary</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>normalize_text</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>clean_content</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>normalize_paragraphs</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>clean_price</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>float</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>parse_amount</span><span class=p>(</span><span class=n>text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>clean_publish_time</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>,</span> <span class=n>crawled_at</span><span class=p>:</span> <span class=n>datetime</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>parse_absolute_datetime</span><span class=p>(</span><span class=n>text</span><span class=p>)</span> <span class=ow>or</span> <span class=n>parse_relative_datetime</span><span class=p>(</span><span class=n>text</span><span class=p>,</span> <span class=n>crawled_at</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这样做有几个好处：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>逻辑清晰。
+</span></span><span class=line><span class=cl>便于测试。
+</span></span><span class=line><span class=cl>便于复用。
+</span></span><span class=line><span class=cl>便于替换规则。
+</span></span><span class=line><span class=cl>便于定位哪个字段出问题。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十四从-rawitem-到-cleanitem>十四、从 RawItem 到 CleanItem</h2><p>下面给一个完整示例。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>datetime</span> <span class=kn>import</span> <span class=n>datetime</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>RawItem</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>url</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>title</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>content_html</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>price_text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>publish_time_text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>tags_text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>crawled_at</span><span class=p>:</span> <span class=n>datetime</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>CleanItem</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>url</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>title</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>content</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>price</span><span class=p>:</span> <span class=nb>float</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>publish_time</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>tags</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>crawled_at</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>clean_item</span><span class=p>(</span><span class=n>raw</span><span class=p>:</span> <span class=n>RawItem</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>CleanItem</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>title</span> <span class=o>=</span> <span class=n>clean_title</span><span class=p>(</span><span class=n>raw</span><span class=o>.</span><span class=n>title</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>title</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>content</span> <span class=o>=</span> <span class=n>html_to_text</span><span class=p>(</span><span class=n>raw</span><span class=o>.</span><span class=n>content_html</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>price</span> <span class=o>=</span> <span class=n>clean_price</span><span class=p>(</span><span class=n>raw</span><span class=o>.</span><span class=n>price_text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>publish_time</span> <span class=o>=</span> <span class=n>clean_publish_time</span><span class=p>(</span><span class=n>raw</span><span class=o>.</span><span class=n>publish_time_text</span><span class=p>,</span> <span class=n>raw</span><span class=o>.</span><span class=n>crawled_at</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>tags</span> <span class=o>=</span> <span class=n>parse_tags</span><span class=p>(</span><span class=n>raw</span><span class=o>.</span><span class=n>tags_text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>CleanItem</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=n>url</span><span class=o>=</span><span class=n>raw</span><span class=o>.</span><span class=n>url</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>title</span><span class=o>=</span><span class=n>title</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>content</span><span class=o>=</span><span class=n>content</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>price</span><span class=o>=</span><span class=n>price</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>publish_time</span><span class=o>=</span><span class=n>publish_time</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>tags</span><span class=o>=</span><span class=n>tags</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>crawled_at</span><span class=o>=</span><span class=n>raw</span><span class=o>.</span><span class=n>crawled_at</span><span class=o>.</span><span class=n>strftime</span><span class=p>(</span><span class=s2>&#34;%Y-%m-</span><span class=si>%d</span><span class=s2> %H:%M:%S&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里有一个关键判断：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>if</span> <span class=ow>not</span> <span class=n>title</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><p>说明标题是必填字段。</p><p>如果标题缺失，这条数据不应该直接入库。</p><p>不同业务的必填字段不同。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>新闻：标题、正文、URL 可能必填。
+</span></span><span class=line><span class=cl>商品：标题、价格、URL 可能必填。
+</span></span><span class=line><span class=cl>招聘：职位、公司、地点可能必填。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十五用-pydantic-做最终校验>十五、用 Pydantic 做最终校验</h2><p>清洗后的数据仍然需要校验。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>pydantic</span> <span class=kn>import</span> <span class=n>BaseModel</span><span class=p>,</span> <span class=n>Field</span><span class=p>,</span> <span class=n>HttpUrl</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>CleanItemSchema</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>url</span><span class=p>:</span> <span class=n>HttpUrl</span>
+</span></span><span class=line><span class=cl>    <span class=n>title</span><span class=p>:</span> <span class=nb>str</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>min_length</span><span class=o>=</span><span class=mi>1</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>content</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>price</span><span class=p>:</span> <span class=nb>float</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>default</span><span class=o>=</span><span class=kc>None</span><span class=p>,</span> <span class=n>ge</span><span class=o>=</span><span class=mi>0</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>publish_time</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>tags</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>default_factory</span><span class=o>=</span><span class=nb>list</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>crawled_at</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>使用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>pydantic</span> <span class=kn>import</span> <span class=n>ValidationError</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>cleaned</span> <span class=o>=</span> <span class=n>clean_item</span><span class=p>(</span><span class=n>raw_item</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>if</span> <span class=n>cleaned</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>try</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>item</span> <span class=o>=</span> <span class=n>CleanItemSchema</span><span class=o>.</span><span class=n>model_validate</span><span class=p>(</span><span class=n>cleaned</span><span class=o>.</span><span class=vm>__dict__</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=nb>print</span><span class=p>(</span><span class=n>item</span><span class=o>.</span><span class=n>model_dump</span><span class=p>())</span>
+</span></span><span class=line><span class=cl>    <span class=k>except</span> <span class=n>ValidationError</span> <span class=k>as</span> <span class=n>exc</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=nb>print</span><span class=p>(</span><span class=s2>&#34;数据校验失败&#34;</span><span class=p>,</span> <span class=n>exc</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>Schema 校验解决的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>字段是否存在。
+</span></span><span class=line><span class=cl>类型是否正确。
+</span></span><span class=line><span class=cl>字符串是否为空。
+</span></span><span class=line><span class=cl>数值是否在合理范围。
+</span></span><span class=line><span class=cl>URL 是否合法。
+</span></span><span class=line><span class=cl>列表字段是否符合预期。
+</span></span></code></pre></td></tr></table></div></div><p>清洗和校验要配合使用。</p><p>清洗负责“变干净”。</p><p>校验负责“能不能用”。</p><h2 id=十六数据质量日志>十六、数据质量日志</h2><p>清洗层也需要日志。</p><p>至少要记录：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>原始字段是否缺失。
+</span></span><span class=line><span class=cl>清洗后字段是否为空。
+</span></span><span class=line><span class=cl>必填字段失败数量。
+</span></span><span class=line><span class=cl>日期解析失败数量。
+</span></span><span class=line><span class=cl>价格解析失败数量。
+</span></span><span class=line><span class=cl>Schema 校验失败原因。
+</span></span></code></pre></td></tr></table></div></div><p>示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>logging</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>logger</span> <span class=o>=</span> <span class=n>logging</span><span class=o>.</span><span class=n>getLogger</span><span class=p>(</span><span class=s2>&#34;cleaner&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>clean_batch</span><span class=p>(</span><span class=n>raw_items</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=n>RawItem</span><span class=p>])</span> <span class=o>-&gt;</span> <span class=nb>list</span><span class=p>[</span><span class=n>CleanItem</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=n>cleaned_items</span> <span class=o>=</span> <span class=p>[]</span>
+</span></span><span class=line><span class=cl>    <span class=n>dropped_count</span> <span class=o>=</span> <span class=mi>0</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>for</span> <span class=n>raw</span> <span class=ow>in</span> <span class=n>raw_items</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>item</span> <span class=o>=</span> <span class=n>clean_item</span><span class=p>(</span><span class=n>raw</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>if</span> <span class=n>item</span> <span class=ow>is</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>            <span class=n>dropped_count</span> <span class=o>+=</span> <span class=mi>1</span>
+</span></span><span class=line><span class=cl>            <span class=n>logger</span><span class=o>.</span><span class=n>warning</span><span class=p>(</span><span class=s2>&#34;drop item url=</span><span class=si>%s</span><span class=s2> reason=missing_required_title&#34;</span><span class=p>,</span> <span class=n>raw</span><span class=o>.</span><span class=n>url</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>            <span class=k>continue</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>        <span class=n>cleaned_items</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=n>item</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>logger</span><span class=o>.</span><span class=n>info</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;clean batch total=</span><span class=si>%s</span><span class=s2> cleaned=</span><span class=si>%s</span><span class=s2> dropped=</span><span class=si>%s</span><span class=s2>&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=nb>len</span><span class=p>(</span><span class=n>raw_items</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>        <span class=nb>len</span><span class=p>(</span><span class=n>cleaned_items</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>        <span class=n>dropped_count</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>cleaned_items</span>
+</span></span></code></pre></td></tr></table></div></div><p>如果某天清洗失败率突然升高，可能意味着：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>页面结构变化。
+</span></span><span class=line><span class=cl>解析字段变了。
+</span></span><span class=line><span class=cl>清洗规则不覆盖新格式。
+</span></span><span class=line><span class=cl>数据源返回异常页面。
+</span></span><span class=line><span class=cl>登录态失效导致拿到登录页。
+</span></span></code></pre></td></tr></table></div></div><p>这些指标后面可以进入监控和 Agent 诊断流程。</p><h2 id=十七不要过度清洗>十七、不要过度清洗</h2><p>清洗不是把所有“不熟悉的内容”删掉。</p><p>过度清洗会造成信息丢失。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>把正文所有标点删掉。
+</span></span><span class=line><span class=cl>把所有数字删掉。
+</span></span><span class=line><span class=cl>把换行全部删掉导致段落消失。
+</span></span><span class=line><span class=cl>把“免费”清洗成 None，丢失价格语义。
+</span></span><span class=line><span class=cl>把“面议”清洗成 0，造成错误统计。
+</span></span></code></pre></td></tr></table></div></div><p>清洗规则要符合业务含义。</p><p>建议保留：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>raw 字段。
+</span></span><span class=line><span class=cl>clean 字段。
+</span></span><span class=line><span class=cl>清洗版本。
+</span></span><span class=line><span class=cl>清洗失败原因。
+</span></span></code></pre></td></tr></table></div></div><p>当规则变化时，历史数据可以重新清洗。</p><h2 id=十八清洗规则版本化>十八、清洗规则版本化</h2><p>如果项目长期运行，清洗规则会不断变化。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>新增一种日期格式。
+</span></span><span class=line><span class=cl>新增一种价格单位。
+</span></span><span class=line><span class=cl>修改标签拆分规则。
+</span></span><span class=line><span class=cl>正文去广告规则调整。
+</span></span><span class=line><span class=cl>字段必填规则变化。
+</span></span></code></pre></td></tr></table></div></div><p>建议给清洗结果记录规则版本：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>clean_version = &#34;2025-12-25-v1&#34;
+</span></span></code></pre></td></tr></table></div></div><p>这样当你发现历史数据质量问题时，可以知道：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>哪些数据是旧规则清洗的？
+</span></span><span class=line><span class=cl>哪些数据需要重跑？
+</span></span><span class=line><span class=cl>规则升级后质量是否提升？
+</span></span></code></pre></td></tr></table></div></div><p>简单示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>CLEAN_VERSION</span> <span class=o>=</span> <span class=s2>&#34;2025-12-25-v1&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>入库时一起保存。</p><p>这是很多小脚本没有、但工程系统应该考虑的细节。</p><h2 id=十九llm-在数据清洗中的作用>十九、LLM 在数据清洗中的作用</h2><p>前面讲的清洗大多是规则型清洗。</p><p>它适合：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>空白处理。
+</span></span><span class=line><span class=cl>HTML 标签清理。
+</span></span><span class=line><span class=cl>日期归一化。
+</span></span><span class=line><span class=cl>价格归一化。
+</span></span><span class=line><span class=cl>缺失值处理。
+</span></span><span class=line><span class=cl>字段类型转换。
+</span></span></code></pre></td></tr></table></div></div><p>LLM 更适合处理：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>商品描述中的属性抽取。
+</span></span><span class=line><span class=cl>新闻正文摘要。
+</span></span><span class=line><span class=cl>评论情感分类。
+</span></span><span class=line><span class=cl>多来源字段名称统一。
+</span></span><span class=line><span class=cl>复杂文本中的主体信息识别。
+</span></span><span class=line><span class=cl>清洗失败原因解释。
+</span></span></code></pre></td></tr></table></div></div><p>例如一段文本：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>适合有 Python 基础、想转数据采集工程方向的同学，课程包含 Requests、BeautifulSoup、Selenium 和工程部署。
+</span></span></code></pre></td></tr></table></div></div><p>规则很难稳定抽出：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>适合人群。
+</span></span><span class=line><span class=cl>课程主题。
+</span></span><span class=line><span class=cl>技术栈。
+</span></span><span class=line><span class=cl>学习目标。
+</span></span></code></pre></td></tr></table></div></div><p>LLM 可以辅助抽取。</p><p>但要注意：</p><blockquote><p>LLM 输出不能直接当作事实入库，仍然需要 Schema、校验、置信度和必要的人工复核。</p></blockquote><p>更合理的流程是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>规则清洗基础字段
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>LLM 处理语义字段
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Schema 校验
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>低置信度进入人工复核
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>结构化入库
+</span></span></code></pre></td></tr></table></div></div><h2 id=二十agent-如何参与清洗诊断>二十、Agent 如何参与清洗诊断？</h2><p>当清洗失败时，Agent 可以辅助诊断。</p><p>输入可以包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>原始字段。
+</span></span><span class=line><span class=cl>清洗后字段。
+</span></span><span class=line><span class=cl>失败的 Schema 错误。
+</span></span><span class=line><span class=cl>当前清洗规则版本。
+</span></span><span class=line><span class=cl>历史成功样本。
+</span></span><span class=line><span class=cl>页面 URL 和数据源。
+</span></span></code></pre></td></tr></table></div></div><p>Agent 可以给出建议：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>日期格式新增，需要补充规则。
+</span></span><span class=line><span class=cl>价格出现“万”单位，需要单位换算。
+</span></span><span class=line><span class=cl>正文包含广告块，需要调整选择器。
+</span></span><span class=line><span class=cl>字段为空可能是拿到了登录页。
+</span></span><span class=line><span class=cl>当前规则把“免费”误判成缺失值。
+</span></span></code></pre></td></tr></table></div></div><p>但 Agent 不应该直接自动修改生产规则并上线。</p><p>更稳的流程是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Agent 生成诊断建议。
+</span></span><span class=line><span class=cl>开发者或审核流程确认。
+</span></span><span class=line><span class=cl>增加样例测试。
+</span></span><span class=line><span class=cl>灰度运行新规则。
+</span></span><span class=line><span class=cl>监控清洗成功率。
+</span></span></code></pre></td></tr></table></div></div><p>这和本系列一贯的思路一致：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>规则负责确定性。
+</span></span><span class=line><span class=cl>LLM 负责语义理解。
+</span></span><span class=line><span class=cl>Agent 负责诊断辅助。
+</span></span><span class=line><span class=cl>Schema 和人工复核负责边界。
+</span></span></code></pre></td></tr></table></div></div><h2 id=二十一常见错误写法>二十一、常见错误写法</h2><h3 id=1-不保留原始字段>1. 不保留原始字段</h3><p>只保存清洗结果，一旦清洗错了很难回溯。</p><p>建议保存 raw 和 clean。</p><h3 id=2-所有字段共用一个清洗函数>2. 所有字段共用一个清洗函数</h3><p>标题、正文、价格、日期、标签的清洗规则不同。</p><p>不要一个 <code>clean_text</code> 解决所有问题。</p><h3 id=3-把缺失值都变成空字符串>3. 把缺失值都变成空字符串</h3><p>空字符串和 None 语义不同。</p><p><code>None</code> 更适合表示缺失。</p><p>空字符串可能只是清洗后的文本为空。</p><h3 id=4-把特殊语义误清洗>4. 把特殊语义误清洗</h3><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>免费 -&gt; 0。
+</span></span><span class=line><span class=cl>面议 -&gt; None 或 special_status。
+</span></span><span class=line><span class=cl>未知 -&gt; None。
+</span></span><span class=line><span class=cl>售罄 -&gt; stock=0 或 status=sold_out。
+</span></span></code></pre></td></tr></table></div></div><p>要根据业务字段处理。</p><h3 id=5-没有数据质量指标>5. 没有数据质量指标</h3><p>如果不记录清洗失败率，页面改版后可能很久才发现。</p><p>至少要记录：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>总数。
+</span></span><span class=line><span class=cl>成功数。
+</span></span><span class=line><span class=cl>丢弃数。
+</span></span><span class=line><span class=cl>字段缺失数。
+</span></span><span class=line><span class=cl>校验失败数。
+</span></span></code></pre></td></tr></table></div></div><h2 id=二十二面试表达>二十二、面试表达</h2><p>如果面试官问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>爬虫拿到数据后，你会怎么清洗？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会先保留原始字段，再按字段类型做清洗。比如标题和摘要会清理空白，正文会去掉 script、style、广告和推荐块并保留段落，价格会去掉货币符号和单位后转成数值，日期会统一成标准时间格式，标签会拆分、去重和归一化。清洗后不会直接入库，而是用 Pydantic 或 JSON Schema 做字段校验，并记录清洗失败原因和数据质量指标。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>如何处理字段缺失？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会区分必填字段和可选字段。可选字段缺失可以记为 None，必填字段缺失则不能直接入库，需要记录失败原因。对于“暂无”“未知”“&ndash;”这类占位符，会统一转换为 None，但也会根据字段语义处理特殊值，比如价格中的“免费”应该是 0，而“面议”不应该简单变成 0。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>清洗规则变了怎么办？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会保留原始数据和清洗版本。规则变更时，通过样例测试验证新规则，再对受影响的数据重新清洗。线上会观察清洗成功率、字段缺失率和 Schema 校验失败率，避免规则更新引入新的数据质量问题。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM 能不能替代数据清洗规则？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>不能完全替代。空白清理、日期归一化、价格转换、缺失值处理这类确定性任务更适合规则，速度快、成本低、可测试。LLM 更适合语义复杂的非结构化抽取，比如从商品描述中抽取属性、从正文中生成摘要或解释清洗失败原因。工程上应该规则优先，LLM 补充，最后统一做 Schema 校验和必要的人工复核。</p></blockquote><h2 id=二十三总结>二十三、总结</h2><p>本文讲了非结构化网页数据清洗的工程方法。</p><p>核心结论包括：</p><ul><li>爬虫提取到字段不等于数据已经可用，清洗是入库前的关键步骤。</li><li>清洗前要尽量保留原始数据，方便回溯和重新处理。</li><li>标题、正文、价格、日期、标签等字段应该使用不同清洗策略。</li><li>HTML 片段要先移除 script、style 等无关标签，再提取正文。</li><li>正文清洗要先定位主体内容，不要直接对整页 <code>get_text()</code>。</li><li>缺失值要统一处理，但特殊语义要按业务区分。</li><li>日期、金额、单位要归一化成可计算、可查询的格式。</li><li>清洗后必须经过 Schema 校验，不能直接入库。</li><li>清洗层要记录失败率、缺失率、校验错误等数据质量指标。</li><li>清洗规则应该可以版本化，支持回溯和重跑。</li><li>LLM 适合语义抽取和诊断辅助，但不能替代所有确定性规则。</li></ul><p>到这里，我们已经完成了静态网页采集的一个完整基础闭环：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>请求页面
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>维护状态
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>解析 HTML
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>选择器提取字段
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>正则处理局部模式
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>清洗归一化
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Schema 校验
+</span></span></code></pre></td></tr></table></div></div><p>下一篇文章，我们会进入动态网页采集：</p><blockquote><p>Selenium 动态网页采集入门。</p></blockquote><p>因为很多现代网页并不会在初始 HTML 中直接返回目标数据，而是依赖 JavaScript 渲染、异步接口和用户交互。</p></section><footer class=article-footer><section class=article-tags><a href=/tags/python/>Python</a>
+<a href=/tags/%E7%88%AC%E8%99%AB/>爬虫</a>
+<a href=/tags/%E6%95%B0%E6%8D%AE%E6%B8%85%E6%B4%97/>数据清洗</a>
+<a href=/tags/%E9%9D%9E%E7%BB%93%E6%9E%84%E5%8C%96%E6%95%B0%E6%8D%AE/>非结构化数据</a>
+<a href=/tags/%E6%95%B0%E6%8D%AE%E8%B4%A8%E9%87%8F/>数据质量</a>
+<a href=/tags/schema/>Schema</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/regex-for-crawler-data-extraction/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 07：正则表达式在数据提取中的应用</h2></div></a></article><article><a href=/p/captcha-recognition-automation-boundaries/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 20：自动化任务中的验证码识别边界</h2></div></a></article><article><a href=/p/captcha-mechanism-analysis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 19：验证码机制分析</h2></div></a></article><article><a href=/p/app-crawling-frida-hook-basics/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 18：App 抓包与 Frida Hook 基础认知</h2></div></a></article><article><a href=/p/ast-javascript-obfuscation-analysis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 17：AST 在 JavaScript 混淆分析中的应用</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

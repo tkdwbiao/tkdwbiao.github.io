@@ -1,0 +1,706 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇文章里，我们讲了 JS 逆向入门与参数签名认知。\n重点不是还原某个具体平台的参数，而是理解：\n1 2 3 4 5 请求从哪里发起。 参数从哪里生成。 Token、timestamp、nonce、sign 分别可能承担什么作用。 如何用 DevTools 看 Network、Sources、调用栈和断点。 什么时候应该走授权接口或暂停。 继续往前走，就会遇到一个现实问题：\n1 2 3 4 5 6 打开 Sources 后，看不到清晰的源码文件。 看到的是压缩后的 bundle。 函数名和变量名被改短。 代码被拆成很多 chunk。 搜索接口关键词后，落到一个很大的模块里。 调用栈里出现 __webpack_require__。 这时就需要理解 Webpack 的模块机制。\n本文仍然坚持安全边界：\n我们只讲 Webpack 的打包结构、module、exports、require、chunk、依赖关系和调试思路，用于理解自有系统、授权测试和前端工程排查；不写具体平台绕过流程，不提供可复用的风控参数还原方案。\n"><title>大模型时代的数据采集工程 16：Webpack 模块机制分析</title><link rel=canonical href=https://tkdwbiao.github.io/p/webpack-module-mechanism-analysis/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="大模型时代的数据采集工程 16：Webpack 模块机制分析"><meta property='og:description' content="上一篇文章里，我们讲了 JS 逆向入门与参数签名认知。\n重点不是还原某个具体平台的参数，而是理解：\n1 2 3 4 5 请求从哪里发起。 参数从哪里生成。 Token、timestamp、nonce、sign 分别可能承担什么作用。 如何用 DevTools 看 Network、Sources、调用栈和断点。 什么时候应该走授权接口或暂停。 继续往前走，就会遇到一个现实问题：\n1 2 3 4 5 6 打开 Sources 后，看不到清晰的源码文件。 看到的是压缩后的 bundle。 函数名和变量名被改短。 代码被拆成很多 chunk。 搜索接口关键词后，落到一个很大的模块里。 调用栈里出现 __webpack_require__。 这时就需要理解 Webpack 的模块机制。\n本文仍然坚持安全边界：\n我们只讲 Webpack 的打包结构、module、exports、require、chunk、依赖关系和调试思路，用于理解自有系统、授权测试和前端工程排查；不写具体平台绕过流程，不提供可复用的风控参数还原方案。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/webpack-module-mechanism-analysis/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='Python'><meta property='article:tag' content='爬虫'><meta property='article:tag' content='JavaScript'><meta property='article:tag' content='Webpack'><meta property='article:tag' content='前端工程'><meta property='article:tag' content='逆向分析'><meta property='article:published_time' content='2026-01-10T10:00:00+08:00'><meta property='article:modified_time' content='2026-01-10T10:00:00+08:00'><meta name=twitter:title content="大模型时代的数据采集工程 16：Webpack 模块机制分析"><meta name=twitter:description content="上一篇文章里，我们讲了 JS 逆向入门与参数签名认知。\n重点不是还原某个具体平台的参数，而是理解：\n1 2 3 4 5 请求从哪里发起。 参数从哪里生成。 Token、timestamp、nonce、sign 分别可能承担什么作用。 如何用 DevTools 看 Network、Sources、调用栈和断点。 什么时候应该走授权接口或暂停。 继续往前走，就会遇到一个现实问题：\n1 2 3 4 5 6 打开 Sources 后，看不到清晰的源码文件。 看到的是压缩后的 bundle。 函数名和变量名被改短。 代码被拆成很多 chunk。 搜索接口关键词后，落到一个很大的模块里。 调用栈里出现 __webpack_require__。 这时就需要理解 Webpack 的模块机制。\n本文仍然坚持安全边界：\n我们只讲 Webpack 的打包结构、module、exports、require、chunk、依赖关系和调试思路，用于理解自有系统、授权测试和前端工程排查；不写具体平台绕过流程，不提供可复用的风控参数还原方案。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二为什么前端代码要打包>二、为什么前端代码要打包？</a></li><li><a href=#三从一个最小模块系统开始>三、从一个最小模块系统开始</a></li><li><a href=#四moduleexports-和-require>四、module、exports 和 require</a><ol><li><a href=#1-module>1. module</a></li><li><a href=#2-exports>2. exports</a></li><li><a href=#3-require>3. require</a></li></ol></li><li><a href=#五webpack-打包结构长什么样>五、Webpack 打包结构长什么样？</a></li><li><a href=#六为什么模块会被包成函数>六、为什么模块会被包成函数？</a></li><li><a href=#七es-module-在-webpack-中如何表示>七、ES Module 在 Webpack 中如何表示？</a></li><li><a href=#八chunk-是什么>八、chunk 是什么？</a></li><li><a href=#九source-map-的作用>九、Source Map 的作用</a></li><li><a href=#十如何在-bundle-中定位请求函数>十、如何在 bundle 中定位请求函数？</a><ol><li><a href=#1-从-network-反查-initiator>1. 从 Network 反查 Initiator</a></li><li><a href=#2-搜索接口路径>2. 搜索接口路径</a></li><li><a href=#3-搜索统一请求封装>3. 搜索统一请求封装</a></li><li><a href=#4-xhr--fetch-断点>4. XHR / Fetch 断点</a></li></ol></li><li><a href=#十一从调用栈理解模块依赖>十一、从调用栈理解模块依赖</a></li><li><a href=#十二一个本地可读的-webpack-风格示例>十二、一个本地可读的 Webpack 风格示例</a></li><li><a href=#十三压缩和混淆的区别>十三、压缩和混淆的区别</a></li><li><a href=#十四webpack-分析的合规边界>十四、Webpack 分析的合规边界</a></li><li><a href=#十五llm--agent-如何辅助-webpack-分析>十五、LLM / Agent 如何辅助 Webpack 分析？</a></li><li><a href=#十六常见错误写法>十六、常见错误写法</a><ol><li><a href=#1-一看到-webpack_-就慌>1. 一看到 <strong>webpack_require</strong> 就慌</a></li><li><a href=#2-只搜索-sign不看调用链>2. 只搜索 sign，不看调用链</a></li><li><a href=#3-忽略-source-map>3. 忽略 Source Map</a></li><li><a href=#4-把压缩当成混淆>4. 把压缩当成混淆</a></li><li><a href=#5-不区分授权调试和越界分析>5. 不区分授权调试和越界分析</a></li><li><a href=#6-不做笔记和调用链图>6. 不做笔记和调用链图</a></li></ol></li><li><a href=#十七面试表达>十七、面试表达</a></li><li><a href=#十八总结>十八、总结</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/%E7%88%AC%E8%99%AB%E7%B3%BB%E5%88%97/ style=background-color:#efcfbe;color:#3d1f0f>爬虫系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/webpack-module-mechanism-analysis/>大模型时代的数据采集工程 16：Webpack 模块机制分析</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-01-10T10:00:00+08:00>2026-01-10 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 12 分钟</time></div></footer></div></header><section class=article-content><p>上一篇文章里，我们讲了 JS 逆向入门与参数签名认知。</p><p>重点不是还原某个具体平台的参数，而是理解：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>请求从哪里发起。
+</span></span><span class=line><span class=cl>参数从哪里生成。
+</span></span><span class=line><span class=cl>Token、timestamp、nonce、sign 分别可能承担什么作用。
+</span></span><span class=line><span class=cl>如何用 DevTools 看 Network、Sources、调用栈和断点。
+</span></span><span class=line><span class=cl>什么时候应该走授权接口或暂停。
+</span></span></code></pre></td></tr></table></div></div><p>继续往前走，就会遇到一个现实问题：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>打开 Sources 后，看不到清晰的源码文件。
+</span></span><span class=line><span class=cl>看到的是压缩后的 bundle。
+</span></span><span class=line><span class=cl>函数名和变量名被改短。
+</span></span><span class=line><span class=cl>代码被拆成很多 chunk。
+</span></span><span class=line><span class=cl>搜索接口关键词后，落到一个很大的模块里。
+</span></span><span class=line><span class=cl>调用栈里出现 __webpack_require__。
+</span></span></code></pre></td></tr></table></div></div><p>这时就需要理解 Webpack 的模块机制。</p><p>本文仍然坚持安全边界：</p><blockquote><p>我们只讲 Webpack 的打包结构、module、exports、require、chunk、依赖关系和调试思路，用于理解自有系统、授权测试和前端工程排查；不写具体平台绕过流程，不提供可复用的风控参数还原方案。</p></blockquote><h2 id=一前言>一、前言</h2><p>现代前端项目通常不是直接把一个个源码文件原样发给浏览器。</p><p>开发时可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>src/api/request.js
+</span></span><span class=line><span class=cl>src/api/article.js
+</span></span><span class=line><span class=cl>src/utils/sign.js
+</span></span><span class=line><span class=cl>src/pages/ListPage.vue
+</span></span><span class=line><span class=cl>src/store/user.js
+</span></span></code></pre></td></tr></table></div></div><p>但浏览器实际加载时，可能变成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>assets/app.8f3a1c.js
+</span></span><span class=line><span class=cl>assets/vendor.2b91e.js
+</span></span><span class=line><span class=cl>assets/chunk-article.7c9d.js
+</span></span></code></pre></td></tr></table></div></div><p>这些文件里往往包含：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>模块包装函数。
+</span></span><span class=line><span class=cl>模块 ID。
+</span></span><span class=line><span class=cl>运行时代码。
+</span></span><span class=line><span class=cl>缓存逻辑。
+</span></span><span class=line><span class=cl>动态加载逻辑。
+</span></span><span class=line><span class=cl>压缩变量名。
+</span></span></code></pre></td></tr></table></div></div><p>如果不理解打包结构，看到 bundle 很容易迷路。</p><p>你可能会问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>源码文件去哪了？
+</span></span><span class=line><span class=cl>为什么每个模块都变成了函数？
+</span></span><span class=line><span class=cl>__webpack_require__ 是什么？
+</span></span><span class=line><span class=cl>exports 和 module.exports 是什么？
+</span></span><span class=line><span class=cl>chunk 又是什么？
+</span></span><span class=line><span class=cl>为什么一个页面会加载多个 JS 文件？
+</span></span></code></pre></td></tr></table></div></div><p>这篇文章就是为了解决这些问题。</p><p>Webpack 机制本身不是反爬技巧。</p><p>它是前端工程基础。</p><p>理解它有助于：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>读懂打包后的代码。
+</span></span><span class=line><span class=cl>定位请求函数。
+</span></span><span class=line><span class=cl>理解模块依赖关系。
+</span></span><span class=line><span class=cl>排查自有系统前端问题。
+</span></span><span class=line><span class=cl>分析自动化测试失败原因。
+</span></span><span class=line><span class=cl>为后续 AST 和混淆分析打基础。
+</span></span></code></pre></td></tr></table></div></div><h2 id=二为什么前端代码要打包>二、为什么前端代码要打包？</h2><p>在开发阶段，前端代码通常按模块拆分。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=c1>// api.js
+</span></span></span><span class=line><span class=cl><span class=kr>export</span> <span class=kr>async</span> <span class=kd>function</span> <span class=nx>fetchItems</span><span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=nx>fetch</span><span class=p>(</span><span class=s2>&#34;/api/items&#34;</span><span class=p>).</span><span class=nx>then</span><span class=p>((</span><span class=nx>res</span><span class=p>)</span> <span class=p>=&gt;</span> <span class=nx>res</span><span class=p>.</span><span class=nx>json</span><span class=p>());</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=c1>// page.js
+</span></span></span><span class=line><span class=cl><span class=kr>import</span> <span class=p>{</span> <span class=nx>fetchItems</span> <span class=p>}</span> <span class=nx>from</span> <span class=s2>&#34;./api.js&#34;</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nx>fetchItems</span><span class=p>().</span><span class=nx>then</span><span class=p>(</span><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>);</span>
+</span></span></code></pre></td></tr></table></div></div><p>这种写法适合开发。</p><p>但浏览器运行时还需要考虑：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>模块兼容性。
+</span></span><span class=line><span class=cl>依赖顺序。
+</span></span><span class=line><span class=cl>文件数量。
+</span></span><span class=line><span class=cl>代码压缩。
+</span></span><span class=line><span class=cl>缓存优化。
+</span></span><span class=line><span class=cl>按需加载。
+</span></span><span class=line><span class=cl>环境变量替换。
+</span></span><span class=line><span class=cl>TypeScript / JSX / Vue / Sass 编译。
+</span></span></code></pre></td></tr></table></div></div><p>Webpack 的作用可以理解为：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>从入口文件出发。
+</span></span><span class=line><span class=cl>分析依赖关系。
+</span></span><span class=line><span class=cl>把不同模块转换、打包、优化。
+</span></span><span class=line><span class=cl>输出浏览器可加载的 JS、CSS 和资源文件。
+</span></span></code></pre></td></tr></table></div></div><p>所以 Webpack 解决的是前端工程问题。</p><p>不是专门为反爬存在的。</p><h2 id=三从一个最小模块系统开始>三、从一个最小模块系统开始</h2><p>为了理解 Webpack，我们先写一个极简模块系统。</p><p>假设有两个模块。</p><p>模块 1 导出一个函数：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kd>function</span> <span class=nx>add</span><span class=p>(</span><span class=nx>a</span><span class=p>,</span> <span class=nx>b</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=nx>a</span> <span class=o>+</span> <span class=nx>b</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>模块 2 使用它：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>add</span><span class=p>(</span><span class=mi>1</span><span class=p>,</span> <span class=mi>2</span><span class=p>));</span>
+</span></span></code></pre></td></tr></table></div></div><p>Webpack 打包后的核心思想类似这样：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>const</span> <span class=nx>modules</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=mi>1</span><span class=o>:</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>module</span><span class=p>,</span> <span class=nx>exports</span><span class=p>,</span> <span class=nx>require</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kd>function</span> <span class=nx>add</span><span class=p>(</span><span class=nx>a</span><span class=p>,</span> <span class=nx>b</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=k>return</span> <span class=nx>a</span> <span class=o>+</span> <span class=nx>b</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=nx>module</span><span class=p>.</span><span class=nx>exports</span> <span class=o>=</span> <span class=p>{</span> <span class=nx>add</span> <span class=p>};</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=mi>2</span><span class=o>:</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>module</span><span class=p>,</span> <span class=nx>exports</span><span class=p>,</span> <span class=nx>require</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=p>{</span> <span class=nx>add</span> <span class=p>}</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=mi>1</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>add</span><span class=p>(</span><span class=mi>1</span><span class=p>,</span> <span class=mi>2</span><span class=p>));</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>cache</span> <span class=o>=</span> <span class=p>{};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kd>function</span> <span class=nx>require</span><span class=p>(</span><span class=nx>moduleId</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>if</span> <span class=p>(</span><span class=nx>cache</span><span class=p>[</span><span class=nx>moduleId</span><span class=p>])</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=nx>cache</span><span class=p>[</span><span class=nx>moduleId</span><span class=p>].</span><span class=nx>exports</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>module</span> <span class=o>=</span> <span class=p>{</span> <span class=nx>exports</span><span class=o>:</span> <span class=p>{}</span> <span class=p>};</span>
+</span></span><span class=line><span class=cl>  <span class=nx>cache</span><span class=p>[</span><span class=nx>moduleId</span><span class=p>]</span> <span class=o>=</span> <span class=nx>module</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=nx>modules</span><span class=p>[</span><span class=nx>moduleId</span><span class=p>](</span><span class=nx>module</span><span class=p>,</span> <span class=nx>module</span><span class=p>.</span><span class=nx>exports</span><span class=p>,</span> <span class=nx>require</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=nx>module</span><span class=p>.</span><span class=nx>exports</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nx>require</span><span class=p>(</span><span class=mi>2</span><span class=p>);</span>
+</span></span></code></pre></td></tr></table></div></div><p>这段代码就是 Webpack 模块机制的简化版。</p><p>关键点：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>modules：保存所有模块函数。
+</span></span><span class=line><span class=cl>module：当前模块对象。
+</span></span><span class=line><span class=cl>exports：当前模块导出的内容。
+</span></span><span class=line><span class=cl>require：加载其他模块。
+</span></span><span class=line><span class=cl>cache：模块缓存，避免重复执行。
+</span></span><span class=line><span class=cl>require(2)：启动入口模块。
+</span></span></code></pre></td></tr></table></div></div><p>真实 Webpack 运行时代码更复杂，但核心思想类似。</p><h2 id=四moduleexports-和-require>四、module、exports 和 require</h2><h3 id=1-module>1. module</h3><p><code>module</code> 表示当前模块对象。</p><p>它通常有一个 <code>exports</code> 属性。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>const</span> <span class=nx>module</span> <span class=o>=</span> <span class=p>{</span> <span class=nx>exports</span><span class=o>:</span> <span class=p>{}</span> <span class=p>};</span>
+</span></span></code></pre></td></tr></table></div></div><p>模块执行后，外部拿到的就是 <code>module.exports</code>。</p><h3 id=2-exports>2. exports</h3><p><code>exports</code> 是导出对象的引用。</p><p>常见写法：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>exports</span><span class=p>.</span><span class=nx>name</span> <span class=o>=</span> <span class=s2>&#34;demo&#34;</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=nx>exports</span><span class=p>.</span><span class=nx>add</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>a</span><span class=p>,</span> <span class=nx>b</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=nx>a</span> <span class=o>+</span> <span class=nx>b</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span></code></pre></td></tr></table></div></div><p>等价理解：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>module</span><span class=p>.</span><span class=nx>exports</span><span class=p>.</span><span class=nx>name</span> <span class=o>=</span> <span class=s2>&#34;demo&#34;</span><span class=p>;</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=3-require>3. require</h3><p><code>require</code> 用于加载另一个模块。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>const</span> <span class=nx>utils</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=mi>1</span><span class=p>);</span>
+</span></span></code></pre></td></tr></table></div></div><p>在 Webpack 打包代码里，经常会看到类似：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>__webpack_require__</span><span class=p>(</span><span class=mi>123</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>它的含义就是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>加载模块 ID 为 123 的模块。
+</span></span><span class=line><span class=cl>如果缓存里有，就直接返回 exports。
+</span></span><span class=line><span class=cl>如果没有，就执行模块函数并缓存结果。
+</span></span></code></pre></td></tr></table></div></div><p>理解这三个概念后，再看到打包代码就不会完全陌生。</p><h2 id=五webpack-打包结构长什么样>五、Webpack 打包结构长什么样？</h2><p>一个典型的 Webpack bundle 可能长得像这样：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=p>(()</span> <span class=p>=&gt;</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kd>var</span> <span class=nx>__webpack_modules__</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;./src/utils.js&#34;</span><span class=o>:</span> <span class=p>(</span><span class=nx>module</span><span class=p>)</span> <span class=p>=&gt;</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=nx>module</span><span class=p>.</span><span class=nx>exports</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=nx>normalizeText</span><span class=p>(</span><span class=nx>text</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>          <span class=k>return</span> <span class=nx>text</span><span class=p>.</span><span class=nx>trim</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>        <span class=p>},</span>
+</span></span><span class=line><span class=cl>      <span class=p>};</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;./src/api.js&#34;</span><span class=o>:</span> <span class=p>(</span><span class=nx>module</span><span class=p>,</span> <span class=nx>__unused_webpack_exports</span><span class=p>,</span> <span class=nx>__webpack_require__</span><span class=p>)</span> <span class=p>=&gt;</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=kr>const</span> <span class=p>{</span> <span class=nx>normalizeText</span> <span class=p>}</span> <span class=o>=</span> <span class=nx>__webpack_require__</span><span class=p>(</span><span class=s2>&#34;./src/utils.js&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>      <span class=kr>async</span> <span class=kd>function</span> <span class=nx>fetchItems</span><span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=kr>const</span> <span class=nx>response</span> <span class=o>=</span> <span class=kr>await</span> <span class=nx>fetch</span><span class=p>(</span><span class=s2>&#34;/api/items&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>        <span class=kr>const</span> <span class=nx>data</span> <span class=o>=</span> <span class=kr>await</span> <span class=nx>response</span><span class=p>.</span><span class=nx>json</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=nx>data</span><span class=p>.</span><span class=nx>items</span><span class=p>.</span><span class=nx>map</span><span class=p>((</span><span class=nx>item</span><span class=p>)</span> <span class=p>=&gt;</span> <span class=nx>normalizeText</span><span class=p>(</span><span class=nx>item</span><span class=p>.</span><span class=nx>title</span><span class=p>));</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>      <span class=nx>module</span><span class=p>.</span><span class=nx>exports</span> <span class=o>=</span> <span class=p>{</span> <span class=nx>fetchItems</span> <span class=p>};</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=kd>var</span> <span class=nx>__webpack_module_cache__</span> <span class=o>=</span> <span class=p>{};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=kd>function</span> <span class=nx>__webpack_require__</span><span class=p>(</span><span class=nx>moduleId</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kd>var</span> <span class=nx>cachedModule</span> <span class=o>=</span> <span class=nx>__webpack_module_cache__</span><span class=p>[</span><span class=nx>moduleId</span><span class=p>];</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=p>(</span><span class=nx>cachedModule</span> <span class=o>!==</span> <span class=kc>undefined</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=k>return</span> <span class=nx>cachedModule</span><span class=p>.</span><span class=nx>exports</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=kd>var</span> <span class=nx>module</span> <span class=o>=</span> <span class=p>(</span><span class=nx>__webpack_module_cache__</span><span class=p>[</span><span class=nx>moduleId</span><span class=p>]</span> <span class=o>=</span> <span class=p>{</span> <span class=nx>exports</span><span class=o>:</span> <span class=p>{}</span> <span class=p>});</span>
+</span></span><span class=line><span class=cl>    <span class=nx>__webpack_modules__</span><span class=p>[</span><span class=nx>moduleId</span><span class=p>](</span><span class=nx>module</span><span class=p>,</span> <span class=nx>module</span><span class=p>.</span><span class=nx>exports</span><span class=p>,</span> <span class=nx>__webpack_require__</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=nx>module</span><span class=p>.</span><span class=nx>exports</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=p>{</span> <span class=nx>fetchItems</span> <span class=p>}</span> <span class=o>=</span> <span class=nx>__webpack_require__</span><span class=p>(</span><span class=s2>&#34;./src/api.js&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=nx>fetchItems</span><span class=p>().</span><span class=nx>then</span><span class=p>(</span><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=p>})();</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里可以看到：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>__webpack_modules__：模块表。
+</span></span><span class=line><span class=cl>__webpack_module_cache__：模块缓存。
+</span></span><span class=line><span class=cl>__webpack_require__：模块加载函数。
+</span></span><span class=line><span class=cl>入口模块：最后被 require 的模块。
+</span></span></code></pre></td></tr></table></div></div><p>真实生产代码里，模块 ID 可能不是路径，而是数字。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>__webpack_require__</span><span class=p>(</span><span class=mi>4821</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这时就需要通过搜索关键词、Source Map、调用栈和代码上下文来判断模块作用。</p><h2 id=六为什么模块会被包成函数>六、为什么模块会被包成函数？</h2><p>Webpack 会把每个模块包成函数。</p><p>原因包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>隔离作用域。
+</span></span><span class=line><span class=cl>模拟 CommonJS / ES Module。
+</span></span><span class=line><span class=cl>延迟执行模块。
+</span></span><span class=line><span class=cl>支持模块缓存。
+</span></span><span class=line><span class=cl>支持依赖注入 require。
+</span></span></code></pre></td></tr></table></div></div><p>如果不包函数，多个文件的变量可能互相污染。</p><p>包成函数后，每个模块都有自己的局部作用域。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kd>function</span> <span class=nx>moduleFunction</span><span class=p>(</span><span class=nx>module</span><span class=p>,</span> <span class=nx>exports</span><span class=p>,</span> <span class=nx>require</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>localVar</span> <span class=o>=</span> <span class=s2>&#34;只在当前模块内可见&#34;</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=nx>module</span><span class=p>.</span><span class=nx>exports</span> <span class=o>=</span> <span class=p>{</span> <span class=nx>localVar</span> <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这和 Python 文件模块也有点类似。</p><p>每个文件有自己的命名空间，通过 import / export 连接。</p><h2 id=七es-module-在-webpack-中如何表示>七、ES Module 在 Webpack 中如何表示？</h2><p>现代前端常用 ES Module。</p><p>源码可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>export</span> <span class=kd>function</span> <span class=nx>buildParams</span><span class=p>(</span><span class=nx>page</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=p>{</span> <span class=nx>page</span> <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>export</span> <span class=k>default</span> <span class=kd>function</span> <span class=nx>request</span><span class=p>(</span><span class=nx>url</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=nx>fetch</span><span class=p>(</span><span class=nx>url</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>打包后可能会出现：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>__webpack_require__</span><span class=p>.</span><span class=nx>d</span><span class=p>(</span><span class=nx>__webpack_exports__</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>buildParams</span><span class=o>:</span> <span class=p>()</span> <span class=p>=&gt;</span> <span class=nx>buildParams</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=k>default</span><span class=o>:</span> <span class=p>()</span> <span class=p>=&gt;</span> <span class=nx>request</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里的 <code>.d</code> 通常用于定义导出属性。</p><p>你不需要一开始记住所有 runtime 辅助函数。</p><p>只要理解：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Webpack 会把 import / export 转成自己的模块导入导出机制。
+</span></span><span class=line><span class=cl>__webpack_exports__ 存放导出内容。
+</span></span><span class=line><span class=cl>__webpack_require__ 加载依赖模块。
+</span></span></code></pre></td></tr></table></div></div><p>常见运行时辅助函数可能包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>__webpack_require__.d：定义导出 getter。
+</span></span><span class=line><span class=cl>__webpack_require__.r：标记 ES Module。
+</span></span><span class=line><span class=cl>__webpack_require__.n：处理默认导出兼容。
+</span></span><span class=line><span class=cl>__webpack_require__.o：判断对象属性。
+</span></span><span class=line><span class=cl>__webpack_require__.e：加载异步 chunk。
+</span></span></code></pre></td></tr></table></div></div><p>入门阶段只要能识别它们属于 Webpack runtime，就不会被吓住。</p><h2 id=八chunk-是什么>八、chunk 是什么？</h2><p>一个大型前端项目不会总是打成一个文件。</p><p>Webpack 会把代码拆成多个 chunk。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>main.js：主入口。
+</span></span><span class=line><span class=cl>vendor.js：第三方依赖。
+</span></span><span class=line><span class=cl>article.chunk.js：文章页面按需加载。
+</span></span><span class=line><span class=cl>admin.chunk.js：后台页面按需加载。
+</span></span></code></pre></td></tr></table></div></div><p>为什么要拆？</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>减少首屏加载体积。
+</span></span><span class=line><span class=cl>提高缓存命中率。
+</span></span><span class=line><span class=cl>按路由或功能延迟加载。
+</span></span><span class=line><span class=cl>第三方依赖单独缓存。
+</span></span></code></pre></td></tr></table></div></div><p>代码中可能出现动态 import：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>import</span><span class=p>(</span><span class=s2>&#34;./pages/ArticlePage&#34;</span><span class=p>).</span><span class=nx>then</span><span class=p>((</span><span class=nx>module</span><span class=p>)</span> <span class=p>=&gt;</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>module</span><span class=p>.</span><span class=nx>renderArticlePage</span><span class=p>();</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>打包后会变成类似：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>__webpack_require__</span><span class=p>.</span><span class=nx>e</span><span class=p>(</span><span class=s2>&#34;article-page&#34;</span><span class=p>).</span><span class=nx>then</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>  <span class=nx>__webpack_require__</span><span class=p>.</span><span class=nx>bind</span><span class=p>(</span><span class=nx>__webpack_require__</span><span class=p>,</span> <span class=s2>&#34;./src/pages/ArticlePage.js&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=p>);</span>
+</span></span></code></pre></td></tr></table></div></div><p>含义是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>先加载 article-page 这个 chunk。
+</span></span><span class=line><span class=cl>加载完成后再 require 对应模块。
+</span></span></code></pre></td></tr></table></div></div><p>这解释了为什么在 Network 面板里会看到页面操作后才加载新的 JS 文件。</p><h2 id=九source-map-的作用>九、Source Map 的作用</h2><p>Source Map 用于把打包后的代码映射回源码。</p><p>如果项目开启了 Source Map，DevTools 里可能能看到：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>webpack://src/api/request.js
+</span></span><span class=line><span class=cl>webpack://src/utils/sign.js
+</span></span><span class=line><span class=cl>webpack://src/pages/ListPage.vue
+</span></span></code></pre></td></tr></table></div></div><p>这对自有系统调试非常有用。</p><p>可以直接定位源码。</p><p>但生产环境是否开启 Source Map，要结合安全和调试策略。</p><p>对于自有系统：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>开发环境建议开启，方便调试。
+</span></span><span class=line><span class=cl>生产环境要评估是否暴露源码细节。
+</span></span><span class=line><span class=cl>内部系统可按权限控制调试资源。
+</span></span></code></pre></td></tr></table></div></div><p>对于第三方系统：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>即使能看到 Source Map，也不代表可以越权使用其中逻辑。
+</span></span><span class=line><span class=cl>仍然要遵守授权、服务条款和访问边界。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十如何在-bundle-中定位请求函数>十、如何在 bundle 中定位请求函数？</h2><p>在自有或授权系统中，定位请求函数通常有几种方式。</p><h3 id=1-从-network-反查-initiator>1. 从 Network 反查 Initiator</h3><p>在 Network 面板点击某个 XHR / Fetch 请求。</p><p>查看：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Initiator。
+</span></span><span class=line><span class=cl>调用栈。
+</span></span><span class=line><span class=cl>请求发起文件。
+</span></span><span class=line><span class=cl>行号。
+</span></span></code></pre></td></tr></table></div></div><p>如果有 Source Map，可以直接跳到源码。</p><p>如果没有，就会跳到 bundle。</p><h3 id=2-搜索接口路径>2. 搜索接口路径</h3><p>在 Sources 里搜索：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>/api/items
+</span></span><span class=line><span class=cl>/api/search
+</span></span><span class=line><span class=cl>request_id
+</span></span><span class=line><span class=cl>csrf_token
+</span></span></code></pre></td></tr></table></div></div><p>找到对应模块后，观察上下文。</p><h3 id=3-搜索统一请求封装>3. 搜索统一请求封装</h3><p>很多项目会有统一请求函数。</p><p>源码可能叫：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>request。
+</span></span><span class=line><span class=cl>http。
+</span></span><span class=line><span class=cl>client。
+</span></span><span class=line><span class=cl>fetcher。
+</span></span><span class=line><span class=cl>axiosInstance。
+</span></span></code></pre></td></tr></table></div></div><p>打包后名字可能被压缩。</p><p>但可以通过：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>fetch(
+</span></span><span class=line><span class=cl>axios
+</span></span><span class=line><span class=cl>XMLHttpRequest
+</span></span><span class=line><span class=cl>Content-Type
+</span></span><span class=line><span class=cl>Authorization
+</span></span></code></pre></td></tr></table></div></div><p>这些关键词定位。</p><h3 id=4-xhr--fetch-断点>4. XHR / Fetch 断点</h3><p>上一文章讲过，可以添加 XHR / Fetch Breakpoint。</p><p>浏览器会在请求发起前暂停。</p><p>此时看调用栈最直观。</p><h2 id=十一从调用栈理解模块依赖>十一、从调用栈理解模块依赖</h2><p>假设调用栈是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>fetchItems
+</span></span><span class=line><span class=cl>request
+</span></span><span class=line><span class=cl>buildHeaders
+</span></span><span class=line><span class=cl>__webpack_require__
+</span></span><span class=line><span class=cl>buttonClickHandler
+</span></span></code></pre></td></tr></table></div></div><p>可以推断：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>buttonClickHandler：页面事件。
+</span></span><span class=line><span class=cl>fetchItems：业务接口函数。
+</span></span><span class=line><span class=cl>request：统一请求封装。
+</span></span><span class=line><span class=cl>buildHeaders：Header / Token 处理。
+</span></span><span class=line><span class=cl>__webpack_require__：模块加载机制。
+</span></span></code></pre></td></tr></table></div></div><p>你要找的是业务链路，而不是纠结所有 runtime 细节。</p><p>分析时可以画出：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>页面事件 -&gt; 业务 API -&gt; 请求封装 -&gt; 参数处理 -&gt; fetch / axios
+</span></span></code></pre></td></tr></table></div></div><p>这比盯着一整段压缩代码更高效。</p><h2 id=十二一个本地可读的-webpack-风格示例>十二、一个本地可读的 Webpack 风格示例</h2><p>下面写一个安全的玩具示例，模拟“参数构造 + 请求封装”。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>const</span> <span class=nx>modules</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=mi>1</span><span class=o>:</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>module</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kd>function</span> <span class=nx>buildParams</span><span class=p>(</span><span class=nx>page</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=nx>page</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=nx>timestamp</span><span class=o>:</span> <span class=nb>Date</span><span class=p>.</span><span class=nx>now</span><span class=p>().</span><span class=nx>toString</span><span class=p>(),</span>
+</span></span><span class=line><span class=cl>      <span class=p>};</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=nx>module</span><span class=p>.</span><span class=nx>exports</span> <span class=o>=</span> <span class=p>{</span> <span class=nx>buildParams</span> <span class=p>};</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=mi>2</span><span class=o>:</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>module</span><span class=p>,</span> <span class=nx>exports</span><span class=p>,</span> <span class=nx>require</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=p>{</span> <span class=nx>buildParams</span> <span class=p>}</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=mi>1</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=kd>function</span> <span class=nx>buildUrl</span><span class=p>(</span><span class=nx>path</span><span class=p>,</span> <span class=nx>params</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=kr>const</span> <span class=nx>query</span> <span class=o>=</span> <span class=k>new</span> <span class=nx>URLSearchParams</span><span class=p>(</span><span class=nx>params</span><span class=p>).</span><span class=nx>toString</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>      <span class=k>return</span> <span class=sb>`</span><span class=si>${</span><span class=nx>path</span><span class=si>}</span><span class=sb>?</span><span class=si>${</span><span class=nx>query</span><span class=si>}</span><span class=sb>`</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=kd>function</span> <span class=nx>fetchItems</span><span class=p>(</span><span class=nx>page</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=kr>const</span> <span class=nx>params</span> <span class=o>=</span> <span class=nx>buildParams</span><span class=p>(</span><span class=nx>page</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=kr>const</span> <span class=nx>url</span> <span class=o>=</span> <span class=nx>buildUrl</span><span class=p>(</span><span class=s2>&#34;/api/items&#34;</span><span class=p>,</span> <span class=nx>params</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s2>&#34;request&#34;</span><span class=p>,</span> <span class=nx>url</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=nx>module</span><span class=p>.</span><span class=nx>exports</span> <span class=o>=</span> <span class=p>{</span> <span class=nx>fetchItems</span> <span class=p>};</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>cache</span> <span class=o>=</span> <span class=p>{};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kd>function</span> <span class=nx>require</span><span class=p>(</span><span class=nx>moduleId</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>if</span> <span class=p>(</span><span class=nx>cache</span><span class=p>[</span><span class=nx>moduleId</span><span class=p>])</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=nx>cache</span><span class=p>[</span><span class=nx>moduleId</span><span class=p>].</span><span class=nx>exports</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>module</span> <span class=o>=</span> <span class=p>{</span> <span class=nx>exports</span><span class=o>:</span> <span class=p>{}</span> <span class=p>};</span>
+</span></span><span class=line><span class=cl>  <span class=nx>cache</span><span class=p>[</span><span class=nx>moduleId</span><span class=p>]</span> <span class=o>=</span> <span class=nx>module</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=nx>modules</span><span class=p>[</span><span class=nx>moduleId</span><span class=p>](</span><span class=nx>module</span><span class=p>,</span> <span class=nx>module</span><span class=p>.</span><span class=nx>exports</span><span class=p>,</span> <span class=nx>require</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=nx>module</span><span class=p>.</span><span class=nx>exports</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=p>{</span> <span class=nx>fetchItems</span> <span class=p>}</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=mi>2</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=nx>fetchItems</span><span class=p>(</span><span class=mi>1</span><span class=p>);</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个示例中：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>模块 1 负责构造参数。
+</span></span><span class=line><span class=cl>模块 2 负责构造 URL 和请求。
+</span></span><span class=line><span class=cl>require 负责连接模块。
+</span></span><span class=line><span class=cl>cache 避免模块重复执行。
+</span></span></code></pre></td></tr></table></div></div><p>如果你在浏览器里调试它，可以在：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>buildParams。
+</span></span><span class=line><span class=cl>buildUrl。
+</span></span><span class=line><span class=cl>fetchItems。
+</span></span><span class=line><span class=cl>require。
+</span></span></code></pre></td></tr></table></div></div><p>这些位置打断点，观察调用顺序。</p><h2 id=十三压缩和混淆的区别>十三、压缩和混淆的区别</h2><p>Webpack 打包后，通常还会经过压缩。</p><p>压缩可能包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>删除空白和换行。
+</span></span><span class=line><span class=cl>缩短变量名。
+</span></span><span class=line><span class=cl>删除无用代码。
+</span></span><span class=line><span class=cl>合并表达式。
+</span></span></code></pre></td></tr></table></div></div><p>例如源码：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kd>function</span> <span class=nx>buildParams</span><span class=p>(</span><span class=nx>page</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>timestamp</span> <span class=o>=</span> <span class=nb>Date</span><span class=p>.</span><span class=nx>now</span><span class=p>().</span><span class=nx>toString</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=p>{</span> <span class=nx>page</span><span class=p>,</span> <span class=nx>timestamp</span> <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>压缩后可能变成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kd>function</span> <span class=nx>n</span><span class=p>(</span><span class=nx>n</span><span class=p>){</span><span class=k>return</span><span class=p>{</span><span class=nx>page</span><span class=o>:</span><span class=nx>n</span><span class=p>,</span><span class=nx>timestamp</span><span class=o>:</span><span class=nb>Date</span><span class=p>.</span><span class=nx>now</span><span class=p>().</span><span class=nx>toString</span><span class=p>()}}</span>
+</span></span></code></pre></td></tr></table></div></div><p>压缩的目标是减少体积和提升加载速度。</p><p>混淆则更强调降低可读性。</p><p>混淆可能包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>字符串数组。
+</span></span><span class=line><span class=cl>控制流扁平化。
+</span></span><span class=line><span class=cl>无意义代码插入。
+</span></span><span class=line><span class=cl>复杂表达式替换。
+</span></span><span class=line><span class=cl>属性访问变形。
+</span></span></code></pre></td></tr></table></div></div><p>本文只讲 Webpack 模块机制。</p><p>AST 和混淆分析会在下一篇继续展开。</p><h2 id=十四webpack-分析的合规边界>十四、Webpack 分析的合规边界</h2><p>Webpack 分析是前端工程能力。</p><p>合规场景包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>自有系统前端调试。
+</span></span><span class=line><span class=cl>自动化测试失败排查。
+</span></span><span class=line><span class=cl>授权项目的接口参数错误定位。
+</span></span><span class=line><span class=cl>前后端签名规则一致性检查。
+</span></span><span class=line><span class=cl>Source Map 配置审查。
+</span></span><span class=line><span class=cl>性能优化和代码拆包分析。
+</span></span></code></pre></td></tr></table></div></div><p>不合规场景包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>还原第三方受限接口参数。
+</span></span><span class=line><span class=cl>绕过访问控制。
+</span></span><span class=line><span class=cl>破解付费接口。
+</span></span><span class=line><span class=cl>规避风控系统。
+</span></span><span class=line><span class=cl>批量放大未授权采集。
+</span></span></code></pre></td></tr></table></div></div><p>如果你在分析中发现接口明显依赖权限、付费、风控或敏感数据访问，应停止并走授权流程。</p><p>技术能力越强，越要能说明边界。</p><h2 id=十五llm--agent-如何辅助-webpack-分析>十五、LLM / Agent 如何辅助 Webpack 分析？</h2><p>LLM 和 Agent 可以辅助理解模块结构。</p><p>适合输入：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>自有系统的打包片段。
+</span></span><span class=line><span class=cl>Source Map 对应源码。
+</span></span><span class=line><span class=cl>调用栈。
+</span></span><span class=line><span class=cl>错误日志。
+</span></span><span class=line><span class=cl>接口文档。
+</span></span><span class=line><span class=cl>请求封装代码。
+</span></span></code></pre></td></tr></table></div></div><p>可以让 Agent 帮忙：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>解释 __webpack_require__ 的作用。
+</span></span><span class=line><span class=cl>梳理模块依赖关系。
+</span></span><span class=line><span class=cl>总结请求调用链。
+</span></span><span class=line><span class=cl>找出可能导致参数缺失的模块。
+</span></span><span class=line><span class=cl>生成自有系统测试用例。
+</span></span><span class=line><span class=cl>检查前后端签名字段是否一致。
+</span></span></code></pre></td></tr></table></div></div><p>安全提示词可以这样写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你是自有前端系统的调试助手。
+</span></span><span class=line><span class=cl>请根据这段 Webpack 打包代码和调用栈，解释模块依赖关系和请求发起链路。
+</span></span><span class=line><span class=cl>只讨论授权系统调试、测试和代码理解。
+</span></span><span class=line><span class=cl>不要提供绕过第三方访问控制、风控或付费接口的建议。
+</span></span></code></pre></td></tr></table></div></div><p>这体现的是工程诊断，而不是对抗。</p><h2 id=十六常见错误写法>十六、常见错误写法</h2><h3 id=1-一看到-webpack_-就慌>1. 一看到 <strong>webpack_require</strong> 就慌</h3><p>它只是模块加载函数。</p><p>先找模块表、模块缓存和入口模块，就能理解大概结构。</p><h3 id=2-只搜索-sign不看调用链>2. 只搜索 sign，不看调用链</h3><p>参数可能来自多个模块。</p><p>要看：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>页面事件。
+</span></span><span class=line><span class=cl>业务 API。
+</span></span><span class=line><span class=cl>请求封装。
+</span></span><span class=line><span class=cl>Header 构造。
+</span></span><span class=line><span class=cl>状态读取。
+</span></span></code></pre></td></tr></table></div></div><h3 id=3-忽略-source-map>3. 忽略 Source Map</h3><p>自有系统如果有 Source Map，优先看源码，不要硬读压缩 bundle。</p><h3 id=4-把压缩当成混淆>4. 把压缩当成混淆</h3><p>压缩主要是减小体积。</p><p>混淆才是刻意降低可读性。</p><p>两者分析方法不同。</p><h3 id=5-不区分授权调试和越界分析>5. 不区分授权调试和越界分析</h3><p>理解 Webpack 机制不代表可以分析任何受限接口。</p><p>授权和合规边界始终优先。</p><h3 id=6-不做笔记和调用链图>6. 不做笔记和调用链图</h3><p>复杂前端代码很容易迷路。</p><p>建议记录：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>模块 ID。
+</span></span><span class=line><span class=cl>模块作用。
+</span></span><span class=line><span class=cl>导出函数。
+</span></span><span class=line><span class=cl>调用关系。
+</span></span><span class=line><span class=cl>关键参数来源。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十七面试表达>十七、面试表达</h2><p>如果面试官问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Webpack 打包后的代码你怎么看？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会先识别 Webpack 的模块结构，比如模块表、模块缓存和 <code>__webpack_require__</code>。每个源码模块通常会被包装成函数，通过 module、exports 和 require 连接。然后我会结合 Network 的 Initiator、XHR / Fetch 断点和调用栈，定位请求函数、参数构造函数和统一请求封装。如果有 Source Map，会优先回到源码分析。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>module、exports、require 分别是什么？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>module 表示当前模块对象，exports 是模块对外导出的内容，require 用来加载其他模块。Webpack 会把每个模块包装成函数，执行时传入 module、exports 和 <code>__webpack_require__</code>。模块执行后，外部拿到的是 module.exports；同时 Webpack 会用模块缓存避免重复执行同一个模块。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>chunk 是什么？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>chunk 是 Webpack 输出的一段代码块。大型项目不会总是打成一个 JS 文件，而是会把主入口、第三方依赖和按需加载页面拆成不同 chunk。比如路由懒加载时，用户进入某个页面才加载对应 chunk。调试时如果请求函数在异步 chunk 中，需要先触发页面操作，让 chunk 加载后再看调用栈和模块内容。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Webpack 分析和 JS 逆向有什么边界？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>Webpack 分析本质上是前端工程和调试能力，适合自有系统、授权测试、请求链路排查和前后端参数一致性检查。它可以帮助理解模块依赖、请求封装和参数来源。但如果涉及第三方受限接口、付费内容、访问控制或风控系统，就不应该做绕过式分析，应该走授权接口或正式数据通道。</p></blockquote><h2 id=十八总结>十八、总结</h2><p>本文讲了 Webpack 模块机制分析。</p><p>核心结论包括：</p><ul><li>Webpack 会从入口文件出发，分析依赖关系，把多个模块打包成浏览器可加载的 bundle。</li><li>打包后的核心结构通常包括模块表、模块缓存、模块加载函数和入口模块。</li><li><code>module</code> 表示当前模块对象，<code>exports</code> 表示导出内容，<code>require</code> / <code>__webpack_require__</code> 用来加载依赖模块。</li><li>每个模块被包装成函数，是为了隔离作用域、支持缓存和模拟模块系统。</li><li>ES Module 的 import / export 会被转换成 Webpack runtime 的导入导出逻辑。</li><li>chunk 是代码拆分后的输出单元，常用于路由懒加载、第三方依赖缓存和按需加载。</li><li>Source Map 可以把打包代码映射回源码，自有系统调试时应优先使用。</li><li>定位请求函数可以结合 Network Initiator、接口关键词、统一请求封装、XHR / Fetch 断点和调用栈。</li><li>压缩和混淆不同，压缩主要减小体积，混淆更强调降低可读性。</li><li>Webpack 分析应服务于授权调试、前端工程理解和自动化测试排查，不应被用于绕过访问控制或风控系统。</li><li>LLM / Agent 可以辅助解释模块结构和调用链，但必须保持合规边界。</li></ul><p>下一篇文章，我们会继续进入更深入的代码结构分析：</p><blockquote><p>AST 在 JavaScript 混淆分析中的应用。</p></blockquote><p>我们会讲 AST 的基本概念、解析、遍历、节点修改和代码生成，用安全的本地示例理解混淆代码的结构，而不是提供可滥用的反混淆工具链。</p></section><footer class=article-footer><section class=article-tags><a href=/tags/python/>Python</a>
+<a href=/tags/%E7%88%AC%E8%99%AB/>爬虫</a>
+<a href=/tags/javascript/>JavaScript</a>
+<a href=/tags/webpack/>Webpack</a>
+<a href=/tags/%E5%89%8D%E7%AB%AF%E5%B7%A5%E7%A8%8B/>前端工程</a>
+<a href=/tags/%E9%80%86%E5%90%91%E5%88%86%E6%9E%90/>逆向分析</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/ast-javascript-obfuscation-analysis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 17：AST 在 JavaScript 混淆分析中的应用</h2></div></a></article><article><a href=/p/js-reverse-engineering-signature-basics/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 15：JS 逆向入门与参数签名认知</h2></div></a></article><article><a href=/p/captcha-recognition-automation-boundaries/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 20：自动化任务中的验证码识别边界</h2></div></a></article><article><a href=/p/captcha-mechanism-analysis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 19：验证码机制分析</h2></div></a></article><article><a href=/p/app-crawling-frida-hook-basics/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 18：App 抓包与 Frida Hook 基础认知</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

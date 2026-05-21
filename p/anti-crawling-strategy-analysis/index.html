@@ -1,0 +1,1038 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇文章里，我们讲了浏览器自动化的反检测机制与合规边界。\n核心观点是：\n1 2 理解检测机制，不等于绕过规则。 掌握反爬认知，是为了降低误伤、控制风险、提升系统稳定性。 从这一篇开始，我们继续往反爬机制认知推进。\n真实的数据采集项目里，经常会遇到：\n1 2 3 4 5 6 7 请求突然变成 403。 访问频率稍高就返回 429。 接口要求 Referer 或 Token。 同一个页面浏览器能打开，Requests 拿不到数据。 登录态过期后拿到空页面。 动态参数缺失导致接口失败。 页面出现验证码、风险提示或登录页。 这些现象背后，往往就是常见反爬策略在起作用。\n这一篇我们不写绕过教程，也不写具体平台参数还原。\n我们要讲的是：\n常见反爬策略的分类、原理、风险信号、合规应对思路，以及面试中如何把“反爬经验”表达成系统理解和工程能力。\n"><title>大模型时代的数据采集工程 12：常见反爬策略分析</title><link rel=canonical href=https://tkdwbiao.github.io/p/anti-crawling-strategy-analysis/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="大模型时代的数据采集工程 12：常见反爬策略分析"><meta property='og:description' content="上一篇文章里，我们讲了浏览器自动化的反检测机制与合规边界。\n核心观点是：\n1 2 理解检测机制，不等于绕过规则。 掌握反爬认知，是为了降低误伤、控制风险、提升系统稳定性。 从这一篇开始，我们继续往反爬机制认知推进。\n真实的数据采集项目里，经常会遇到：\n1 2 3 4 5 6 7 请求突然变成 403。 访问频率稍高就返回 429。 接口要求 Referer 或 Token。 同一个页面浏览器能打开，Requests 拿不到数据。 登录态过期后拿到空页面。 动态参数缺失导致接口失败。 页面出现验证码、风险提示或登录页。 这些现象背后，往往就是常见反爬策略在起作用。\n这一篇我们不写绕过教程，也不写具体平台参数还原。\n我们要讲的是：\n常见反爬策略的分类、原理、风险信号、合规应对思路，以及面试中如何把“反爬经验”表达成系统理解和工程能力。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/anti-crawling-strategy-analysis/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='Python'><meta property='article:tag' content='爬虫'><meta property='article:tag' content='反爬'><meta property='article:tag' content='风控'><meta property='article:tag' content='数据采集'><meta property='article:tag' content='合规'><meta property='article:published_time' content='2026-01-02T10:00:00+08:00'><meta property='article:modified_time' content='2026-01-02T10:00:00+08:00'><meta name=twitter:title content="大模型时代的数据采集工程 12：常见反爬策略分析"><meta name=twitter:description content="上一篇文章里，我们讲了浏览器自动化的反检测机制与合规边界。\n核心观点是：\n1 2 理解检测机制，不等于绕过规则。 掌握反爬认知，是为了降低误伤、控制风险、提升系统稳定性。 从这一篇开始，我们继续往反爬机制认知推进。\n真实的数据采集项目里，经常会遇到：\n1 2 3 4 5 6 7 请求突然变成 403。 访问频率稍高就返回 429。 接口要求 Referer 或 Token。 同一个页面浏览器能打开，Requests 拿不到数据。 登录态过期后拿到空页面。 动态参数缺失导致接口失败。 页面出现验证码、风险提示或登录页。 这些现象背后，往往就是常见反爬策略在起作用。\n这一篇我们不写绕过教程，也不写具体平台参数还原。\n我们要讲的是：\n常见反爬策略的分类、原理、风险信号、合规应对思路，以及面试中如何把“反爬经验”表达成系统理解和工程能力。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二反爬策略的本质是什么>二、反爬策略的本质是什么？</a></li><li><a href=#三常见反爬策略总览>三、常见反爬策略总览</a></li><li><a href=#四ip-与访问频率限制>四、IP 与访问频率限制</a></li><li><a href=#五user-agent-与-header-校验>五、User-Agent 与 Header 校验</a></li><li><a href=#六cookiesession-与登录态限制>六、Cookie、Session 与登录态限制</a></li><li><a href=#七referer-与-origin-校验>七、Referer 与 Origin 校验</a></li><li><a href=#八tokencsrf-与一次性状态参数>八、Token、CSRF 与一次性状态参数</a></li><li><a href=#九js-动态参数和签名机制>九、JS 动态参数和签名机制</a></li><li><a href=#十浏览器指纹和环境检测>十、浏览器指纹和环境检测</a></li><li><a href=#十一行为频率与业务风控>十一、行为频率与业务风控</a></li><li><a href=#十二robotstxt-与服务条款意识>十二、robots.txt 与服务条款意识</a></li><li><a href=#十三反爬反馈的统一分类>十三、反爬反馈的统一分类</a></li><li><a href=#十四日志与审计>十四、日志与审计</a></li><li><a href=#十五llm--agent-如何辅助反爬问题诊断>十五、LLM / Agent 如何辅助反爬问题诊断？</a></li><li><a href=#十六常见错误写法>十六、常见错误写法</a><ol><li><a href=#1-请求失败就盲目加-header>1. 请求失败就盲目加 Header</a></li><li><a href=#2-429-后继续高频重试>2. 429 后继续高频重试</a></li><li><a href=#3-把-403-当成普通失败>3. 把 403 当成普通失败</a></li><li><a href=#4-不区分登录失效和页面改版>4. 不区分登录失效和页面改版</a></li><li><a href=#5-没有任务边界>5. 没有任务边界</a></li><li><a href=#6-把反爬经验表达成绕过能力>6. 把反爬经验表达成绕过能力</a></li></ol></li><li><a href=#十七面试表达>十七、面试表达</a></li><li><a href=#十八总结>十八、总结</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/%E7%88%AC%E8%99%AB%E7%B3%BB%E5%88%97/ style=background-color:#efcfbe;color:#3d1f0f>爬虫系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/anti-crawling-strategy-analysis/>大模型时代的数据采集工程 12：常见反爬策略分析</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-01-02T10:00:00+08:00>2026-01-02 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 16 分钟</time></div></footer></div></header><section class=article-content><p>上一篇文章里，我们讲了浏览器自动化的反检测机制与合规边界。</p><p>核心观点是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>理解检测机制，不等于绕过规则。
+</span></span><span class=line><span class=cl>掌握反爬认知，是为了降低误伤、控制风险、提升系统稳定性。
+</span></span></code></pre></td></tr></table></div></div><p>从这一篇开始，我们继续往反爬机制认知推进。</p><p>真实的数据采集项目里，经常会遇到：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>请求突然变成 403。
+</span></span><span class=line><span class=cl>访问频率稍高就返回 429。
+</span></span><span class=line><span class=cl>接口要求 Referer 或 Token。
+</span></span><span class=line><span class=cl>同一个页面浏览器能打开，Requests 拿不到数据。
+</span></span><span class=line><span class=cl>登录态过期后拿到空页面。
+</span></span><span class=line><span class=cl>动态参数缺失导致接口失败。
+</span></span><span class=line><span class=cl>页面出现验证码、风险提示或登录页。
+</span></span></code></pre></td></tr></table></div></div><p>这些现象背后，往往就是常见反爬策略在起作用。</p><p>这一篇我们不写绕过教程，也不写具体平台参数还原。</p><p>我们要讲的是：</p><blockquote><p>常见反爬策略的分类、原理、风险信号、合规应对思路，以及面试中如何把“反爬经验”表达成系统理解和工程能力。</p></blockquote><h2 id=一前言>一、前言</h2><p>反爬不是一个单独技术点。</p><p>它更像一个系统。</p><p>这个系统可能包含：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>网络层限制。
+</span></span><span class=line><span class=cl>请求头校验。
+</span></span><span class=line><span class=cl>登录态校验。
+</span></span><span class=line><span class=cl>访问频率控制。
+</span></span><span class=line><span class=cl>业务行为风控。
+</span></span><span class=line><span class=cl>前端动态参数。
+</span></span><span class=line><span class=cl>浏览器环境检测。
+</span></span><span class=line><span class=cl>验证码验证。
+</span></span><span class=line><span class=cl>数据权限控制。
+</span></span></code></pre></td></tr></table></div></div><p>很多初学者会把反爬理解成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>请求失败了 -&gt; 加 Header。
+</span></span><span class=line><span class=cl>又失败了 -&gt; 换 IP。
+</span></span><span class=line><span class=cl>再失败了 -&gt; 上浏览器。
+</span></span></code></pre></td></tr></table></div></div><p>这种思路太粗糙。</p><p>真实工程里，应该先判断：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>失败发生在哪一层？
+</span></span><span class=line><span class=cl>是未授权，还是频率过高？
+</span></span><span class=line><span class=cl>是请求格式不对，还是状态失效？
+</span></span><span class=line><span class=cl>是页面改版，还是接口限制？
+</span></span><span class=line><span class=cl>是否有正式 API 或授权导出方式？
+</span></span><span class=line><span class=cl>是否应该暂停任务？
+</span></span></code></pre></td></tr></table></div></div><p>反爬分析的价值不是“绕过一切限制”。</p><p>而是帮助你设计一个：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>更稳定。
+</span></span><span class=line><span class=cl>更低影响。
+</span></span><span class=line><span class=cl>更可解释。
+</span></span><span class=line><span class=cl>更可审计。
+</span></span><span class=line><span class=cl>更符合授权边界。
+</span></span></code></pre></td></tr></table></div></div><p>的数据采集系统。</p><p>面试里也是一样。</p><p>如果你只说“我会反爬”，容易显得不专业。</p><p>更好的表达是：</p><blockquote><p>我理解常见反爬策略，包括频率限制、Header 校验、Cookie / Token 状态、Referer、JS 参数、浏览器环境和业务行为风控。工程上我会先判断数据来源和授权边界，优先使用官方 API 或合规接口；如果必须采集页面，也会做限速、重试退避、状态隔离、失败暂停和审计日志。</p></blockquote><h2 id=二反爬策略的本质是什么>二、反爬策略的本质是什么？</h2><p>反爬策略的本质是风险控制。</p><p>目标系统通常不是为了“为难爬虫工程师”，而是为了保护：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>系统稳定性。
+</span></span><span class=line><span class=cl>用户体验。
+</span></span><span class=line><span class=cl>数据权益。
+</span></span><span class=line><span class=cl>账号安全。
+</span></span><span class=line><span class=cl>交易公平性。
+</span></span><span class=line><span class=cl>业务规则。
+</span></span><span class=line><span class=cl>隐私和合规要求。
+</span></span></code></pre></td></tr></table></div></div><p>比如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>频率限制：防止高频请求压垮服务。
+</span></span><span class=line><span class=cl>登录态校验：防止未授权访问。
+</span></span><span class=line><span class=cl>Token 校验：确认请求来自正常流程。
+</span></span><span class=line><span class=cl>验证码：区分高风险自动化行为。
+</span></span><span class=line><span class=cl>行为风控：识别异常业务路径。
+</span></span><span class=line><span class=cl>权限控制：保护敏感数据。
+</span></span></code></pre></td></tr></table></div></div><p>所以反爬不是单纯的技术对抗。</p><p>它背后是业务安全和系统治理。</p><p>从工程师角度，我们要学会区分三件事：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>机制理解：知道为什么会失败。
+</span></span><span class=line><span class=cl>合规应对：知道什么时候应该暂停、降频、申请授权或改用接口。
+</span></span><span class=line><span class=cl>违规对抗：试图绕过访问控制、风控或付费接口。
+</span></span></code></pre></td></tr></table></div></div><p>本系列只讨论前两者。</p><h2 id=三常见反爬策略总览>三、常见反爬策略总览</h2><p>可以把常见反爬策略分成几类。</p><div class=table-wrapper><table><thead><tr><th>类型</th><th>常见表现</th><th>工程理解</th></tr></thead><tbody><tr><td>IP / 频率限制</td><td>429、访问变慢、请求被拒绝</td><td>请求节奏异常或超过服务承载</td></tr><tr><td>Header 校验</td><td>403、返回空内容、返回不同页面</td><td>请求上下文不完整或不符合预期</td></tr><tr><td>Cookie / Session</td><td>跳转登录页、401、403</td><td>登录态缺失、过期或权限不足</td></tr><tr><td>Referer / Origin</td><td>接口调用失败、跨来源限制</td><td>请求来源不符合业务流程</td></tr><tr><td>Token / CSRF</td><td>表单提交失败、接口返回校验错误</td><td>缺少页面生成的状态令牌</td></tr><tr><td>JS 动态参数</td><td>接口要求签名、时间戳、nonce</td><td>参数绑定前端流程或请求上下文</td></tr><tr><td>浏览器环境</td><td>浏览器能看，脚本拿不到</td><td>页面依赖 JS、环境或事件状态</td></tr><tr><td>行为风控</td><td>验证码、风险提示、限制访问</td><td>行为路径、频率或账号状态异常</td></tr><tr><td>数据权限</td><td>有页面但无字段、接口返回脱敏</td><td>账号或业务角色无权访问</td></tr></tbody></table></div><p>这张表最重要的不是“怎么绕过”。</p><p>而是帮助你判断：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>问题发生在哪一层？
+</span></span><span class=line><span class=cl>应该从哪里排查？
+</span></span><span class=line><span class=cl>是否属于授权或权限问题？
+</span></span><span class=line><span class=cl>是否应该暂停任务？
+</span></span></code></pre></td></tr></table></div></div><h2 id=四ip-与访问频率限制>四、IP 与访问频率限制</h2><p>最常见的反爬策略之一是频率控制。</p><p>典型表现：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>HTTP 429 Too Many Requests。
+</span></span><span class=line><span class=cl>请求响应越来越慢。
+</span></span><span class=line><span class=cl>短时间内大量请求失败。
+</span></span><span class=line><span class=cl>同一数据源错误率突然升高。
+</span></span><span class=line><span class=cl>服务返回“访问过于频繁”。
+</span></span></code></pre></td></tr></table></div></div><p>从目标系统角度看，高频请求可能导致：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>服务压力升高。
+</span></span><span class=line><span class=cl>缓存和数据库负载增加。
+</span></span><span class=line><span class=cl>正常用户访问受影响。
+</span></span><span class=line><span class=cl>日志和监控被噪声污染。
+</span></span></code></pre></td></tr></table></div></div><p>所以频率限制是合理的系统保护机制。</p><p>工程上应该做的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>限制并发。
+</span></span><span class=line><span class=cl>限制 QPS。
+</span></span><span class=line><span class=cl>尊重 Retry-After。
+</span></span><span class=line><span class=cl>失败后指数退避。
+</span></span><span class=line><span class=cl>达到错误阈值后暂停任务。
+</span></span><span class=line><span class=cl>记录限流日志。
+</span></span></code></pre></td></tr></table></div></div><p>一个合规的限流处理示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span><span class=lnt>46
+</span><span class=lnt>47
+</span><span class=lnt>48
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>time</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>email.utils</span> <span class=kn>import</span> <span class=n>parsedate_to_datetime</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kn>import</span> <span class=nn>requests</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>FetchDecision</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>should_retry</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>should_pause</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>wait_seconds</span><span class=p>:</span> <span class=nb>float</span>
+</span></span><span class=line><span class=cl>    <span class=n>reason</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>parse_retry_after</span><span class=p>(</span><span class=n>value</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>float</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>value</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>value</span><span class=o>.</span><span class=n>isdigit</span><span class=p>():</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=nb>float</span><span class=p>(</span><span class=n>value</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>try</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>retry_time</span> <span class=o>=</span> <span class=n>parsedate_to_datetime</span><span class=p>(</span><span class=n>value</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=nb>max</span><span class=p>(</span><span class=mf>0.0</span><span class=p>,</span> <span class=n>retry_time</span><span class=o>.</span><span class=n>timestamp</span><span class=p>()</span> <span class=o>-</span> <span class=n>time</span><span class=o>.</span><span class=n>time</span><span class=p>())</span>
+</span></span><span class=line><span class=cl>    <span class=k>except</span> <span class=p>(</span><span class=ne>TypeError</span><span class=p>,</span> <span class=ne>ValueError</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>classify_rate_limit</span><span class=p>(</span><span class=n>response</span><span class=p>:</span> <span class=n>requests</span><span class=o>.</span><span class=n>Response</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>FetchDecision</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>response</span><span class=o>.</span><span class=n>status_code</span> <span class=o>==</span> <span class=mi>429</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>wait_seconds</span> <span class=o>=</span> <span class=n>parse_retry_after</span><span class=p>(</span><span class=n>response</span><span class=o>.</span><span class=n>headers</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=s2>&#34;Retry-After&#34;</span><span class=p>))</span> <span class=ow>or</span> <span class=mf>60.0</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>FetchDecision</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>            <span class=n>should_retry</span><span class=o>=</span><span class=kc>False</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=n>should_pause</span><span class=o>=</span><span class=kc>True</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=n>wait_seconds</span><span class=o>=</span><span class=n>wait_seconds</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=n>reason</span><span class=o>=</span><span class=s2>&#34;rate_limited&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>response</span><span class=o>.</span><span class=n>status_code</span> <span class=ow>in</span> <span class=p>{</span><span class=mi>500</span><span class=p>,</span> <span class=mi>502</span><span class=p>,</span> <span class=mi>503</span><span class=p>,</span> <span class=mi>504</span><span class=p>}:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>FetchDecision</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>            <span class=n>should_retry</span><span class=o>=</span><span class=kc>True</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=n>should_pause</span><span class=o>=</span><span class=kc>False</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=n>wait_seconds</span><span class=o>=</span><span class=mf>5.0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=n>reason</span><span class=o>=</span><span class=s2>&#34;temporary_server_error&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>FetchDecision</span><span class=p>(</span><span class=kc>False</span><span class=p>,</span> <span class=kc>False</span><span class=p>,</span> <span class=mf>0.0</span><span class=p>,</span> <span class=s2>&#34;ok&#34;</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这段代码的重点是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>遇到 429 不继续冲。
+</span></span><span class=line><span class=cl>读取 Retry-After。
+</span></span><span class=line><span class=cl>暂停任务。
+</span></span><span class=line><span class=cl>记录原因。
+</span></span></code></pre></td></tr></table></div></div><p>这才是工程化处理。</p><h2 id=五user-agent-与-header-校验>五、User-Agent 与 Header 校验</h2><p>很多服务会检查请求头。</p><p>常见 Header 包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>User-Agent。
+</span></span><span class=line><span class=cl>Accept。
+</span></span><span class=line><span class=cl>Accept-Language。
+</span></span><span class=line><span class=cl>Content-Type。
+</span></span><span class=line><span class=cl>Referer。
+</span></span><span class=line><span class=cl>Origin。
+</span></span><span class=line><span class=cl>Authorization。
+</span></span><span class=line><span class=cl>Cookie。
+</span></span></code></pre></td></tr></table></div></div><p>这些 Header 的作用是表达请求上下文。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>User-Agent 表示客户端类型。
+</span></span><span class=line><span class=cl>Accept 表示客户端可接受的内容类型。
+</span></span><span class=line><span class=cl>Content-Type 表示请求体格式。
+</span></span><span class=line><span class=cl>Authorization 表示授权信息。
+</span></span><span class=line><span class=cl>Cookie 表示会话状态。
+</span></span><span class=line><span class=cl>Referer / Origin 表示来源上下文。
+</span></span></code></pre></td></tr></table></div></div><p>如果一个接口只允许登录后的页面流程访问，那么缺少相关上下文就可能失败。</p><p>但这里要注意边界。</p><p>合理做法是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>使用官方文档要求的 Header。
+</span></span><span class=line><span class=cl>在自有系统或授权接口中按规范传递认证信息。
+</span></span><span class=line><span class=cl>排查 Content-Type、Accept、Authorization 是否正确。
+</span></span><span class=line><span class=cl>遇到权限限制时申请授权。
+</span></span></code></pre></td></tr></table></div></div><p>不合理做法是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>伪造来源绕过访问控制。
+</span></span><span class=line><span class=cl>复制他人认证信息。
+</span></span><span class=line><span class=cl>批量构造请求绕过业务流程。
+</span></span></code></pre></td></tr></table></div></div><p>在工程代码中，可以把 Header 当成配置，而不是散落在业务逻辑里。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span><span class=p>,</span> <span class=n>field</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>RequestProfile</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>name</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>base_headers</span><span class=p>:</span> <span class=nb>dict</span><span class=p>[</span><span class=nb>str</span><span class=p>,</span> <span class=nb>str</span><span class=p>]</span> <span class=o>=</span> <span class=n>field</span><span class=p>(</span><span class=n>default_factory</span><span class=o>=</span><span class=nb>dict</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>timeout_seconds</span><span class=p>:</span> <span class=nb>float</span> <span class=o>=</span> <span class=mf>10.0</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>build_headers</span><span class=p>(</span><span class=n>profile</span><span class=p>:</span> <span class=n>RequestProfile</span><span class=p>,</span> <span class=n>extra</span><span class=p>:</span> <span class=nb>dict</span><span class=p>[</span><span class=nb>str</span><span class=p>,</span> <span class=nb>str</span><span class=p>]</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>dict</span><span class=p>[</span><span class=nb>str</span><span class=p>,</span> <span class=nb>str</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=n>headers</span> <span class=o>=</span> <span class=nb>dict</span><span class=p>(</span><span class=n>profile</span><span class=o>.</span><span class=n>base_headers</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>extra</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>headers</span><span class=o>.</span><span class=n>update</span><span class=p>(</span><span class=n>extra</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>headers</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>profile</span> <span class=o>=</span> <span class=n>RequestProfile</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>name</span><span class=o>=</span><span class=s2>&#34;authorized-api-client&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>base_headers</span><span class=o>=</span><span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;Accept&#34;</span><span class=p>:</span> <span class=s2>&#34;application/json&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;Content-Type&#34;</span><span class=p>:</span> <span class=s2>&#34;application/json&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个示例表达的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>请求上下文要规范管理。
+</span></span><span class=line><span class=cl>Header 要可配置、可审计。
+</span></span><span class=line><span class=cl>不要在代码里到处硬编码。
+</span></span></code></pre></td></tr></table></div></div><h2 id=六cookiesession-与登录态限制>六、Cookie、Session 与登录态限制</h2><p>登录态是反爬和权限控制中非常常见的一层。</p><p>表现可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>未登录返回 401。
+</span></span><span class=line><span class=cl>权限不足返回 403。
+</span></span><span class=line><span class=cl>跳转到登录页。
+</span></span><span class=line><span class=cl>页面返回空数据。
+</span></span><span class=line><span class=cl>接口返回 auth_required。
+</span></span></code></pre></td></tr></table></div></div><p>这类问题首先要问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>是否有授权？
+</span></span><span class=line><span class=cl>账号是否属于自有或测试账号？
+</span></span><span class=line><span class=cl>登录态是否过期？
+</span></span><span class=line><span class=cl>访问范围是否超出权限？
+</span></span><span class=line><span class=cl>是否应该重新授权？
+</span></span></code></pre></td></tr></table></div></div><p>工程上应该管理登录态元数据。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>datetime</span> <span class=kn>import</span> <span class=n>datetime</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>AuthContext</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>auth_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>owner</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>scope</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>created_at</span><span class=p>:</span> <span class=n>datetime</span>
+</span></span><span class=line><span class=cl>    <span class=n>expires_at</span><span class=p>:</span> <span class=n>datetime</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>is_auth_expired</span><span class=p>(</span><span class=n>auth</span><span class=p>:</span> <span class=n>AuthContext</span><span class=p>,</span> <span class=n>now</span><span class=p>:</span> <span class=n>datetime</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>bool</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>auth</span><span class=o>.</span><span class=n>expires_at</span> <span class=ow>is</span> <span class=ow>not</span> <span class=kc>None</span> <span class=ow>and</span> <span class=n>now</span> <span class=o>&gt;=</span> <span class=n>auth</span><span class=o>.</span><span class=n>expires_at</span>
+</span></span></code></pre></td></tr></table></div></div><p>不要只保存一个 Cookie 文件就直接长期使用。</p><p>更好的状态管理要包含：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>授权来源。
+</span></span><span class=line><span class=cl>授权范围。
+</span></span><span class=line><span class=cl>创建时间。
+</span></span><span class=line><span class=cl>过期时间。
+</span></span><span class=line><span class=cl>当前状态。
+</span></span><span class=line><span class=cl>失败次数。
+</span></span><span class=line><span class=cl>重新授权流程。
+</span></span></code></pre></td></tr></table></div></div><p>尤其要注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Cookie、Token、storage_state 都可能包含敏感信息。
+</span></span><span class=line><span class=cl>不要提交到 Git。
+</span></span><span class=line><span class=cl>不要分享给无关人员。
+</span></span><span class=line><span class=cl>不要使用来源不明的登录态。
+</span></span></code></pre></td></tr></table></div></div><h2 id=七referer-与-origin-校验>七、Referer 与 Origin 校验</h2><p>有些接口会检查请求来源。</p><p>常见字段：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Referer：当前请求来源页面。
+</span></span><span class=line><span class=cl>Origin：跨源请求的源站。
+</span></span></code></pre></td></tr></table></div></div><p>这些字段通常用于：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>CSRF 防护。
+</span></span><span class=line><span class=cl>接口来源校验。
+</span></span><span class=line><span class=cl>业务流程约束。
+</span></span><span class=line><span class=cl>跨域访问控制。
+</span></span></code></pre></td></tr></table></div></div><p>如果一个接口只能从指定页面流程触发，直接脱离页面调用可能失败。</p><p>合规处理思路是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>确认接口是否对外开放。
+</span></span><span class=line><span class=cl>确认是否有 API 文档。
+</span></span><span class=line><span class=cl>确认是否有授权调用方式。
+</span></span><span class=line><span class=cl>如果只能页面内使用，就尊重业务边界。
+</span></span></code></pre></td></tr></table></div></div><p>在自有系统测试中，你可以检查 Referer / Origin 校验是否正确。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>没有 Origin 的请求是否被拒绝？
+</span></span><span class=line><span class=cl>不可信 Origin 是否被拒绝？
+</span></span><span class=line><span class=cl>可信页面流程是否正常？
+</span></span><span class=line><span class=cl>错误是否有清晰提示？
+</span></span></code></pre></td></tr></table></div></div><p>这属于防御性测试。</p><p>不是为了绕过第三方系统的来源校验。</p><h2 id=八tokencsrf-与一次性状态参数>八、Token、CSRF 与一次性状态参数</h2><p>很多页面和接口会使用 Token。</p><p>常见类型包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>CSRF Token。
+</span></span><span class=line><span class=cl>表单 Token。
+</span></span><span class=line><span class=cl>接口访问 Token。
+</span></span><span class=line><span class=cl>页面初始化 Token。
+</span></span><span class=line><span class=cl>一次性 nonce。
+</span></span><span class=line><span class=cl>时间戳参数。
+</span></span></code></pre></td></tr></table></div></div><p>这些参数的目的通常是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>确认请求来自正常页面流程。
+</span></span><span class=line><span class=cl>防止跨站请求伪造。
+</span></span><span class=line><span class=cl>防止重放请求。
+</span></span><span class=line><span class=cl>绑定用户状态和操作上下文。
+</span></span></code></pre></td></tr></table></div></div><p>如果你在自有系统里做采集或测试，正确方式是走正常授权流程。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>先访问页面。
+</span></span><span class=line><span class=cl>读取自有系统返回的 CSRF Token。
+</span></span><span class=line><span class=cl>提交表单时带上 Token。
+</span></span><span class=line><span class=cl>Token 过期后重新走授权流程。
+</span></span></code></pre></td></tr></table></div></div><p>示例只用于自有测试系统的 CSRF 流程理解：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kn>import</span> <span class=nn>requests</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>bs4</span> <span class=kn>import</span> <span class=n>BeautifulSoup</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>FormPage</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>action</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>csrf_token</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>parse_form_page</span><span class=p>(</span><span class=n>html</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>FormPage</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>soup</span> <span class=o>=</span> <span class=n>BeautifulSoup</span><span class=p>(</span><span class=n>html</span><span class=p>,</span> <span class=s2>&#34;lxml&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>form</span> <span class=o>=</span> <span class=n>soup</span><span class=o>.</span><span class=n>select_one</span><span class=p>(</span><span class=s2>&#34;form#demo-form&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>token_input</span> <span class=o>=</span> <span class=n>soup</span><span class=o>.</span><span class=n>select_one</span><span class=p>(</span><span class=s2>&#34;input[name=&#39;csrf_token&#39;]&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>form</span> <span class=ow>or</span> <span class=ow>not</span> <span class=n>token_input</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>FormPage</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=n>action</span><span class=o>=</span><span class=n>form</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=s2>&#34;action&#34;</span><span class=p>,</span> <span class=s2>&#34;&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>        <span class=n>csrf_token</span><span class=o>=</span><span class=n>token_input</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=s2>&#34;value&#34;</span><span class=p>,</span> <span class=s2>&#34;&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>session</span> <span class=o>=</span> <span class=n>requests</span><span class=o>.</span><span class=n>Session</span><span class=p>()</span>
+</span></span><span class=line><span class=cl><span class=n>response</span> <span class=o>=</span> <span class=n>session</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=s2>&#34;https://example.com/demo-form&#34;</span><span class=p>,</span> <span class=n>timeout</span><span class=o>=</span><span class=mi>10</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>form_page</span> <span class=o>=</span> <span class=n>parse_form_page</span><span class=p>(</span><span class=n>response</span><span class=o>.</span><span class=n>text</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>重点是理解：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Token 是业务状态的一部分。
+</span></span><span class=line><span class=cl>Token 不是可以随便伪造的字符串。
+</span></span><span class=line><span class=cl>Token 失效时应重新授权或暂停。
+</span></span></code></pre></td></tr></table></div></div><h2 id=九js-动态参数和签名机制>九、JS 动态参数和签名机制</h2><p>现代前端页面可能会生成动态参数。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>timestamp。
+</span></span><span class=line><span class=cl>nonce。
+</span></span><span class=line><span class=cl>request_id。
+</span></span><span class=line><span class=cl>signature。
+</span></span><span class=line><span class=cl>设备或会话相关字段。
+</span></span><span class=line><span class=cl>页面初始化状态。
+</span></span></code></pre></td></tr></table></div></div><p>这些参数可能用于：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>请求完整性校验。
+</span></span><span class=line><span class=cl>防重放。
+</span></span><span class=line><span class=cl>绑定页面上下文。
+</span></span><span class=line><span class=cl>接口调用顺序校验。
+</span></span><span class=line><span class=cl>业务风控评分。
+</span></span></code></pre></td></tr></table></div></div><p>这里是敏感区域。</p><p>本系列只讨论抽象机制，不展开具体平台参数还原，不提供可复用绕过代码。</p><p>工程上应该这样理解：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>如果参数来自公开 API 文档，就按文档实现。
+</span></span><span class=line><span class=cl>如果参数来自自有系统，就在测试环境验证流程。
+</span></span><span class=line><span class=cl>如果参数属于第三方风控机制，应尊重访问边界。
+</span></span><span class=line><span class=cl>如果没有授权，不应尝试还原签名规则来访问受限接口。
+</span></span></code></pre></td></tr></table></div></div><p>面试中可以表达为：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>我理解 JS 参数可能用于绑定请求上下文、防重放和风险控制。
+</span></span><span class=line><span class=cl>分析时会先判断是否有授权和文档；在自有或授权系统中，可以通过 DevTools、日志和测试环境理解参数生成流程；涉及第三方风控或访问控制时，不会做绕过式处理。
+</span></span></code></pre></td></tr></table></div></div><p>这比展示具体平台绕过细节更专业。</p><h2 id=十浏览器指纹和环境检测>十、浏览器指纹和环境检测</h2><p>浏览器环境可能包含很多特征。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>浏览器版本。
+</span></span><span class=line><span class=cl>操作系统。
+</span></span><span class=line><span class=cl>语言和时区。
+</span></span><span class=line><span class=cl>屏幕尺寸。
+</span></span><span class=line><span class=cl>字体和渲染能力。
+</span></span><span class=line><span class=cl>Canvas / WebGL 表现。
+</span></span><span class=line><span class=cl>权限状态。
+</span></span><span class=line><span class=cl>自动化控制特征。
+</span></span></code></pre></td></tr></table></div></div><p>这些信息可能用于：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>风险评分。
+</span></span><span class=line><span class=cl>异常环境识别。
+</span></span><span class=line><span class=cl>账号安全保护。
+</span></span><span class=line><span class=cl>自动化测试兼容性分析。
+</span></span></code></pre></td></tr></table></div></div><p>这里同样要注意边界。</p><p>我们不讨论如何隐藏或伪装这些特征。</p><p>更合规的使用方式是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>在自有系统中测试不同浏览器兼容性。
+</span></span><span class=line><span class=cl>理解为什么自动化测试和真实用户结果不同。
+</span></span><span class=line><span class=cl>排查页面是否依赖特定浏览器能力。
+</span></span><span class=line><span class=cl>控制测试环境的一致性。
+</span></span></code></pre></td></tr></table></div></div><p>例如，在 Playwright 测试中，你可以明确记录测试环境：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>BrowserTestEnv</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>browser_name</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>headless</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>viewport_width</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>viewport_height</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>locale</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>timezone_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>env</span> <span class=o>=</span> <span class=n>BrowserTestEnv</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>browser_name</span><span class=o>=</span><span class=s2>&#34;chromium&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>headless</span><span class=o>=</span><span class=kc>True</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>viewport_width</span><span class=o>=</span><span class=mi>1280</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>viewport_height</span><span class=o>=</span><span class=mi>720</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>locale</span><span class=o>=</span><span class=s2>&#34;zh-CN&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>timezone_id</span><span class=o>=</span><span class=s2>&#34;Asia/Shanghai&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这有助于：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>复现实验结果。
+</span></span><span class=line><span class=cl>定位兼容性问题。
+</span></span><span class=line><span class=cl>解释自动化任务差异。
+</span></span></code></pre></td></tr></table></div></div><p>不是为了规避检测。</p><h2 id=十一行为频率与业务风控>十一、行为频率与业务风控</h2><p>反爬系统往往不只看请求，还看行为。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>是否短时间访问大量详情页。
+</span></span><span class=line><span class=cl>是否不断尝试不存在的 ID。
+</span></span><span class=line><span class=cl>是否跳过正常入口。
+</span></span><span class=line><span class=cl>是否高频触发搜索。
+</span></span><span class=line><span class=cl>是否频繁提交表单。
+</span></span><span class=line><span class=cl>是否多个账号执行完全相同路径。
+</span></span></code></pre></td></tr></table></div></div><p>这些行为可能对应：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>枚举资源。
+</span></span><span class=line><span class=cl>批量采集。
+</span></span><span class=line><span class=cl>撞库风险。
+</span></span><span class=line><span class=cl>刷量风险。
+</span></span><span class=line><span class=cl>抢购或抢票风险。
+</span></span><span class=line><span class=cl>账号异常。
+</span></span></code></pre></td></tr></table></div></div><p>合规采集要避免让任务失控。</p><p>可以在任务层增加规则：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>每个任务最大页面数。
+</span></span><span class=line><span class=cl>每个数据源最大 QPS。
+</span></span><span class=line><span class=cl>每个账号最大连续失败次数。
+</span></span><span class=line><span class=cl>每个批次最大采集量。
+</span></span><span class=line><span class=cl>遇到风险提示立即暂停。
+</span></span></code></pre></td></tr></table></div></div><p>示例：任务边界配置。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>CrawlBoundary</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_pages_per_task</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_items_per_task</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_consecutive_errors</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>pause_on_risk_signal</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>boundary</span> <span class=o>=</span> <span class=n>CrawlBoundary</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_pages_per_task</span><span class=o>=</span><span class=mi>20</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_items_per_task</span><span class=o>=</span><span class=mi>500</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_consecutive_errors</span><span class=o>=</span><span class=mi>3</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>pause_on_risk_signal</span><span class=o>=</span><span class=kc>True</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这类边界不是“削弱能力”。</p><p>它是为了让系统可控。</p><h2 id=十二robotstxt-与服务条款意识>十二、robots.txt 与服务条款意识</h2><p>很多网站会通过 <code>robots.txt</code> 表达爬虫访问规则。</p><p>虽然 <code>robots.txt</code> 本身不是权限系统，但它是重要的访问约定。</p><p>工程上应该具备 robots 意识。</p><p>Python 可以用标准库查看规则。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>urllib</span> <span class=kn>import</span> <span class=n>robotparser</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>rp</span> <span class=o>=</span> <span class=n>robotparser</span><span class=o>.</span><span class=n>RobotFileParser</span><span class=p>()</span>
+</span></span><span class=line><span class=cl><span class=n>rp</span><span class=o>.</span><span class=n>set_url</span><span class=p>(</span><span class=s2>&#34;https://example.com/robots.txt&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>rp</span><span class=o>.</span><span class=n>read</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>can_fetch</span> <span class=o>=</span> <span class=n>rp</span><span class=o>.</span><span class=n>can_fetch</span><span class=p>(</span><span class=s2>&#34;my-crawler&#34;</span><span class=p>,</span> <span class=s2>&#34;https://example.com/public-page&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=nb>print</span><span class=p>(</span><span class=n>can_fetch</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>实际项目中还要结合：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>服务条款。
+</span></span><span class=line><span class=cl>数据授权协议。
+</span></span><span class=line><span class=cl>API 文档。
+</span></span><span class=line><span class=cl>内部合规要求。
+</span></span><span class=line><span class=cl>业务方审批。
+</span></span></code></pre></td></tr></table></div></div><p>如果规则不允许，或者授权不明确，就不应该继续采集。</p><h2 id=十三反爬反馈的统一分类>十三、反爬反馈的统一分类</h2><p>工程上不要把所有失败都当成“请求失败”。</p><p>应该分类。</p><p>常见分类：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>network_error：网络错误。
+</span></span><span class=line><span class=cl>timeout：超时。
+</span></span><span class=line><span class=cl>server_error：服务端临时错误。
+</span></span><span class=line><span class=cl>rate_limited：限流。
+</span></span><span class=line><span class=cl>auth_required：需要登录或重新授权。
+</span></span><span class=line><span class=cl>permission_denied：权限不足。
+</span></span><span class=line><span class=cl>risk_control：风险控制或验证码。
+</span></span><span class=line><span class=cl>selector_changed：页面结构变化。
+</span></span><span class=line><span class=cl>empty_data：数据为空。
+</span></span><span class=line><span class=cl>manual_review：需要人工确认。
+</span></span></code></pre></td></tr></table></div></div><p>可以写一个通用分类函数。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span><span class=lnt>46
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>enum</span> <span class=kn>import</span> <span class=n>Enum</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>FailureType</span><span class=p>(</span><span class=nb>str</span><span class=p>,</span> <span class=n>Enum</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>OK</span> <span class=o>=</span> <span class=s2>&#34;ok&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>RATE_LIMITED</span> <span class=o>=</span> <span class=s2>&#34;rate_limited&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>AUTH_REQUIRED</span> <span class=o>=</span> <span class=s2>&#34;auth_required&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>PERMISSION_DENIED</span> <span class=o>=</span> <span class=s2>&#34;permission_denied&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>RISK_CONTROL</span> <span class=o>=</span> <span class=s2>&#34;risk_control&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>SERVER_ERROR</span> <span class=o>=</span> <span class=s2>&#34;server_error&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>UNKNOWN</span> <span class=o>=</span> <span class=s2>&#34;unknown&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ResponseSignal</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>status_code</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>final_url</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>text_excerpt</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>FailureDecision</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>failure_type</span><span class=p>:</span> <span class=n>FailureType</span>
+</span></span><span class=line><span class=cl>    <span class=n>should_retry</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>should_pause</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>reason</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>classify_signal</span><span class=p>(</span><span class=n>signal</span><span class=p>:</span> <span class=n>ResponseSignal</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>FailureDecision</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>signal</span><span class=o>.</span><span class=n>status_code</span> <span class=o>==</span> <span class=mi>429</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>FailureDecision</span><span class=p>(</span><span class=n>FailureType</span><span class=o>.</span><span class=n>RATE_LIMITED</span><span class=p>,</span> <span class=kc>False</span><span class=p>,</span> <span class=kc>True</span><span class=p>,</span> <span class=s2>&#34;too_many_requests&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>signal</span><span class=o>.</span><span class=n>status_code</span> <span class=o>==</span> <span class=mi>401</span> <span class=ow>or</span> <span class=s2>&#34;login&#34;</span> <span class=ow>in</span> <span class=n>signal</span><span class=o>.</span><span class=n>final_url</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>FailureDecision</span><span class=p>(</span><span class=n>FailureType</span><span class=o>.</span><span class=n>AUTH_REQUIRED</span><span class=p>,</span> <span class=kc>False</span><span class=p>,</span> <span class=kc>True</span><span class=p>,</span> <span class=s2>&#34;auth_required&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>signal</span><span class=o>.</span><span class=n>status_code</span> <span class=o>==</span> <span class=mi>403</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>FailureDecision</span><span class=p>(</span><span class=n>FailureType</span><span class=o>.</span><span class=n>PERMISSION_DENIED</span><span class=p>,</span> <span class=kc>False</span><span class=p>,</span> <span class=kc>True</span><span class=p>,</span> <span class=s2>&#34;permission_denied&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=s2>&#34;验证码&#34;</span> <span class=ow>in</span> <span class=n>signal</span><span class=o>.</span><span class=n>text_excerpt</span> <span class=ow>or</span> <span class=s2>&#34;风险&#34;</span> <span class=ow>in</span> <span class=n>signal</span><span class=o>.</span><span class=n>text_excerpt</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>FailureDecision</span><span class=p>(</span><span class=n>FailureType</span><span class=o>.</span><span class=n>RISK_CONTROL</span><span class=p>,</span> <span class=kc>False</span><span class=p>,</span> <span class=kc>True</span><span class=p>,</span> <span class=s2>&#34;risk_control&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>signal</span><span class=o>.</span><span class=n>status_code</span> <span class=o>&gt;=</span> <span class=mi>500</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>FailureDecision</span><span class=p>(</span><span class=n>FailureType</span><span class=o>.</span><span class=n>SERVER_ERROR</span><span class=p>,</span> <span class=kc>True</span><span class=p>,</span> <span class=kc>False</span><span class=p>,</span> <span class=s2>&#34;server_error&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>FailureDecision</span><span class=p>(</span><span class=n>FailureType</span><span class=o>.</span><span class=n>OK</span><span class=p>,</span> <span class=kc>False</span><span class=p>,</span> <span class=kc>False</span><span class=p>,</span> <span class=s2>&#34;ok&#34;</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个函数体现了一个关键思想：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不是所有失败都能重试。
+</span></span><span class=line><span class=cl>涉及权限、限流、风控时，优先暂停。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十四日志与审计>十四、日志与审计</h2><p>反爬相关问题最怕没有日志。</p><p>如果你只知道“失败了”，就很难排查。</p><p>至少要记录：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>task_id。
+</span></span><span class=line><span class=cl>source。
+</span></span><span class=line><span class=cl>url。
+</span></span><span class=line><span class=cl>status_code。
+</span></span><span class=line><span class=cl>final_url。
+</span></span><span class=line><span class=cl>failure_type。
+</span></span><span class=line><span class=cl>retry_count。
+</span></span><span class=line><span class=cl>auth_id。
+</span></span><span class=line><span class=cl>started_at。
+</span></span><span class=line><span class=cl>finished_at。
+</span></span><span class=line><span class=cl>item_count。
+</span></span><span class=line><span class=cl>reason。
+</span></span></code></pre></td></tr></table></div></div><p>示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>datetime</span> <span class=kn>import</span> <span class=n>datetime</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>CrawlLog</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>source</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>url</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>status_code</span><span class=p>:</span> <span class=nb>int</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>final_url</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>failure_type</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>retry_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>auth_id</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>started_at</span><span class=p>:</span> <span class=n>datetime</span>
+</span></span><span class=line><span class=cl>    <span class=n>finished_at</span><span class=p>:</span> <span class=n>datetime</span>
+</span></span><span class=line><span class=cl>    <span class=n>item_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>reason</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>有了这些日志，你可以分析：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>哪个数据源最容易限流？
+</span></span><span class=line><span class=cl>哪个账号状态最容易失效？
+</span></span><span class=line><span class=cl>哪些页面经常返回空数据？
+</span></span><span class=line><span class=cl>错误是否集中在某个时间段？
+</span></span><span class=line><span class=cl>是否需要降低任务频率？
+</span></span><span class=line><span class=cl>是否应该申请正式接口？
+</span></span></code></pre></td></tr></table></div></div><p>这就是从脚本走向系统的关键一步。</p><h2 id=十五llm--agent-如何辅助反爬问题诊断>十五、LLM / Agent 如何辅助反爬问题诊断？</h2><p>LLM 和 Agent 不应该用于生成绕过策略。</p><p>但它们非常适合做诊断辅助。</p><p>输入可以是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>状态码。
+</span></span><span class=line><span class=cl>响应摘要。
+</span></span><span class=line><span class=cl>页面标题。
+</span></span><span class=line><span class=cl>最终 URL。
+</span></span><span class=line><span class=cl>错误堆栈。
+</span></span><span class=line><span class=cl>截图描述。
+</span></span><span class=line><span class=cl>历史成功样本。
+</span></span><span class=line><span class=cl>任务日志。
+</span></span></code></pre></td></tr></table></div></div><p>Agent 可以输出：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>疑似登录态失效。
+</span></span><span class=line><span class=cl>疑似限流，应暂停并降低频率。
+</span></span><span class=line><span class=cl>疑似选择器失效。
+</span></span><span class=line><span class=cl>疑似页面改版。
+</span></span><span class=line><span class=cl>疑似权限不足。
+</span></span><span class=line><span class=cl>需要人工确认授权范围。
+</span></span></code></pre></td></tr></table></div></div><p>一个安全的 Agent 诊断提示词可以是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你是数据采集系统的合规诊断助手。
+</span></span><span class=line><span class=cl>请根据状态码、页面标题、URL、错误信息和日志，判断失败类型。
+</span></span><span class=line><span class=cl>只允许输出：等待问题、选择器问题、登录态失效、限流、权限不足、风险控制、页面改版、需要人工确认。
+</span></span><span class=line><span class=cl>不要提供绕过访问控制、验证码或风控的步骤。
+</span></span></code></pre></td></tr></table></div></div><p>这和本系列主线一致：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>规则负责确定性。
+</span></span><span class=line><span class=cl>日志负责可追溯。
+</span></span><span class=line><span class=cl>Agent 负责诊断辅助。
+</span></span><span class=line><span class=cl>人工负责边界确认。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十六常见错误写法>十六、常见错误写法</h2><h3 id=1-请求失败就盲目加-header>1. 请求失败就盲目加 Header</h3><p>Header 不是万能药。</p><p>应该先判断失败原因。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>是未授权？
+</span></span><span class=line><span class=cl>是限流？
+</span></span><span class=line><span class=cl>是接口不开放？
+</span></span><span class=line><span class=cl>是状态过期？
+</span></span><span class=line><span class=cl>是页面需要 JS 渲染？
+</span></span></code></pre></td></tr></table></div></div><h3 id=2-429-后继续高频重试>2. 429 后继续高频重试</h3><p>429 通常表示频率过高。</p><p>正确做法是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>暂停。
+</span></span><span class=line><span class=cl>退避。
+</span></span><span class=line><span class=cl>记录。
+</span></span><span class=line><span class=cl>降低频率。
+</span></span></code></pre></td></tr></table></div></div><h3 id=3-把-403-当成普通失败>3. 把 403 当成普通失败</h3><p>403 往往意味着权限或规则限制。</p><p>不应该无限重试。</p><p>应该确认授权范围。</p><h3 id=4-不区分登录失效和页面改版>4. 不区分登录失效和页面改版</h3><p>两者表现可能都像“解析不到数据”。</p><p>但处理方式完全不同：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>登录失效：暂停并重新授权。
+</span></span><span class=line><span class=cl>页面改版：更新选择器并测试。
+</span></span></code></pre></td></tr></table></div></div><h3 id=5-没有任务边界>5. 没有任务边界</h3><p>不设置最大页数、最大重试、最大错误数，会让采集任务失控。</p><h3 id=6-把反爬经验表达成绕过能力>6. 把反爬经验表达成绕过能力</h3><p>面试中不要只强调“能绕”。</p><p>更专业的是强调：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>机制理解。
+</span></span><span class=line><span class=cl>系统设计。
+</span></span><span class=line><span class=cl>限流退避。
+</span></span><span class=line><span class=cl>状态管理。
+</span></span><span class=line><span class=cl>日志审计。
+</span></span><span class=line><span class=cl>合规边界。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十七面试表达>十七、面试表达</h2><p>如果面试官问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你遇到过哪些常见反爬策略？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>常见反爬策略包括 IP 和频率限制、User-Agent 和 Header 校验、Cookie / Session 登录态校验、Referer / Origin 来源校验、Token / CSRF 状态参数、JS 动态参数、浏览器环境检测、行为频率风控和数据权限控制。我通常会先根据状态码、页面内容、最终 URL 和日志判断失败发生在哪一层，再决定是降频、重新授权、更新选择器、改用浏览器渲染，还是暂停并申请正式接口。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>遇到 403 或 429 你会怎么处理？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>429 我会认为是限流信号，优先读取 Retry-After，暂停任务并降低频率，不会继续高频重试。403 则要判断是权限不足、登录态失效、来源不符合要求还是访问范围不被允许。涉及权限或风控限制时，我会暂停任务并确认授权范围，而不是盲目重试。工程上会把这些失败分类写入日志，方便后续监控和复盘。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你怎么设计一个稳定的反爬应对机制？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会先做失败分类，把网络错误、超时、服务端错误、限流、登录态失效、权限不足、风险控制、页面改版区分开。不同类型有不同策略：临时错误可以有限重试，限流要退避和暂停，登录态失效要重新授权，权限不足要人工确认，页面改版要更新选择器。系统层面还要限制并发、设置最大重试次数、记录审计日志，并优先使用官方 API 或授权数据源。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM 能不能帮你处理反爬问题？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>LLM 可以辅助诊断，但不应该用于生成绕过策略。比如把状态码、页面标题、最终 URL、错误日志、HTML 摘要和历史成功样本交给 Agent，它可以帮助判断是登录态失效、选择器失效、限流、权限不足还是页面改版。对于工程问题可以给修复建议；如果涉及风控、验证码或权限限制，系统应该暂停并进入人工确认流程。</p></blockquote><h2 id=十八总结>十八、总结</h2><p>本文讲了常见反爬策略的分类和工程化应对思路。</p><p>核心结论包括：</p><ul><li>反爬策略本质上是系统稳定性、数据权益、账号安全和业务规则的保护机制。</li><li>常见反爬维度包括 IP / 频率、Header、Cookie / Session、Referer / Origin、Token、JS 参数、浏览器环境、行为风控和数据权限。</li><li>遇到反爬问题时，应该先分类诊断，而不是盲目加 Header、换工具或无限重试。</li><li>429 通常意味着限流，应暂停、退避并降低频率。</li><li>401 / 403 往往涉及登录态、权限或访问边界，应确认授权范围。</li><li>Token、CSRF、动态参数通常绑定业务流程和请求上下文，不应在未授权场景中尝试绕过。</li><li>合规采集要有任务边界、访问频率限制、失败分类、暂停机制和审计日志。</li><li>robots.txt、服务条款、授权协议和业务审批都是数据采集前需要考虑的边界。</li><li>LLM / Agent 可以辅助失败诊断和日志分析，但不能替代授权和合规判断。</li><li>面试中表达反爬经验时，要从“会绕过”升级为“理解机制、能设计稳定合规的数据采集系统”。</li></ul><p>下一篇文章，我们会继续把这些机制落到工程实现中：</p><blockquote><p>限速、重试与任务调度。</p></blockquote><p>前面我们已经多次提到 429、Retry-After、指数退避、失败暂停和任务边界。下一篇会专门讲如何把这些能力设计成一个可运行、可恢复、可监控的采集任务调度系统。</p></section><footer class=article-footer><section class=article-tags><a href=/tags/python/>Python</a>
+<a href=/tags/%E7%88%AC%E8%99%AB/>爬虫</a>
+<a href=/tags/%E5%8F%8D%E7%88%AC/>反爬</a>
+<a href=/tags/%E9%A3%8E%E6%8E%A7/>风控</a>
+<a href=/tags/%E6%95%B0%E6%8D%AE%E9%87%87%E9%9B%86/>数据采集</a>
+<a href=/tags/%E5%90%88%E8%A7%84/>合规</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/browser-automation-detection-compliance/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 11：浏览器自动化的反检测机制与合规边界</h2></div></a></article><article><a href=/p/captcha-mechanism-analysis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 19：验证码机制分析</h2></div></a></article><article><a href=/p/python-requests-stable-crawler/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 03：用 Requests 构建稳定采集器</h2></div></a></article><article><a href=/p/crawler-engineer-in-llm-era/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 01：爬虫工程师还需要掌握什么？</h2></div></a></article><article><a href=/p/captcha-recognition-automation-boundaries/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 20：自动化任务中的验证码识别边界</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

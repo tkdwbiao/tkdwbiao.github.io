@@ -1,0 +1,580 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇文章里，我们讲了 Webpack 模块机制。\n核心是理解：\n1 2 3 4 5 6 7 module。 exports。 require。 chunk。 Source Map。 调用栈。 请求函数定位。 当你能看懂 Webpack 打包结构之后，下一步经常会遇到更难读的代码。\n例如：\n1 2 3 4 5 变量名被压缩成 a、b、c。 字符串被放进数组。 简单表达式被拆成多层函数。 条件判断被改写。 代码结构和原始源码差异很大。 这时就会接触到 AST。\nAST 是理解 JavaScript 代码结构的重要工具。\n但这一篇依然要先明确边界：\n本文只用本地玩具示例讲 AST 的概念、解析、遍历、节点观察和安全分析思路，帮助理解混淆代码为什么难读，以及如何在授权和自有系统中做代码审计、调试和质量分析；不提供可直接用于绕过第三方风控或还原真实平台参数的反混淆工具链。\n"><title>大模型时代的数据采集工程 17：AST 在 JavaScript 混淆分析中的应用</title><link rel=canonical href=https://tkdwbiao.github.io/p/ast-javascript-obfuscation-analysis/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="大模型时代的数据采集工程 17：AST 在 JavaScript 混淆分析中的应用"><meta property='og:description' content="上一篇文章里，我们讲了 Webpack 模块机制。\n核心是理解：\n1 2 3 4 5 6 7 module。 exports。 require。 chunk。 Source Map。 调用栈。 请求函数定位。 当你能看懂 Webpack 打包结构之后，下一步经常会遇到更难读的代码。\n例如：\n1 2 3 4 5 变量名被压缩成 a、b、c。 字符串被放进数组。 简单表达式被拆成多层函数。 条件判断被改写。 代码结构和原始源码差异很大。 这时就会接触到 AST。\nAST 是理解 JavaScript 代码结构的重要工具。\n但这一篇依然要先明确边界：\n本文只用本地玩具示例讲 AST 的概念、解析、遍历、节点观察和安全分析思路，帮助理解混淆代码为什么难读，以及如何在授权和自有系统中做代码审计、调试和质量分析；不提供可直接用于绕过第三方风控或还原真实平台参数的反混淆工具链。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/ast-javascript-obfuscation-analysis/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='Python'><meta property='article:tag' content='爬虫'><meta property='article:tag' content='JavaScript'><meta property='article:tag' content='AST'><meta property='article:tag' content='混淆分析'><meta property='article:tag' content='Babel'><meta property='article:published_time' content='2026-01-12T10:00:00+08:00'><meta property='article:modified_time' content='2026-01-12T10:00:00+08:00'><meta name=twitter:title content="大模型时代的数据采集工程 17：AST 在 JavaScript 混淆分析中的应用"><meta name=twitter:description content="上一篇文章里，我们讲了 Webpack 模块机制。\n核心是理解：\n1 2 3 4 5 6 7 module。 exports。 require。 chunk。 Source Map。 调用栈。 请求函数定位。 当你能看懂 Webpack 打包结构之后，下一步经常会遇到更难读的代码。\n例如：\n1 2 3 4 5 变量名被压缩成 a、b、c。 字符串被放进数组。 简单表达式被拆成多层函数。 条件判断被改写。 代码结构和原始源码差异很大。 这时就会接触到 AST。\nAST 是理解 JavaScript 代码结构的重要工具。\n但这一篇依然要先明确边界：\n本文只用本地玩具示例讲 AST 的概念、解析、遍历、节点观察和安全分析思路，帮助理解混淆代码为什么难读，以及如何在授权和自有系统中做代码审计、调试和质量分析；不提供可直接用于绕过第三方风控或还原真实平台参数的反混淆工具链。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二什么是-ast>二、什么是 AST？</a></li><li><a href=#三为什么不用正则分析-javascript>三、为什么不用正则分析 JavaScript？</a></li><li><a href=#四babel-ast-工具链基础>四、Babel AST 工具链基础</a></li><li><a href=#五遍历-ast找到函数调用>五、遍历 AST：找到函数调用</a></li><li><a href=#六观察字符串字面量>六、观察字符串字面量</a></li><li><a href=#七节点路径-path-是什么>七、节点路径 path 是什么？</a></li><li><a href=#八ast-转换一个安全玩具示例>八、AST 转换：一个安全玩具示例</a></li><li><a href=#九常见混淆现象的结构认知>九、常见混淆现象的结构认知</a><ol><li><a href=#1-变量名混淆>1. 变量名混淆</a></li><li><a href=#2-字符串数组>2. 字符串数组</a></li><li><a href=#3-控制流扁平化>3. 控制流扁平化</a></li></ol></li><li><a href=#十ast-在自有系统中的正当用途>十、AST 在自有系统中的正当用途</a></li><li><a href=#十一ast-与-webpack-的关系>十一、AST 与 Webpack 的关系</a></li><li><a href=#十二ast-分析的工程边界>十二、AST 分析的工程边界</a></li><li><a href=#十三llm--agent-如何辅助-ast-分析>十三、LLM / Agent 如何辅助 AST 分析？</a></li><li><a href=#十四常见错误写法>十四、常见错误写法</a><ol><li><a href=#1-用正则批量改-js-代码>1. 用正则批量改 JS 代码</a></li><li><a href=#2-不理解作用域就改变量名>2. 不理解作用域就改变量名</a></li><li><a href=#3-对整个-bundle-直接做复杂转换>3. 对整个 bundle 直接做复杂转换</a></li><li><a href=#4-把压缩混淆加密混为一谈>4. 把压缩、混淆、加密混为一谈</a></li><li><a href=#5-忽视合规边界>5. 忽视合规边界</a></li><li><a href=#6-不保留原始样本>6. 不保留原始样本</a></li></ol></li><li><a href=#十五面试表达>十五、面试表达</a></li><li><a href=#十六总结>十六、总结</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/%E7%88%AC%E8%99%AB%E7%B3%BB%E5%88%97/ style=background-color:#efcfbe;color:#3d1f0f>爬虫系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/ast-javascript-obfuscation-analysis/>大模型时代的数据采集工程 17：AST 在 JavaScript 混淆分析中的应用</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-01-12T10:00:00+08:00>2026-01-12 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 10 分钟</time></div></footer></div></header><section class=article-content><p>上一篇文章里，我们讲了 Webpack 模块机制。</p><p>核心是理解：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>module。
+</span></span><span class=line><span class=cl>exports。
+</span></span><span class=line><span class=cl>require。
+</span></span><span class=line><span class=cl>chunk。
+</span></span><span class=line><span class=cl>Source Map。
+</span></span><span class=line><span class=cl>调用栈。
+</span></span><span class=line><span class=cl>请求函数定位。
+</span></span></code></pre></td></tr></table></div></div><p>当你能看懂 Webpack 打包结构之后，下一步经常会遇到更难读的代码。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>变量名被压缩成 a、b、c。
+</span></span><span class=line><span class=cl>字符串被放进数组。
+</span></span><span class=line><span class=cl>简单表达式被拆成多层函数。
+</span></span><span class=line><span class=cl>条件判断被改写。
+</span></span><span class=line><span class=cl>代码结构和原始源码差异很大。
+</span></span></code></pre></td></tr></table></div></div><p>这时就会接触到 AST。</p><p>AST 是理解 JavaScript 代码结构的重要工具。</p><p>但这一篇依然要先明确边界：</p><blockquote><p>本文只用本地玩具示例讲 AST 的概念、解析、遍历、节点观察和安全分析思路，帮助理解混淆代码为什么难读，以及如何在授权和自有系统中做代码审计、调试和质量分析；不提供可直接用于绕过第三方风控或还原真实平台参数的反混淆工具链。</p></blockquote><h2 id=一前言>一、前言</h2><p>很多人第一次接触 AST，是在 JS 逆向或前端构建工具里。</p><p>比如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Babel 转换语法。
+</span></span><span class=line><span class=cl>ESLint 检查代码。
+</span></span><span class=line><span class=cl>Webpack / Vite 做编译优化。
+</span></span><span class=line><span class=cl>TypeScript 做类型分析。
+</span></span><span class=line><span class=cl>压缩工具改写变量名。
+</span></span><span class=line><span class=cl>混淆工具改变代码结构。
+</span></span></code></pre></td></tr></table></div></div><p>AST 不是专门为逆向存在的。</p><p>它是编译器和代码工具的基础。</p><p>在数据采集和前端调试场景中，AST 可以帮助你：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>理解代码结构。
+</span></span><span class=line><span class=cl>定位函数调用。
+</span></span><span class=line><span class=cl>统计某类表达式。
+</span></span><span class=line><span class=cl>分析变量引用关系。
+</span></span><span class=line><span class=cl>检查自有系统签名规则是否一致。
+</span></span><span class=line><span class=cl>辅助阅读压缩或混淆后的代码。
+</span></span></code></pre></td></tr></table></div></div><p>但 AST 能做什么，不等于我们应该拿它做什么。</p><p>在涉及第三方访问控制、风控系统、付费接口或敏感业务逻辑时，应尊重授权边界。</p><p>本文的重点是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>机制理解。
+</span></span><span class=line><span class=cl>安全调试。
+</span></span><span class=line><span class=cl>代码审计。
+</span></span><span class=line><span class=cl>工程诊断。
+</span></span><span class=line><span class=cl>面试表达。
+</span></span></code></pre></td></tr></table></div></div><h2 id=二什么是-ast>二、什么是 AST？</h2><p>AST 是 Abstract Syntax Tree，抽象语法树。</p><p>它把代码从“字符串”变成“结构化树”。</p><p>例如 JavaScript 代码：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>const</span> <span class=nx>price</span> <span class=o>=</span> <span class=mi>100</span> <span class=o>+</span> <span class=mi>20</span><span class=p>;</span>
+</span></span></code></pre></td></tr></table></div></div><p>从文本看，它只是一行字符串。</p><p>解析成 AST 后，可以理解为：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>变量声明 const
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>变量名 price
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>初始化表达式 100 + 20
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>左侧数字 100
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>运算符 +
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>右侧数字 20
+</span></span></code></pre></td></tr></table></div></div><p>AST 的价值在于：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>代码不再只是文本。
+</span></span><span class=line><span class=cl>每个语法结构都有类型。
+</span></span><span class=line><span class=cl>工具可以按节点类型查找、分析和转换代码。
+</span></span></code></pre></td></tr></table></div></div><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>VariableDeclaration：变量声明。
+</span></span><span class=line><span class=cl>FunctionDeclaration：函数声明。
+</span></span><span class=line><span class=cl>CallExpression：函数调用。
+</span></span><span class=line><span class=cl>BinaryExpression：二元表达式。
+</span></span><span class=line><span class=cl>StringLiteral：字符串字面量。
+</span></span><span class=line><span class=cl>MemberExpression：属性访问。
+</span></span></code></pre></td></tr></table></div></div><p>理解这些节点，就能从结构层面阅读代码。</p><h2 id=三为什么不用正则分析-javascript>三、为什么不用正则分析 JavaScript？</h2><p>前面我们讲过正则适合局部文本模式。</p><p>但 JavaScript 是一门完整语言。</p><p>它有：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>作用域。
+</span></span><span class=line><span class=cl>函数。
+</span></span><span class=line><span class=cl>闭包。
+</span></span><span class=line><span class=cl>对象。
+</span></span><span class=line><span class=cl>数组。
+</span></span><span class=line><span class=cl>条件分支。
+</span></span><span class=line><span class=cl>循环。
+</span></span><span class=line><span class=cl>异步调用。
+</span></span><span class=line><span class=cl>模块系统。
+</span></span><span class=line><span class=cl>语法嵌套。
+</span></span></code></pre></td></tr></table></div></div><p>如果用正则硬分析代码，很容易出错。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>const</span> <span class=nx>text</span> <span class=o>=</span> <span class=s2>&#34;function fake() { return &#39;hello&#39;; }&#34;</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kd>function</span> <span class=nx>real</span><span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=s2>&#34;world&#34;</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>如果用正则搜 <code>function</code>，会同时命中字符串里的内容和真实函数。</p><p>AST 则能区分：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>字符串字面量中的 function。
+</span></span><span class=line><span class=cl>真正的 FunctionDeclaration。
+</span></span></code></pre></td></tr></table></div></div><p>所以原则是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>文本模式用正则。
+</span></span><span class=line><span class=cl>代码结构用 AST。
+</span></span></code></pre></td></tr></table></div></div><h2 id=四babel-ast-工具链基础>四、Babel AST 工具链基础</h2><p>JavaScript 生态里常用 Babel 处理 AST。</p><p>常见包包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>@babel/parser：把代码解析成 AST。
+</span></span><span class=line><span class=cl>@babel/traverse：遍历 AST。
+</span></span><span class=line><span class=cl>@babel/types：创建和判断节点。
+</span></span><span class=line><span class=cl>@babel/generator：把 AST 重新生成代码。
+</span></span></code></pre></td></tr></table></div></div><p>安装示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-bash data-lang=bash><span class=line><span class=cl>npm install @babel/parser @babel/traverse @babel/generator
+</span></span></code></pre></td></tr></table></div></div><p>最小解析示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>const</span> <span class=nx>parser</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=s2>&#34;@babel/parser&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>code</span> <span class=o>=</span> <span class=sb>`
+</span></span></span><span class=line><span class=cl><span class=sb>const price = 100 + 20;
+</span></span></span><span class=line><span class=cl><span class=sb>function format(value) {
+</span></span></span><span class=line><span class=cl><span class=sb>  return &#34;￥&#34; + value;
+</span></span></span><span class=line><span class=cl><span class=sb>}
+</span></span></span><span class=line><span class=cl><span class=sb>`</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>ast</span> <span class=o>=</span> <span class=nx>parser</span><span class=p>.</span><span class=nx>parse</span><span class=p>(</span><span class=nx>code</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>sourceType</span><span class=o>:</span> <span class=s2>&#34;module&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>ast</span><span class=p>.</span><span class=nx>program</span><span class=p>.</span><span class=nx>body</span><span class=p>.</span><span class=nx>map</span><span class=p>((</span><span class=nx>node</span><span class=p>)</span> <span class=p>=&gt;</span> <span class=nx>node</span><span class=p>.</span><span class=nx>type</span><span class=p>));</span>
+</span></span></code></pre></td></tr></table></div></div><p>输出大致是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>VariableDeclaration
+</span></span><span class=line><span class=cl>FunctionDeclaration
+</span></span></code></pre></td></tr></table></div></div><p>这说明代码已经被解析成结构化节点。</p><h2 id=五遍历-ast找到函数调用>五、遍历 AST：找到函数调用</h2><p>用 <code>@babel/traverse</code> 可以遍历节点。</p><p>例如查找所有函数调用。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>const</span> <span class=nx>parser</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=s2>&#34;@babel/parser&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>traverse</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=s2>&#34;@babel/traverse&#34;</span><span class=p>).</span><span class=k>default</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>code</span> <span class=o>=</span> <span class=sb>`
+</span></span></span><span class=line><span class=cl><span class=sb>console.log(&#34;hello&#34;);
+</span></span></span><span class=line><span class=cl><span class=sb>fetch(&#34;/api/items&#34;);
+</span></span></span><span class=line><span class=cl><span class=sb>`</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>ast</span> <span class=o>=</span> <span class=nx>parser</span><span class=p>.</span><span class=nx>parse</span><span class=p>(</span><span class=nx>code</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nx>traverse</span><span class=p>(</span><span class=nx>ast</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>CallExpression</span><span class=p>(</span><span class=nx>path</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>callee</span> <span class=o>=</span> <span class=nx>path</span><span class=p>.</span><span class=nx>node</span><span class=p>.</span><span class=nx>callee</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s2>&#34;call:&#34;</span><span class=p>,</span> <span class=nx>callee</span><span class=p>.</span><span class=nx>type</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里的 <code>CallExpression</code> 表示函数调用。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>fetch</span><span class=p>(</span><span class=s2>&#34;/api/items&#34;</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>就是一个调用表达式。</p><p>在自有系统调试中，你可以用 AST 查找：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>fetch 调用。
+</span></span><span class=line><span class=cl>axios 调用。
+</span></span><span class=line><span class=cl>某个 request 函数调用。
+</span></span><span class=line><span class=cl>某个参数构造函数调用。
+</span></span></code></pre></td></tr></table></div></div><p>但要注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>找到调用点不等于可以越权调用接口。
+</span></span><span class=line><span class=cl>分析必须限定在授权或自有系统中。
+</span></span></code></pre></td></tr></table></div></div><h2 id=六观察字符串字面量>六、观察字符串字面量</h2><p>混淆代码里常见一种模式：字符串集中存放。</p><p>先从简单场景开始。</p><p>查找所有字符串字面量：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>const</span> <span class=nx>parser</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=s2>&#34;@babel/parser&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>traverse</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=s2>&#34;@babel/traverse&#34;</span><span class=p>).</span><span class=k>default</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>code</span> <span class=o>=</span> <span class=sb>`
+</span></span></span><span class=line><span class=cl><span class=sb>const api = &#34;/api/items&#34;;
+</span></span></span><span class=line><span class=cl><span class=sb>const method = &#34;GET&#34;;
+</span></span></span><span class=line><span class=cl><span class=sb>console.log(api, method);
+</span></span></span><span class=line><span class=cl><span class=sb>`</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>ast</span> <span class=o>=</span> <span class=nx>parser</span><span class=p>.</span><span class=nx>parse</span><span class=p>(</span><span class=nx>code</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nx>traverse</span><span class=p>(</span><span class=nx>ast</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>StringLiteral</span><span class=p>(</span><span class=nx>path</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>path</span><span class=p>.</span><span class=nx>node</span><span class=p>.</span><span class=nx>value</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>输出：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>/api/items
+</span></span><span class=line><span class=cl>GET
+</span></span></code></pre></td></tr></table></div></div><p>这类分析适合：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>自有系统代码审计。
+</span></span><span class=line><span class=cl>定位硬编码接口。
+</span></span><span class=line><span class=cl>检查敏感信息是否误写入前端。
+</span></span><span class=line><span class=cl>统计某类配置字符串。
+</span></span></code></pre></td></tr></table></div></div><p>不适合用于未授权分析第三方受限接口。</p><h2 id=七节点路径-path-是什么>七、节点路径 path 是什么？</h2><p>Babel 遍历时传入的不是单纯节点，而是 <code>path</code>。</p><p><code>path</code> 包含：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>当前节点。
+</span></span><span class=line><span class=cl>父节点。
+</span></span><span class=line><span class=cl>作用域信息。
+</span></span><span class=line><span class=cl>替换节点的方法。
+</span></span><span class=line><span class=cl>删除节点的方法。
+</span></span><span class=line><span class=cl>插入节点的方法。
+</span></span></code></pre></td></tr></table></div></div><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>traverse</span><span class=p>(</span><span class=nx>ast</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>Identifier</span><span class=p>(</span><span class=nx>path</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>path</span><span class=p>.</span><span class=nx>node</span><span class=p>.</span><span class=nx>name</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p><code>Identifier</code> 表示标识符。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>const</span> <span class=nx>count</span> <span class=o>=</span> <span class=mi>1</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>count</span><span class=p>);</span>
+</span></span></code></pre></td></tr></table></div></div><p>里面的 <code>count</code> 和 <code>console</code> 都可能是 Identifier。</p><p><code>path</code> 能帮助你判断：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>这个标识符是变量声明？
+</span></span><span class=line><span class=cl>是函数参数？
+</span></span><span class=line><span class=cl>是属性访问？
+</span></span><span class=line><span class=cl>属于哪个作用域？
+</span></span></code></pre></td></tr></table></div></div><p>这比简单字符串替换安全得多。</p><h2 id=八ast-转换一个安全玩具示例>八、AST 转换：一个安全玩具示例</h2><p>AST 不只能读，也能改。</p><p>例如把所有 <code>debugger</code> 语句删除。</p><p>这个例子用于理解 AST 修改，不是针对任何真实站点。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>const</span> <span class=nx>parser</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=s2>&#34;@babel/parser&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>traverse</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=s2>&#34;@babel/traverse&#34;</span><span class=p>).</span><span class=k>default</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>generator</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=s2>&#34;@babel/generator&#34;</span><span class=p>).</span><span class=k>default</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>code</span> <span class=o>=</span> <span class=sb>`
+</span></span></span><span class=line><span class=cl><span class=sb>function demo() {
+</span></span></span><span class=line><span class=cl><span class=sb>  debugger;
+</span></span></span><span class=line><span class=cl><span class=sb>  console.log(&#34;hello&#34;);
+</span></span></span><span class=line><span class=cl><span class=sb>}
+</span></span></span><span class=line><span class=cl><span class=sb>`</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>ast</span> <span class=o>=</span> <span class=nx>parser</span><span class=p>.</span><span class=nx>parse</span><span class=p>(</span><span class=nx>code</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nx>traverse</span><span class=p>(</span><span class=nx>ast</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>DebuggerStatement</span><span class=p>(</span><span class=nx>path</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>path</span><span class=p>.</span><span class=nx>remove</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>output</span> <span class=o>=</span> <span class=nx>generator</span><span class=p>(</span><span class=nx>ast</span><span class=p>).</span><span class=nx>code</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>output</span><span class=p>);</span>
+</span></span></code></pre></td></tr></table></div></div><p>输出类似：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kd>function</span> <span class=nx>demo</span><span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s2>&#34;hello&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个例子说明：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>AST 可以精确识别 debugger 语句。
+</span></span><span class=line><span class=cl>path.remove 可以删除节点。
+</span></span><span class=line><span class=cl>generator 可以把 AST 重新生成代码。
+</span></span></code></pre></td></tr></table></div></div><p>在自有项目里，这类能力可以用于：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>代码迁移。
+</span></span><span class=line><span class=cl>批量重构。
+</span></span><span class=line><span class=cl>安全审计。
+</span></span><span class=line><span class=cl>测试代码清理。
+</span></span></code></pre></td></tr></table></div></div><h2 id=九常见混淆现象的结构认知>九、常见混淆现象的结构认知</h2><p>混淆方式很多。</p><p>本文只讲概念，不提供完整还原工具。</p><p>常见现象包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>变量名混淆。
+</span></span><span class=line><span class=cl>字符串数组。
+</span></span><span class=line><span class=cl>控制流扁平化。
+</span></span><span class=line><span class=cl>无用代码插入。
+</span></span><span class=line><span class=cl>常量表达式改写。
+</span></span><span class=line><span class=cl>对象属性访问变形。
+</span></span></code></pre></td></tr></table></div></div><h3 id=1-变量名混淆>1. 变量名混淆</h3><p>源码：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kd>function</span> <span class=nx>calculatePrice</span><span class=p>(</span><span class=nx>price</span><span class=p>,</span> <span class=nx>count</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=nx>price</span> <span class=o>*</span> <span class=nx>count</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>压缩后：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kd>function</span> <span class=nx>a</span><span class=p>(</span><span class=nx>b</span><span class=p>,</span><span class=nx>c</span><span class=p>){</span><span class=k>return</span> <span class=nx>b</span><span class=o>*</span><span class=nx>c</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>结构没有变，只是名字变短。</p><p>AST 仍然能识别：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>FunctionDeclaration。
+</span></span><span class=line><span class=cl>参数列表。
+</span></span><span class=line><span class=cl>ReturnStatement。
+</span></span><span class=line><span class=cl>BinaryExpression。
+</span></span></code></pre></td></tr></table></div></div><h3 id=2-字符串数组>2. 字符串数组</h3><p>原始代码：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s2>&#34;/api/items&#34;</span><span class=p>);</span>
+</span></span></code></pre></td></tr></table></div></div><p>变形后可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>const</span> <span class=nx>arr</span> <span class=o>=</span> <span class=p>[</span><span class=s2>&#34;/api/items&#34;</span><span class=p>,</span> <span class=s2>&#34;GET&#34;</span><span class=p>];</span>
+</span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>arr</span><span class=p>[</span><span class=mi>0</span><span class=p>]);</span>
+</span></span></code></pre></td></tr></table></div></div><p>这会降低直接搜索的可读性。</p><h3 id=3-控制流扁平化>3. 控制流扁平化</h3><p>原本清晰的 if / else 和顺序执行，可能被改成 switch + while。</p><p>概念上类似：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>把正常执行顺序拆散。
+</span></span><span class=line><span class=cl>用状态变量控制下一步。
+</span></span><span class=line><span class=cl>让人阅读更困难。
+</span></span></code></pre></td></tr></table></div></div><p>这里不展开还原流程。</p><p>只需要知道：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>混淆会改变代码表面结构。
+</span></span><span class=line><span class=cl>AST 可以帮助观察结构，但是否还原、如何还原必须受授权和场景约束。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十ast-在自有系统中的正当用途>十、AST 在自有系统中的正当用途</h2><p>AST 在工程中有很多正当用途。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>检查是否有硬编码密钥。
+</span></span><span class=line><span class=cl>统计接口调用位置。
+</span></span><span class=line><span class=cl>批量替换过时 API。
+</span></span><span class=line><span class=cl>检查某些危险函数调用。
+</span></span><span class=line><span class=cl>为代码迁移生成辅助脚本。
+</span></span><span class=line><span class=cl>分析打包代码中的模块依赖。
+</span></span></code></pre></td></tr></table></div></div><p>例如查找硬编码的疑似密钥字段。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kr>const</span> <span class=nx>parser</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=s2>&#34;@babel/parser&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>traverse</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=s2>&#34;@babel/traverse&#34;</span><span class=p>).</span><span class=k>default</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>code</span> <span class=o>=</span> <span class=sb>`
+</span></span></span><span class=line><span class=cl><span class=sb>const apiKey = &#34;demo-key&#34;;
+</span></span></span><span class=line><span class=cl><span class=sb>const normalText = &#34;hello&#34;;
+</span></span></span><span class=line><span class=cl><span class=sb>`</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>ast</span> <span class=o>=</span> <span class=nx>parser</span><span class=p>.</span><span class=nx>parse</span><span class=p>(</span><span class=nx>code</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nx>traverse</span><span class=p>(</span><span class=nx>ast</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>VariableDeclarator</span><span class=p>(</span><span class=nx>path</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>id</span> <span class=o>=</span> <span class=nx>path</span><span class=p>.</span><span class=nx>node</span><span class=p>.</span><span class=nx>id</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>init</span> <span class=o>=</span> <span class=nx>path</span><span class=p>.</span><span class=nx>node</span><span class=p>.</span><span class=nx>init</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=p>(</span><span class=nx>id</span><span class=p>.</span><span class=nx>type</span> <span class=o>===</span> <span class=s2>&#34;Identifier&#34;</span> <span class=o>&amp;&amp;</span> <span class=sr>/key|secret|token/i</span><span class=p>.</span><span class=nx>test</span><span class=p>(</span><span class=nx>id</span><span class=p>.</span><span class=nx>name</span><span class=p>))</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=k>if</span> <span class=p>(</span><span class=nx>init</span> <span class=o>&amp;&amp;</span> <span class=nx>init</span><span class=p>.</span><span class=nx>type</span> <span class=o>===</span> <span class=s2>&#34;StringLiteral&#34;</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s2>&#34;possible sensitive literal:&#34;</span><span class=p>,</span> <span class=nx>id</span><span class=p>.</span><span class=nx>name</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个例子用于自有代码安全审计。</p><p>它提醒我们：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不要把敏感密钥写进前端代码。
+</span></span><span class=line><span class=cl>前端能看到的内容，就不能当作真正的秘密。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十一ast-与-webpack-的关系>十一、AST 与 Webpack 的关系</h2><p>Webpack 打包后的代码也可以被解析成 AST。</p><p>但要注意两点。</p><p>第一，打包代码会多出运行时代码。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>__webpack_modules__。
+</span></span><span class=line><span class=cl>__webpack_require__。
+</span></span><span class=line><span class=cl>chunk loading runtime。
+</span></span><span class=line><span class=cl>module cache。
+</span></span></code></pre></td></tr></table></div></div><p>第二，生产代码可能被压缩。</p><p>变量名、格式和结构都不如源码清晰。</p><p>所以分析顺序建议是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>优先看 Source Map。
+</span></span><span class=line><span class=cl>没有 Source Map 时看 Network Initiator 和调用栈。
+</span></span><span class=line><span class=cl>定位到相关 bundle 区域。
+</span></span><span class=line><span class=cl>再结合 AST 做结构分析。
+</span></span></code></pre></td></tr></table></div></div><p>不要一上来就对整个 bundle 做复杂转换。</p><p>先缩小范围。</p><p>这和前面讲正则时的原则类似：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>先缩小输入范围，再使用工具。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十二ast-分析的工程边界>十二、AST 分析的工程边界</h2><p>AST 是强大的代码分析工具。</p><p>但边界必须清楚。</p><p>适合：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>自有前端项目代码审计。
+</span></span><span class=line><span class=cl>授权测试环境问题排查。
+</span></span><span class=line><span class=cl>打包结构理解。
+</span></span><span class=line><span class=cl>接口调用点统计。
+</span></span><span class=line><span class=cl>前后端签名规则一致性检查。
+</span></span><span class=line><span class=cl>安全培训和教学示例。
+</span></span></code></pre></td></tr></table></div></div><p>不适合：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>还原第三方受限接口逻辑。
+</span></span><span class=line><span class=cl>绕过访问控制。
+</span></span><span class=line><span class=cl>破解付费接口。
+</span></span><span class=line><span class=cl>规避风控系统。
+</span></span><span class=line><span class=cl>批量扩大未授权采集。
+</span></span></code></pre></td></tr></table></div></div><p>如果一个分析目标涉及敏感业务、付费内容、验证码、风控或未授权接口，应停止并走授权流程。</p><p>这不是技术能力不足。</p><p>这是专业边界。</p><h2 id=十三llm--agent-如何辅助-ast-分析>十三、LLM / Agent 如何辅助 AST 分析？</h2><p>LLM 和 Agent 可以辅助理解 AST 和代码结构。</p><p>适合输入：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>自有系统的代码片段。
+</span></span><span class=line><span class=cl>Babel AST 节点片段。
+</span></span><span class=line><span class=cl>调用栈。
+</span></span><span class=line><span class=cl>Webpack 模块片段。
+</span></span><span class=line><span class=cl>错误日志。
+</span></span></code></pre></td></tr></table></div></div><p>可以让 Agent 帮助：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>解释某段 AST 的含义。
+</span></span><span class=line><span class=cl>总结函数调用关系。
+</span></span><span class=line><span class=cl>识别某个变量来自哪里。
+</span></span><span class=line><span class=cl>生成自有代码审计规则。
+</span></span><span class=line><span class=cl>检查是否有硬编码 token。
+</span></span><span class=line><span class=cl>生成安全测试样例。
+</span></span></code></pre></td></tr></table></div></div><p>安全提示词示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你是自有前端项目的 AST 分析助手。
+</span></span><span class=line><span class=cl>请解释这段 Babel AST 中的函数、变量和调用关系。
+</span></span><span class=line><span class=cl>只讨论授权代码审计、测试和工程调试。
+</span></span><span class=line><span class=cl>不要提供绕过第三方访问控制、风控系统或付费接口的建议。
+</span></span></code></pre></td></tr></table></div></div><p>这体现的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>AST 提供结构化代码理解。
+</span></span><span class=line><span class=cl>LLM 提供解释和总结。
+</span></span><span class=line><span class=cl>工程规则负责边界。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十四常见错误写法>十四、常见错误写法</h2><h3 id=1-用正则批量改-js-代码>1. 用正则批量改 JS 代码</h3><p>简单文本替换很容易误伤字符串、注释和不同作用域变量。</p><p>代码结构分析应优先用 AST。</p><h3 id=2-不理解作用域就改变量名>2. 不理解作用域就改变量名</h3><p>同名变量可能在不同作用域中含义不同。</p><p>AST 工具可以读取作用域信息，不能盲目全局替换。</p><h3 id=3-对整个-bundle-直接做复杂转换>3. 对整个 bundle 直接做复杂转换</h3><p>大型 bundle 体积大、结构复杂。</p><p>应该先定位相关模块，再做局部分析。</p><h3 id=4-把压缩混淆加密混为一谈>4. 把压缩、混淆、加密混为一谈</h3><p>压缩是减小体积。</p><p>混淆是降低可读性。</p><p>加密通常涉及密钥和运行时解密。</p><p>三者目的和分析方式不同。</p><h3 id=5-忽视合规边界>5. 忽视合规边界</h3><p>AST 能帮助理解代码，但不能成为绕过访问控制或风控的理由。</p><h3 id=6-不保留原始样本>6. 不保留原始样本</h3><p>做自有代码转换时，应保留原始样本、测试用例和转换前后对比。</p><p>否则很难排查转换是否引入问题。</p><h2 id=十五面试表达>十五、面试表达</h2><p>如果面试官问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>什么是 AST？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>AST 是抽象语法树，它把代码从字符串变成结构化节点。比如变量声明、函数声明、函数调用、字符串字面量和二元表达式都会对应不同节点类型。使用 AST 可以按代码结构进行分析和转换，比用正则处理 JavaScript 更可靠。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>AST 在 JS 分析里有什么用？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>AST 可以用于理解和分析 JavaScript 结构，比如查找函数调用、统计字符串字面量、分析变量引用、检查硬编码敏感信息、辅助理解 Webpack 打包后的模块。自有系统里还可以用它做代码审计、批量重构和签名规则一致性检查。对于混淆代码，AST 能帮助观察结构，但是否进一步还原要看授权和合规边界。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Babel AST 工具链包括什么？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>常用的是 <code>@babel/parser</code>、<code>@babel/traverse</code>、<code>@babel/types</code> 和 <code>@babel/generator</code>。parser 负责把代码解析成 AST，traverse 负责遍历节点，types 用于判断和创建节点，generator 可以把修改后的 AST 重新生成代码。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>混淆代码你会怎么分析？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会先区分压缩、混淆和加密。如果是自有或授权代码，会优先找 Source Map 和原始源码；没有源码时，先缩小范围，比如根据调用栈、接口关键词或模块 ID 定位相关片段，再用 AST 观察函数调用、字符串字面量、变量引用和控制流结构。涉及第三方访问控制、付费接口或风控逻辑时，不做绕过式还原，而是走授权或正式接口。</p></blockquote><h2 id=十六总结>十六、总结</h2><p>本文讲了 AST 在 JavaScript 混淆分析中的应用。</p><p>核心结论包括：</p><ul><li>AST 是抽象语法树，可以把代码从字符串转换成结构化节点。</li><li>JavaScript 是完整编程语言，结构分析应优先使用 AST，而不是正则硬处理。</li><li>Babel 常用工具包括 parser、traverse、types 和 generator。</li><li>AST 可以帮助查找函数调用、字符串字面量、变量声明、作用域和特定语法结构。</li><li>AST 转换可以用于自有代码重构、审计和测试，但要保留样本和测试用例。</li><li>常见混淆现象包括变量名混淆、字符串数组、控制流扁平化、无用代码插入和属性访问变形。</li><li>Webpack bundle 也可以解析成 AST，但应先通过 Source Map、调用栈和关键词缩小范围。</li><li>AST 在自有系统中可以用于硬编码敏感信息检查、接口调用点统计和签名规则一致性分析。</li><li>AST 能力必须受授权和合规边界约束，不应被用于绕过访问控制、付费接口或风控系统。</li><li>LLM / Agent 可以辅助解释 AST 和调用关系，但不能替代工程规则和合规判断。</li></ul><p>下一篇文章，我们会进入 App 采集与移动端分析的基础认知：</p><blockquote><p>App 抓包与 Frida Hook 基础认知。</p></blockquote><p>我们会从 App 与 Web 采集的差异、Android 网络链路、抓包分析、Hook 概念和合规边界讲起，不写绕过证书校验、破解接口或真实 App 风控的操作流程。</p></section><footer class=article-footer><section class=article-tags><a href=/tags/python/>Python</a>
+<a href=/tags/%E7%88%AC%E8%99%AB/>爬虫</a>
+<a href=/tags/javascript/>JavaScript</a>
+<a href=/tags/ast/>AST</a>
+<a href=/tags/%E6%B7%B7%E6%B7%86%E5%88%86%E6%9E%90/>混淆分析</a>
+<a href=/tags/babel/>Babel</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/webpack-module-mechanism-analysis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 16：Webpack 模块机制分析</h2></div></a></article><article><a href=/p/js-reverse-engineering-signature-basics/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 15：JS 逆向入门与参数签名认知</h2></div></a></article><article><a href=/p/captcha-recognition-automation-boundaries/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 20：自动化任务中的验证码识别边界</h2></div></a></article><article><a href=/p/captcha-mechanism-analysis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 19：验证码机制分析</h2></div></a></article><article><a href=/p/app-crawling-frida-hook-basics/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 18：App 抓包与 Frida Hook 基础认知</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

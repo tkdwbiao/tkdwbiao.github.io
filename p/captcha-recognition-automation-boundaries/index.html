@@ -1,0 +1,446 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇文章里，我们讲了验证码机制分析。\n核心结论是：\n1 2 3 验证码不是单纯图片识别问题。 它通常是风控系统中的挑战机制。 自动化任务遇到验证码时，应暂停、记录、人工确认，而不是继续重试或绕过。 这一篇继续讨论一个更容易被误用的话题：验证码识别。\n大模型时代，OCR、目标检测、多模态模型越来越强。\n很多人会自然想到：\n1 2 3 4 能不能用 OCR 识别图片验证码？ 能不能用目标检测处理点选验证码？ 能不能用多模态模型看懂滑块缺口？ 能不能把验证码自动接入爬虫流程？ 从技术能力上看，有些事情确实可以研究。\n但从工程边界和合规角度看，并不是“能做”就“应该做”。\n本文要讲的是：\n验证码识别技术的基本类型、误差来源、合规使用场景、自动化任务中的暂停策略，以及为什么真实业务验证码不应该被自动化绕过。\n"><title>大模型时代的数据采集工程 20：自动化任务中的验证码识别边界</title><link rel=canonical href=https://tkdwbiao.github.io/p/captcha-recognition-automation-boundaries/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="大模型时代的数据采集工程 20：自动化任务中的验证码识别边界"><meta property='og:description' content="上一篇文章里，我们讲了验证码机制分析。\n核心结论是：\n1 2 3 验证码不是单纯图片识别问题。 它通常是风控系统中的挑战机制。 自动化任务遇到验证码时，应暂停、记录、人工确认，而不是继续重试或绕过。 这一篇继续讨论一个更容易被误用的话题：验证码识别。\n大模型时代，OCR、目标检测、多模态模型越来越强。\n很多人会自然想到：\n1 2 3 4 能不能用 OCR 识别图片验证码？ 能不能用目标检测处理点选验证码？ 能不能用多模态模型看懂滑块缺口？ 能不能把验证码自动接入爬虫流程？ 从技术能力上看，有些事情确实可以研究。\n但从工程边界和合规角度看，并不是“能做”就“应该做”。\n本文要讲的是：\n验证码识别技术的基本类型、误差来源、合规使用场景、自动化任务中的暂停策略，以及为什么真实业务验证码不应该被自动化绕过。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/captcha-recognition-automation-boundaries/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='Python'><meta property='article:tag' content='爬虫'><meta property='article:tag' content='验证码'><meta property='article:tag' content='OCR'><meta property='article:tag' content='多模态'><meta property='article:tag' content='自动化边界'><meta property='article:published_time' content='2026-01-18T10:00:00+08:00'><meta property='article:modified_time' content='2026-01-18T10:00:00+08:00'><meta name=twitter:title content="大模型时代的数据采集工程 20：自动化任务中的验证码识别边界"><meta name=twitter:description content="上一篇文章里，我们讲了验证码机制分析。\n核心结论是：\n1 2 3 验证码不是单纯图片识别问题。 它通常是风控系统中的挑战机制。 自动化任务遇到验证码时，应暂停、记录、人工确认，而不是继续重试或绕过。 这一篇继续讨论一个更容易被误用的话题：验证码识别。\n大模型时代，OCR、目标检测、多模态模型越来越强。\n很多人会自然想到：\n1 2 3 4 能不能用 OCR 识别图片验证码？ 能不能用目标检测处理点选验证码？ 能不能用多模态模型看懂滑块缺口？ 能不能把验证码自动接入爬虫流程？ 从技术能力上看，有些事情确实可以研究。\n但从工程边界和合规角度看，并不是“能做”就“应该做”。\n本文要讲的是：\n验证码识别技术的基本类型、误差来源、合规使用场景、自动化任务中的暂停策略，以及为什么真实业务验证码不应该被自动化绕过。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二验证码识别技术有哪些>二、验证码识别技术有哪些？</a></li><li><a href=#三ocr-能做什么不能做什么>三、OCR 能做什么，不能做什么？</a></li><li><a href=#四目标检测与点选验证码>四、目标检测与点选验证码</a></li><li><a href=#五滑块验证码与行为轨迹>五、滑块验证码与行为轨迹</a></li><li><a href=#六多模态模型的能力与边界>六、多模态模型的能力与边界</a></li><li><a href=#七验证码识别的误差来源>七、验证码识别的误差来源</a></li><li><a href=#八自动化任务中的正确处理方式>八、自动化任务中的正确处理方式</a></li><li><a href=#九人工复核流程>九、人工复核流程</a></li><li><a href=#十无障碍与验证码替代方案>十、无障碍与验证码替代方案</a></li><li><a href=#十一自有系统中的验证码评估指标>十一、自有系统中的验证码评估指标</a></li><li><a href=#十二llm--agent-的合规用法>十二、LLM / Agent 的合规用法</a></li><li><a href=#十三常见错误写法>十三、常见错误写法</a><ol><li><a href=#1-把验证码识别接入爬虫主流程>1. 把验证码识别接入爬虫主流程</a></li><li><a href=#2-遇到验证码继续重试>2. 遇到验证码继续重试</a></li><li><a href=#3-只关注模型准确率>3. 只关注模型准确率</a></li><li><a href=#4-忽略人工复核>4. 忽略人工复核</a></li><li><a href=#5-把多模态能力用于绕过真实风控>5. 把多模态能力用于绕过真实风控</a></li><li><a href=#6-日志不脱敏>6. 日志不脱敏</a></li></ol></li><li><a href=#十四面试表达>十四、面试表达</a></li><li><a href=#十五总结>十五、总结</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/%E7%88%AC%E8%99%AB%E7%B3%BB%E5%88%97/ style=background-color:#efcfbe;color:#3d1f0f>爬虫系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/captcha-recognition-automation-boundaries/>大模型时代的数据采集工程 20：自动化任务中的验证码识别边界</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-01-18T10:00:00+08:00>2026-01-18 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 10 分钟</time></div></footer></div></header><section class=article-content><p>上一篇文章里，我们讲了验证码机制分析。</p><p>核心结论是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>验证码不是单纯图片识别问题。
+</span></span><span class=line><span class=cl>它通常是风控系统中的挑战机制。
+</span></span><span class=line><span class=cl>自动化任务遇到验证码时，应暂停、记录、人工确认，而不是继续重试或绕过。
+</span></span></code></pre></td></tr></table></div></div><p>这一篇继续讨论一个更容易被误用的话题：验证码识别。</p><p>大模型时代，OCR、目标检测、多模态模型越来越强。</p><p>很多人会自然想到：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>能不能用 OCR 识别图片验证码？
+</span></span><span class=line><span class=cl>能不能用目标检测处理点选验证码？
+</span></span><span class=line><span class=cl>能不能用多模态模型看懂滑块缺口？
+</span></span><span class=line><span class=cl>能不能把验证码自动接入爬虫流程？
+</span></span></code></pre></td></tr></table></div></div><p>从技术能力上看，有些事情确实可以研究。</p><p>但从工程边界和合规角度看，并不是“能做”就“应该做”。</p><p>本文要讲的是：</p><blockquote><p>验证码识别技术的基本类型、误差来源、合规使用场景、自动化任务中的暂停策略，以及为什么真实业务验证码不应该被自动化绕过。</p></blockquote><h2 id=一前言>一、前言</h2><p>验证码识别是一个典型的双用途话题。</p><p>它可以用于正当场景：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>自有验证码系统测试。
+</span></span><span class=line><span class=cl>无障碍体验研究。
+</span></span><span class=line><span class=cl>验证码难度评估。
+</span></span><span class=line><span class=cl>安全培训和教学。
+</span></span><span class=line><span class=cl>测试样本分类。
+</span></span><span class=line><span class=cl>风控触发原因诊断。
+</span></span></code></pre></td></tr></table></div></div><p>也可能被滥用于：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>批量注册。
+</span></span><span class=line><span class=cl>撞库登录。
+</span></span><span class=line><span class=cl>刷量。
+</span></span><span class=line><span class=cl>抢购抢票。
+</span></span><span class=line><span class=cl>未授权采集。
+</span></span><span class=line><span class=cl>绕过风控挑战。
+</span></span></code></pre></td></tr></table></div></div><p>所以公开文章必须明确：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>可以讲识别技术原理。
+</span></span><span class=line><span class=cl>可以讲误差来源和测试评估。
+</span></span><span class=line><span class=cl>可以讲自动化任务遇到验证码如何暂停。
+</span></span><span class=line><span class=cl>可以讲自有系统中的安全测试。
+</span></span><span class=line><span class=cl>不能讲真实业务验证码绕过流程。
+</span></span><span class=line><span class=cl>不能提供可直接接入爬虫的验证码突破方案。
+</span></span></code></pre></td></tr></table></div></div><p>本文的重点不是“如何破解验证码”。</p><p>而是帮助你在面试和工程实践中表达：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>我理解验证码识别技术。
+</span></span><span class=line><span class=cl>我也理解它的安全边界。
+</span></span><span class=line><span class=cl>我知道什么时候应该暂停自动化任务。
+</span></span><span class=line><span class=cl>我能在自有系统中做合规测试和风险诊断。
+</span></span></code></pre></td></tr></table></div></div><h2 id=二验证码识别技术有哪些>二、验证码识别技术有哪些？</h2><p>从技术上看，常见识别方向包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>OCR 文本识别。
+</span></span><span class=line><span class=cl>图像分类。
+</span></span><span class=line><span class=cl>目标检测。
+</span></span><span class=line><span class=cl>图像分割。
+</span></span><span class=line><span class=cl>轨迹分析。
+</span></span><span class=line><span class=cl>多模态理解。
+</span></span></code></pre></td></tr></table></div></div><p>不同验证码对应不同技术。</p><div class=table-wrapper><table><thead><tr><th>验证码类型</th><th>可能涉及的技术</th><th>合规用途</th></tr></thead><tbody><tr><td>图片文字验证码</td><td>OCR、图像预处理</td><td>自有系统难度评估、无障碍研究</td></tr><tr><td>点选验证码</td><td>目标检测、多模态理解</td><td>测试样本分类、可用性研究</td></tr><tr><td>滑块验证码</td><td>图像匹配、行为分析</td><td>自有系统交互体验评估</td></tr><tr><td>行为验证</td><td>轨迹分析、异常检测</td><td>防御性风控测试</td></tr><tr><td>无感验证</td><td>风险评分、行为模型</td><td>安全策略评估</td></tr></tbody></table></div><p>这张表不是为了指导绕过。</p><p>它的意义是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>验证码识别不是一个统一问题。
+</span></span><span class=line><span class=cl>不同验证码有不同输入、不同目标和不同风险。
+</span></span></code></pre></td></tr></table></div></div><h2 id=三ocr-能做什么不能做什么>三、OCR 能做什么，不能做什么？</h2><p>OCR 适合识别清晰文本。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>扫描文档。
+</span></span><span class=line><span class=cl>发票票据。
+</span></span><span class=line><span class=cl>截图文字。
+</span></span><span class=line><span class=cl>表格图片。
+</span></span><span class=line><span class=cl>无障碍文本提取。
+</span></span></code></pre></td></tr></table></div></div><p>在验证码领域，OCR 可能被用于研究图片文字验证码的可读性。</p><p>合规用途包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>评估自有验证码是否过难或过易。
+</span></span><span class=line><span class=cl>检查正常用户是否容易识别。
+</span></span><span class=line><span class=cl>为无障碍场景设计替代方案。
+</span></span><span class=line><span class=cl>测试验证码图片生成质量。
+</span></span></code></pre></td></tr></table></div></div><p>不合规用途包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>批量识别真实业务验证码。
+</span></span><span class=line><span class=cl>自动化登录、注册或提交表单。
+</span></span><span class=line><span class=cl>绕过第三方平台风控。
+</span></span></code></pre></td></tr></table></div></div><p>工程上要记住：</p><blockquote><p>OCR 是识别工具，不是访问授权。</p></blockquote><p>即使模型能识别图片，也不代表自动化系统有权通过验证码挑战。</p><h2 id=四目标检测与点选验证码>四、目标检测与点选验证码</h2><p>点选验证码可能要求用户点击图片中的目标。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>点击所有交通灯。
+</span></span><span class=line><span class=cl>依次点击指定汉字。
+</span></span><span class=line><span class=cl>点击图片中的某类物体。
+</span></span></code></pre></td></tr></table></div></div><p>技术上，目标检测模型可以识别图像中的物体位置。</p><p>但真实点选验证码通常还结合：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>图片扰动。
+</span></span><span class=line><span class=cl>目标语义。
+</span></span><span class=line><span class=cl>点击顺序。
+</span></span><span class=line><span class=cl>鼠标或触摸轨迹。
+</span></span><span class=line><span class=cl>设备环境。
+</span></span><span class=line><span class=cl>风险评分。
+</span></span></code></pre></td></tr></table></div></div><p>合规研究可以关注：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>自有验证码样本是否可被过度轻易识别。
+</span></span><span class=line><span class=cl>提示文本是否清晰。
+</span></span><span class=line><span class=cl>目标区域是否对正常用户友好。
+</span></span><span class=line><span class=cl>误点率是否过高。
+</span></span><span class=line><span class=cl>是否对视力障碍用户提供替代方案。
+</span></span></code></pre></td></tr></table></div></div><p>不应该做的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>把目标检测接入真实业务自动化流程。
+</span></span><span class=line><span class=cl>批量处理第三方点选验证码。
+</span></span><span class=line><span class=cl>规避风控挑战。
+</span></span></code></pre></td></tr></table></div></div><h2 id=五滑块验证码与行为轨迹>五、滑块验证码与行为轨迹</h2><p>滑块验证码表面看是“找到缺口位置”。</p><p>但很多滑块验证码不只看缺口。</p><p>还可能关注：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>拖动时间。
+</span></span><span class=line><span class=cl>速度变化。
+</span></span><span class=line><span class=cl>加速度。
+</span></span><span class=line><span class=cl>停顿。
+</span></span><span class=line><span class=cl>轨迹抖动。
+</span></span><span class=line><span class=cl>鼠标事件序列。
+</span></span><span class=line><span class=cl>设备环境。
+</span></span><span class=line><span class=cl>风险评分。
+</span></span></code></pre></td></tr></table></div></div><p>所以它并不是单纯图像匹配问题。</p><p>合规用途可以是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>评估自有滑块交互是否对用户友好。
+</span></span><span class=line><span class=cl>检查移动端触控体验。
+</span></span><span class=line><span class=cl>分析误触和失败率。
+</span></span><span class=line><span class=cl>优化无障碍替代流程。
+</span></span></code></pre></td></tr></table></div></div><p>不合规用途是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生成自动拖动轨迹绕过真实业务滑块。
+</span></span><span class=line><span class=cl>批量处理风控挑战。
+</span></span><span class=line><span class=cl>用于抢购、抢票、注册、登录等自动化滥用场景。
+</span></span></code></pre></td></tr></table></div></div><p>因此本文不会提供轨迹生成、滑块缺口定位或真实验证码处理流程。</p><h2 id=六多模态模型的能力与边界>六、多模态模型的能力与边界</h2><p>多模态模型可以理解图像和文字。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>描述图片内容。
+</span></span><span class=line><span class=cl>识别截图中的按钮。
+</span></span><span class=line><span class=cl>理解提示语。
+</span></span><span class=line><span class=cl>判断页面是否出现验证码。
+</span></span><span class=line><span class=cl>解释错误页面。
+</span></span></code></pre></td></tr></table></div></div><p>在数据采集系统中，多模态模型更适合做：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>失败页面诊断。
+</span></span><span class=line><span class=cl>截图分类。
+</span></span><span class=line><span class=cl>验证码触发检测。
+</span></span><span class=line><span class=cl>无障碍研究。
+</span></span><span class=line><span class=cl>测试样本标注。
+</span></span><span class=line><span class=cl>人工复核辅助。
+</span></span></code></pre></td></tr></table></div></div><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Playwright 任务失败后保存截图。
+</span></span><span class=line><span class=cl>多模态模型判断截图是否是登录页、验证码页、空白页或错误页。
+</span></span><span class=line><span class=cl>系统根据分类决定暂停、重新授权或人工确认。
+</span></span></code></pre></td></tr></table></div></div><p>这和“识别验证码答案”不同。</p><p>合规方向是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>识别页面状态。
+</span></span><span class=line><span class=cl>辅助诊断。
+</span></span><span class=line><span class=cl>触发暂停。
+</span></span><span class=line><span class=cl>帮助人工复核。
+</span></span></code></pre></td></tr></table></div></div><p>不合规方向是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>自动解答真实业务验证码。
+</span></span><span class=line><span class=cl>绕过风险挑战。
+</span></span><span class=line><span class=cl>批量提交。
+</span></span></code></pre></td></tr></table></div></div><h2 id=七验证码识别的误差来源>七、验证码识别的误差来源</h2><p>即使只做自有系统测试，也要理解误差来源。</p><p>常见误差包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>图片噪声。
+</span></span><span class=line><span class=cl>字体扭曲。
+</span></span><span class=line><span class=cl>背景干扰。
+</span></span><span class=line><span class=cl>压缩损失。
+</span></span><span class=line><span class=cl>低分辨率。
+</span></span><span class=line><span class=cl>遮挡。
+</span></span><span class=line><span class=cl>提示语歧义。
+</span></span><span class=line><span class=cl>目标边界不清。
+</span></span><span class=line><span class=cl>模型训练数据偏差。
+</span></span></code></pre></td></tr></table></div></div><p>对于行为类验证码，还可能有：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>设备差异。
+</span></span><span class=line><span class=cl>触控和鼠标差异。
+</span></span><span class=line><span class=cl>浏览器事件差异。
+</span></span><span class=line><span class=cl>网络延迟。
+</span></span><span class=line><span class=cl>用户操作习惯差异。
+</span></span></code></pre></td></tr></table></div></div><p>这些误差说明：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>验证码系统不是越难越好。
+</span></span><span class=line><span class=cl>太难会误伤正常用户。
+</span></span><span class=line><span class=cl>太简单又失去防护意义。
+</span></span></code></pre></td></tr></table></div></div><p>自有系统测试应该关注：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>正常用户通过率。
+</span></span><span class=line><span class=cl>异常行为拦截率。
+</span></span><span class=line><span class=cl>误伤率。
+</span></span><span class=line><span class=cl>失败后的提示是否清晰。
+</span></span><span class=line><span class=cl>是否有无障碍替代方案。
+</span></span></code></pre></td></tr></table></div></div><h2 id=八自动化任务中的正确处理方式>八、自动化任务中的正确处理方式</h2><p>当自动化任务遇到验证码，不应该进入识别流程。</p><p>更合理的流程是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务执行
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>检测到验证码或风险提示
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>保存截图、HTML、URL、状态码、账号和数据源
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>任务状态改为 captcha_required
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>暂停当前任务和相关资源
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>通知人工或进入授权复核
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>检查频率、登录态、授权范围和数据通道
+</span></span></code></pre></td></tr></table></div></div><p>可以用状态机表达：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>enum</span> <span class=kn>import</span> <span class=n>Enum</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>TaskStatus</span><span class=p>(</span><span class=nb>str</span><span class=p>,</span> <span class=n>Enum</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>PENDING</span> <span class=o>=</span> <span class=s2>&#34;pending&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>RUNNING</span> <span class=o>=</span> <span class=s2>&#34;running&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>SUCCEEDED</span> <span class=o>=</span> <span class=s2>&#34;succeeded&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>RETRYING</span> <span class=o>=</span> <span class=s2>&#34;retrying&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>CAPTCHA_REQUIRED</span> <span class=o>=</span> <span class=s2>&#34;captcha_required&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>MANUAL_REVIEW</span> <span class=o>=</span> <span class=s2>&#34;manual_review&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>DEAD</span> <span class=o>=</span> <span class=s2>&#34;dead&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>分类函数：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>detect_captcha_signal</span><span class=p>(</span><span class=n>page_title</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span> <span class=n>text_excerpt</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>bool</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>keywords</span> <span class=o>=</span> <span class=p>[</span><span class=s2>&#34;验证码&#34;</span><span class=p>,</span> <span class=s2>&#34;人机验证&#34;</span><span class=p>,</span> <span class=s2>&#34;安全验证&#34;</span><span class=p>,</span> <span class=s2>&#34;请完成验证&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>haystack</span> <span class=o>=</span> <span class=sa>f</span><span class=s2>&#34;</span><span class=si>{</span><span class=n>page_title</span><span class=si>}</span><span class=se>\n</span><span class=si>{</span><span class=n>text_excerpt</span><span class=si>}</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=nb>any</span><span class=p>(</span><span class=n>keyword</span> <span class=ow>in</span> <span class=n>haystack</span> <span class=k>for</span> <span class=n>keyword</span> <span class=ow>in</span> <span class=n>keywords</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>注意：这里是检测验证码页面并暂停。</p><p>不是识别验证码答案。</p><h2 id=九人工复核流程>九、人工复核流程</h2><p>验证码触发后，应该有人工复核流程。</p><p>复核内容包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务是否有授权？
+</span></span><span class=line><span class=cl>数据源是否允许采集？
+</span></span><span class=line><span class=cl>访问频率是否过高？
+</span></span><span class=line><span class=cl>账号状态是否异常？
+</span></span><span class=line><span class=cl>是否有正式 API？
+</span></span><span class=line><span class=cl>是否需要降低频率？
+</span></span><span class=line><span class=cl>是否需要停止任务？
+</span></span></code></pre></td></tr></table></div></div><p>复核结果可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>重新授权。
+</span></span><span class=line><span class=cl>降低频率。
+</span></span><span class=line><span class=cl>改用正式接口。
+</span></span><span class=line><span class=cl>调整任务范围。
+</span></span><span class=line><span class=cl>停止任务。
+</span></span><span class=line><span class=cl>标记为不可采集。
+</span></span></code></pre></td></tr></table></div></div><p>这比自动识别验证码更符合工程和合规要求。</p><h2 id=十无障碍与验证码替代方案>十、无障碍与验证码替代方案</h2><p>验证码也会影响真实用户。</p><p>特别是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>视力障碍用户。
+</span></span><span class=line><span class=cl>老年用户。
+</span></span><span class=line><span class=cl>移动端小屏用户。
+</span></span><span class=line><span class=cl>网络环境差的用户。
+</span></span><span class=line><span class=cl>使用辅助技术的用户。
+</span></span></code></pre></td></tr></table></div></div><p>自有系统设计时，可以考虑：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>语音验证码。
+</span></span><span class=line><span class=cl>短信或邮箱二次确认。
+</span></span><span class=line><span class=cl>可信设备。
+</span></span><span class=line><span class=cl>风险分级。
+</span></span><span class=line><span class=cl>人工客服通道。
+</span></span><span class=line><span class=cl>无障碍友好的挑战方式。
+</span></span></code></pre></td></tr></table></div></div><p>这里的目标是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>既保护系统安全，又减少对正常用户的误伤。
+</span></span></code></pre></td></tr></table></div></div><p>这也是验证码识别技术可以正当参与的方向：评估可用性和无障碍体验。</p><h2 id=十一自有系统中的验证码评估指标>十一、自有系统中的验证码评估指标</h2><p>如果你负责自有验证码系统，可以关注这些指标：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>正常用户通过率。
+</span></span><span class=line><span class=cl>首次通过率。
+</span></span><span class=line><span class=cl>平均完成时间。
+</span></span><span class=line><span class=cl>失败次数分布。
+</span></span><span class=line><span class=cl>误伤率。
+</span></span><span class=line><span class=cl>异常行为拦截率。
+</span></span><span class=line><span class=cl>人工复核比例。
+</span></span><span class=line><span class=cl>无障碍替代流程使用率。
+</span></span></code></pre></td></tr></table></div></div><p>也可以记录：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>验证码类型。
+</span></span><span class=line><span class=cl>触发场景。
+</span></span><span class=line><span class=cl>风险等级。
+</span></span><span class=line><span class=cl>账号角色。
+</span></span><span class=line><span class=cl>设备类型。
+</span></span><span class=line><span class=cl>失败原因。
+</span></span></code></pre></td></tr></table></div></div><p>这些数据可以帮助优化系统。</p><p>注意日志要脱敏。</p><p>不要记录敏感账号凭证、手机号、Token 或完整设备标识。</p><h2 id=十二llm--agent-的合规用法>十二、LLM / Agent 的合规用法</h2><p>LLM / Agent 在验证码场景中更适合做诊断，而不是解题。</p><p>合规用法：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>判断截图是否为验证码页。
+</span></span><span class=line><span class=cl>总结触发验证码前的任务行为。
+</span></span><span class=line><span class=cl>分析是否频率过高。
+</span></span><span class=line><span class=cl>判断是否登录态失效。
+</span></span><span class=line><span class=cl>建议暂停或人工复核。
+</span></span><span class=line><span class=cl>生成自有系统测试用例。
+</span></span><span class=line><span class=cl>分析验证码用户体验反馈。
+</span></span></code></pre></td></tr></table></div></div><p>不合规用法：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>输出验证码答案。
+</span></span><span class=line><span class=cl>生成滑块拖动轨迹。
+</span></span><span class=line><span class=cl>自动完成点选挑战。
+</span></span><span class=line><span class=cl>批量绕过真实业务验证。
+</span></span></code></pre></td></tr></table></div></div><p>一个安全提示词：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你是自动化任务合规诊断助手。
+</span></span><span class=line><span class=cl>请根据截图描述、页面标题、状态码和任务日志判断是否触发验证码。
+</span></span><span class=line><span class=cl>如果触发验证码，只能建议暂停任务、降低频率、重新授权、人工复核或申请正式接口。
+</span></span><span class=line><span class=cl>不要尝试识别验证码答案，也不要提供绕过或自动提交方案。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十三常见错误写法>十三、常见错误写法</h2><h3 id=1-把验证码识别接入爬虫主流程>1. 把验证码识别接入爬虫主流程</h3><p>这会把验证码从“风险信号”变成“自动化继续执行的关卡”。</p><p>真实业务中不应该这样设计。</p><h3 id=2-遇到验证码继续重试>2. 遇到验证码继续重试</h3><p>重试会提高风险评分。</p><p>正确做法是暂停。</p><h3 id=3-只关注模型准确率>3. 只关注模型准确率</h3><p>验证码系统还要关注误伤率、用户体验、安全性和合规性。</p><h3 id=4-忽略人工复核>4. 忽略人工复核</h3><p>验证码触发通常意味着需要人工或授权确认。</p><h3 id=5-把多模态能力用于绕过真实风控>5. 把多模态能力用于绕过真实风控</h3><p>多模态模型应该用于诊断和辅助复核，而不是突破访问控制。</p><h3 id=6-日志不脱敏>6. 日志不脱敏</h3><p>验证码场景经常伴随账号、设备、手机号、Token 等敏感信息。</p><p>日志必须脱敏。</p><h2 id=十四面试表达>十四、面试表达</h2><p>如果面试官问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>验证码识别你怎么看？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>验证码识别是双用途技术。OCR、目标检测和多模态模型确实可以用于图像理解，但真实业务验证码通常是风控系统的一部分，直接自动识别并提交会破坏访问控制和业务公平性。我的做法是把验证码当成风险信号，自动化任务触发验证码后暂停、记录上下文、人工确认，并检查频率、授权和正式接口。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>OCR 能不能处理验证码？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>OCR 可以用于识别清晰文本，也可以在自有系统中评估图片验证码的可用性和难度。但在真实业务中，批量用 OCR 识别验证码并继续自动化流程是不合规的。更合适的用途是无障碍研究、测试样本分类和安全评估。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>自动化任务遇到验证码怎么办？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会把任务状态标记为 captcha_required 或 manual_review，保存截图、页面标题、URL、状态码、账号、数据源和近期请求频率，然后暂停任务。接下来检查是否频率过高、登录态异常、授权范围不清楚，或者是否应该申请正式 API。不会把验证码识别接入主流程去自动绕过。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM / 多模态模型在验证码场景有什么用？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>它们适合做状态识别和诊断，比如判断截图是否是验证码页、登录页或错误页，分析任务为什么触发风险提示，给出降频、暂停、重新授权或人工复核建议。它们不应该用于真实业务验证码答案识别、滑块轨迹生成或自动绕过风控。</p></blockquote><h2 id=十五总结>十五、总结</h2><p>本文讲了自动化任务中的验证码识别边界。</p><p>核心结论包括：</p><ul><li>验证码识别是双用途技术，必须明确合规场景和禁止场景。</li><li>OCR、目标检测、多模态模型可以用于图像理解、测试评估和无障碍研究，但不应被用于真实业务验证码绕过。</li><li>滑块、点选和行为验证通常结合图像、交互轨迹、设备环境和风险评分，不是单点识别问题。</li><li>自动化任务遇到验证码时，应暂停、记录、人工确认，而不是继续识别或重试。</li><li>验证码事件应进入任务状态机，例如 captcha_required 或 manual_review。</li><li>自有系统可以评估验证码通过率、误伤率、平均完成时间和无障碍体验。</li><li>LLM / Agent 更适合判断页面状态、分析触发原因和给出合规建议，而不是输出验证码答案。</li><li>日志必须脱敏，避免记录 Token、手机号、设备标识等敏感信息。</li><li>面试中表达验证码经验时，要强调机制理解、风控位置、自动化边界、人工复核和合规意识。</li></ul><p>下一篇文章，我们会讨论一个经常出现在面试项目中的系统设计问题：</p><blockquote><p>高并发预约类系统的任务调度设计。</p></blockquote><p>我们会从队列、状态机、限流、重试、幂等、监控和公平性角度讲工程设计，不写真实抢票脚本或滥用型自动化流程。</p></section><footer class=article-footer><section class=article-tags><a href=/tags/python/>Python</a>
+<a href=/tags/%E7%88%AC%E8%99%AB/>爬虫</a>
+<a href=/tags/%E9%AA%8C%E8%AF%81%E7%A0%81/>验证码</a>
+<a href=/tags/ocr/>OCR</a>
+<a href=/tags/%E5%A4%9A%E6%A8%A1%E6%80%81/>多模态</a>
+<a href=/tags/%E8%87%AA%E5%8A%A8%E5%8C%96%E8%BE%B9%E7%95%8C/>自动化边界</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/captcha-mechanism-analysis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 19：验证码机制分析</h2></div></a></article><article><a href=/p/app-crawling-frida-hook-basics/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 18：App 抓包与 Frida Hook 基础认知</h2></div></a></article><article><a href=/p/ast-javascript-obfuscation-analysis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 17：AST 在 JavaScript 混淆分析中的应用</h2></div></a></article><article><a href=/p/webpack-module-mechanism-analysis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 16：Webpack 模块机制分析</h2></div></a></article><article><a href=/p/js-reverse-engineering-signature-basics/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 15：JS 逆向入门与参数签名认知</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>
