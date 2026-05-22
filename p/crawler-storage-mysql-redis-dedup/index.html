@@ -1,0 +1,712 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇文章里，我们讨论了高并发预约类系统的任务调度设计。\n核心结论是：\n1 2 高并发不是无限并发。 真正重要的是队列、状态机、限流、重试、幂等、监控和公平性。 从这一篇开始，我们把视角继续往工程落地推进。\n一个爬虫系统不只是把页面下载下来。\n它还要回答这些问题：\n1 2 3 4 5 6 数据存在哪里？ 任务状态存在哪里？ 怎么判断 URL 是否抓过？ 怎么避免重复入库？ 怎么区分任务去重、内容去重和结果去重？ MySQL 和 Redis 各自适合做什么？ 这篇文章讨论：\nMySQL、Redis 在数据采集系统中的分工，以及 URL 去重、任务去重、内容去重、状态去重和布隆过滤器等常见策略。\n"><title>大模型时代的数据采集工程 22：MySQL、Redis 与去重策略</title><link rel=canonical href=https://tkdwbiao.github.io/p/crawler-storage-mysql-redis-dedup/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="大模型时代的数据采集工程 22：MySQL、Redis 与去重策略"><meta property='og:description' content="上一篇文章里，我们讨论了高并发预约类系统的任务调度设计。\n核心结论是：\n1 2 高并发不是无限并发。 真正重要的是队列、状态机、限流、重试、幂等、监控和公平性。 从这一篇开始，我们把视角继续往工程落地推进。\n一个爬虫系统不只是把页面下载下来。\n它还要回答这些问题：\n1 2 3 4 5 6 数据存在哪里？ 任务状态存在哪里？ 怎么判断 URL 是否抓过？ 怎么避免重复入库？ 怎么区分任务去重、内容去重和结果去重？ MySQL 和 Redis 各自适合做什么？ 这篇文章讨论：\nMySQL、Redis 在数据采集系统中的分工，以及 URL 去重、任务去重、内容去重、状态去重和布隆过滤器等常见策略。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/crawler-storage-mysql-redis-dedup/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='Python'><meta property='article:tag' content='爬虫'><meta property='article:tag' content='MySQL'><meta property='article:tag' content='Redis'><meta property='article:tag' content='去重'><meta property='article:tag' content='数据工程'><meta property='article:published_time' content='2026-01-22T10:00:00+08:00'><meta property='article:modified_time' content='2026-01-22T10:00:00+08:00'><meta name=twitter:title content="大模型时代的数据采集工程 22：MySQL、Redis 与去重策略"><meta name=twitter:description content="上一篇文章里，我们讨论了高并发预约类系统的任务调度设计。\n核心结论是：\n1 2 高并发不是无限并发。 真正重要的是队列、状态机、限流、重试、幂等、监控和公平性。 从这一篇开始，我们把视角继续往工程落地推进。\n一个爬虫系统不只是把页面下载下来。\n它还要回答这些问题：\n1 2 3 4 5 6 数据存在哪里？ 任务状态存在哪里？ 怎么判断 URL 是否抓过？ 怎么避免重复入库？ 怎么区分任务去重、内容去重和结果去重？ MySQL 和 Redis 各自适合做什么？ 这篇文章讨论：\nMySQL、Redis 在数据采集系统中的分工，以及 URL 去重、任务去重、内容去重、状态去重和布隆过滤器等常见策略。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二爬虫系统里有哪些数据>二、爬虫系统里有哪些数据？</a><ol><li><a href=#1-任务数据>1. 任务数据</a></li><li><a href=#2-原始数据>2. 原始数据</a></li><li><a href=#3-结果数据>3. 结果数据</a></li><li><a href=#4-去重和状态数据>4. 去重和状态数据</a></li></ol></li><li><a href=#三mysql-适合做什么>三、MySQL 适合做什么？</a></li><li><a href=#四redis-适合做什么>四、Redis 适合做什么？</a></li><li><a href=#五mysql-与-redis-的分工原则>五、MySQL 与 Redis 的分工原则</a></li><li><a href=#六url-去重>六、URL 去重</a><ol><li><a href=#1-url-规范化>1. URL 规范化</a></li><li><a href=#2-url-hash>2. URL Hash</a></li></ol></li><li><a href=#七任务去重>七、任务去重</a></li><li><a href=#八内容去重>八、内容去重</a></li><li><a href=#九结果去重>九、结果去重</a></li><li><a href=#十状态去重>十、状态去重</a></li><li><a href=#十一布隆过滤器>十一、布隆过滤器</a></li><li><a href=#十二增量采集策略>十二、增量采集策略</a><ol><li><a href=#1-按时间增量>1. 按时间增量</a></li><li><a href=#2-按-id-增量>2. 按 ID 增量</a></li><li><a href=#3-按列表页停止>3. 按列表页停止</a></li><li><a href=#4-按内容指纹>4. 按内容指纹</a></li></ol></li><li><a href=#十三去重层级设计>十三、去重层级设计</a></li><li><a href=#十四python-示例安全的任务入库>十四、Python 示例：安全的任务入库</a></li><li><a href=#十五常见错误写法>十五、常见错误写法</a><ol><li><a href=#1-只用-url-字符串去重>1. 只用 URL 字符串去重</a></li><li><a href=#2-把-redis-当成最终事实>2. 把 Redis 当成最终事实</a></li><li><a href=#3-没有唯一索引>3. 没有唯一索引</a></li><li><a href=#4-对整个-html-做内容-hash>4. 对整个 HTML 做内容 hash</a></li><li><a href=#5-去重太强>5. 去重太强</a></li><li><a href=#6-去重太弱>6. 去重太弱</a></li><li><a href=#7-忽略-worker-并发领取>7. 忽略 Worker 并发领取</a></li></ol></li><li><a href=#十六面试表达>十六、面试表达</a></li><li><a href=#十七总结>十七、总结</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/%E7%88%AC%E8%99%AB%E7%B3%BB%E5%88%97/ style=background-color:#efcfbe;color:#3d1f0f>爬虫系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/crawler-storage-mysql-redis-dedup/>大模型时代的数据采集工程 22：MySQL、Redis 与去重策略</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-01-22T10:00:00+08:00>2026-01-22 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 13 分钟</time></div></footer></div></header><section class=article-content><p>上一篇文章里，我们讨论了高并发预约类系统的任务调度设计。</p><p>核心结论是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>高并发不是无限并发。
+</span></span><span class=line><span class=cl>真正重要的是队列、状态机、限流、重试、幂等、监控和公平性。
+</span></span></code></pre></td></tr></table></div></div><p>从这一篇开始，我们把视角继续往工程落地推进。</p><p>一个爬虫系统不只是把页面下载下来。</p><p>它还要回答这些问题：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>数据存在哪里？
+</span></span><span class=line><span class=cl>任务状态存在哪里？
+</span></span><span class=line><span class=cl>怎么判断 URL 是否抓过？
+</span></span><span class=line><span class=cl>怎么避免重复入库？
+</span></span><span class=line><span class=cl>怎么区分任务去重、内容去重和结果去重？
+</span></span><span class=line><span class=cl>MySQL 和 Redis 各自适合做什么？
+</span></span></code></pre></td></tr></table></div></div><p>这篇文章讨论：</p><blockquote><p>MySQL、Redis 在数据采集系统中的分工，以及 URL 去重、任务去重、内容去重、状态去重和布隆过滤器等常见策略。</p></blockquote><h2 id=一前言>一、前言</h2><p>很多人写第一个爬虫时，数据保存方式很简单。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>写 CSV。
+</span></span><span class=line><span class=cl>写 JSON 文件。
+</span></span><span class=line><span class=cl>打印到控制台。
+</span></span><span class=line><span class=cl>直接 append 到文本。
+</span></span></code></pre></td></tr></table></div></div><p>这在学习阶段没有问题。</p><p>但一旦进入工程场景，就会遇到复杂问题：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>同一个页面被抓了很多次。
+</span></span><span class=line><span class=cl>同一条数据重复入库。
+</span></span><span class=line><span class=cl>任务失败后不知道是否应该重跑。
+</span></span><span class=line><span class=cl>多个 Worker 同时处理同一个 URL。
+</span></span><span class=line><span class=cl>增量采集不知道从哪里继续。
+</span></span><span class=line><span class=cl>数据更新了但内容哈希没变。
+</span></span><span class=line><span class=cl>Redis 里有状态，MySQL 里也有状态，最后对不上。
+</span></span></code></pre></td></tr></table></div></div><p>这时就需要理解存储和去重。</p><p>存储不是“把数据塞进数据库”。</p><p>更准确地说，它承担三类职责：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>保存最终结果。
+</span></span><span class=line><span class=cl>管理任务状态。
+</span></span><span class=line><span class=cl>支撑去重和增量更新。
+</span></span></code></pre></td></tr></table></div></div><p>MySQL 和 Redis 都常用，但它们不是互相替代关系。</p><p>更合理的理解是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>MySQL 保存长期事实。
+</span></span><span class=line><span class=cl>Redis 管理短期状态和高频判断。
+</span></span></code></pre></td></tr></table></div></div><h2 id=二爬虫系统里有哪些数据>二、爬虫系统里有哪些数据？</h2><p>在讨论 MySQL 和 Redis 之前，先看爬虫系统里到底有哪些数据。</p><p>常见数据包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>种子 URL。
+</span></span><span class=line><span class=cl>待抓取任务。
+</span></span><span class=line><span class=cl>任务状态。
+</span></span><span class=line><span class=cl>页面 HTML。
+</span></span><span class=line><span class=cl>解析后的结构化结果。
+</span></span><span class=line><span class=cl>图片、附件等资源元数据。
+</span></span><span class=line><span class=cl>失败日志。
+</span></span><span class=line><span class=cl>去重指纹。
+</span></span><span class=line><span class=cl>采集批次。
+</span></span><span class=line><span class=cl>数据源配置。
+</span></span></code></pre></td></tr></table></div></div><p>这些数据可以分成四类。</p><h3 id=1-任务数据>1. 任务数据</h3><p>任务数据描述“要不要抓、什么时候抓、抓到哪里了”。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>task_id。
+</span></span><span class=line><span class=cl>url。
+</span></span><span class=line><span class=cl>source。
+</span></span><span class=line><span class=cl>priority。
+</span></span><span class=line><span class=cl>status。
+</span></span><span class=line><span class=cl>retry_count。
+</span></span><span class=line><span class=cl>next_run_at。
+</span></span><span class=line><span class=cl>last_error。
+</span></span><span class=line><span class=cl>created_at。
+</span></span><span class=line><span class=cl>updated_at。
+</span></span></code></pre></td></tr></table></div></div><h3 id=2-原始数据>2. 原始数据</h3><p>原始数据是采集回来的页面或接口响应。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>HTML。
+</span></span><span class=line><span class=cl>JSON。
+</span></span><span class=line><span class=cl>文本。
+</span></span><span class=line><span class=cl>截图。
+</span></span><span class=line><span class=cl>响应头摘要。
+</span></span><span class=line><span class=cl>状态码。
+</span></span></code></pre></td></tr></table></div></div><p>原始数据便于复盘和重新解析。</p><p>但它可能很大，也可能包含敏感字段，所以要注意存储周期和脱敏。</p><h3 id=3-结果数据>3. 结果数据</h3><p>结果数据是清洗后的结构化数据。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>文章标题。
+</span></span><span class=line><span class=cl>商品名称。
+</span></span><span class=line><span class=cl>发布时间。
+</span></span><span class=line><span class=cl>作者。
+</span></span><span class=line><span class=cl>价格。
+</span></span><span class=line><span class=cl>库存状态。
+</span></span><span class=line><span class=cl>正文内容。
+</span></span></code></pre></td></tr></table></div></div><p>这是业务最关心的数据。</p><h3 id=4-去重和状态数据>4. 去重和状态数据</h3><p>这类数据用于判断：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>URL 是否已经入队？
+</span></span><span class=line><span class=cl>任务是否正在执行？
+</span></span><span class=line><span class=cl>内容是否发生变化？
+</span></span><span class=line><span class=cl>结果是否已经存在？
+</span></span><span class=line><span class=cl>某个数据源是否需要暂停？
+</span></span></code></pre></td></tr></table></div></div><p>很多爬虫系统不稳定，问题不是抓取能力不足，而是状态管理混乱。</p><h2 id=三mysql-适合做什么>三、MySQL 适合做什么？</h2><p>MySQL 适合保存结构化、长期、需要查询和审计的数据。</p><p>在爬虫系统里，它通常用于：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务表。
+</span></span><span class=line><span class=cl>结果表。
+</span></span><span class=line><span class=cl>数据源配置表。
+</span></span><span class=line><span class=cl>采集批次表。
+</span></span><span class=line><span class=cl>失败日志表。
+</span></span><span class=line><span class=cl>去重指纹表。
+</span></span></code></pre></td></tr></table></div></div><p>MySQL 的优势是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>事务。
+</span></span><span class=line><span class=cl>唯一约束。
+</span></span><span class=line><span class=cl>索引查询。
+</span></span><span class=line><span class=cl>持久化可靠。
+</span></span><span class=line><span class=cl>关系建模清晰。
+</span></span><span class=line><span class=cl>便于后台管理和审计。
+</span></span></code></pre></td></tr></table></div></div><p>例如，任务表可以这样设计：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-sql data-lang=sql><span class=line><span class=cl><span class=k>CREATE</span><span class=w> </span><span class=k>TABLE</span><span class=w> </span><span class=n>crawl_task</span><span class=w> </span><span class=p>(</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>id</span><span class=w> </span><span class=nb>BIGINT</span><span class=w> </span><span class=k>PRIMARY</span><span class=w> </span><span class=k>KEY</span><span class=w> </span><span class=n>AUTO_INCREMENT</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=k>source</span><span class=w> </span><span class=nb>VARCHAR</span><span class=p>(</span><span class=mi>64</span><span class=p>)</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>url_hash</span><span class=w> </span><span class=nb>CHAR</span><span class=p>(</span><span class=mi>64</span><span class=p>)</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>url</span><span class=w> </span><span class=nb>TEXT</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>status</span><span class=w> </span><span class=nb>VARCHAR</span><span class=p>(</span><span class=mi>32</span><span class=p>)</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>priority</span><span class=w> </span><span class=nb>INT</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=w> </span><span class=k>DEFAULT</span><span class=w> </span><span class=mi>0</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>retry_count</span><span class=w> </span><span class=nb>INT</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=w> </span><span class=k>DEFAULT</span><span class=w> </span><span class=mi>0</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>next_run_at</span><span class=w> </span><span class=n>DATETIME</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>last_error</span><span class=w> </span><span class=nb>VARCHAR</span><span class=p>(</span><span class=mi>255</span><span class=p>)</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>created_at</span><span class=w> </span><span class=n>DATETIME</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>updated_at</span><span class=w> </span><span class=n>DATETIME</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=k>UNIQUE</span><span class=w> </span><span class=k>KEY</span><span class=w> </span><span class=n>uk_source_url_hash</span><span class=w> </span><span class=p>(</span><span class=k>source</span><span class=p>,</span><span class=w> </span><span class=n>url_hash</span><span class=p>),</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=k>KEY</span><span class=w> </span><span class=n>idx_status_next_run</span><span class=w> </span><span class=p>(</span><span class=n>status</span><span class=p>,</span><span class=w> </span><span class=n>next_run_at</span><span class=p>)</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=p>);</span><span class=w>
+</span></span></span></code></pre></td></tr></table></div></div><p>这里有两个重点。</p><p>第一，<code>url_hash</code> 用于建立唯一索引。</p><p>URL 可能很长，不适合直接作为唯一索引字段。</p><p>第二，<code>status + next_run_at</code> 用于调度器查询可执行任务。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-sql data-lang=sql><span class=line><span class=cl><span class=k>SELECT</span><span class=w> </span><span class=o>*</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=k>FROM</span><span class=w> </span><span class=n>crawl_task</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=k>WHERE</span><span class=w> </span><span class=n>status</span><span class=w> </span><span class=o>=</span><span class=w> </span><span class=s1>&#39;pending&#39;</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span><span class=k>AND</span><span class=w> </span><span class=p>(</span><span class=n>next_run_at</span><span class=w> </span><span class=k>IS</span><span class=w> </span><span class=k>NULL</span><span class=w> </span><span class=k>OR</span><span class=w> </span><span class=n>next_run_at</span><span class=w> </span><span class=o>&lt;=</span><span class=w> </span><span class=n>NOW</span><span class=p>())</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=k>ORDER</span><span class=w> </span><span class=k>BY</span><span class=w> </span><span class=n>priority</span><span class=w> </span><span class=k>DESC</span><span class=p>,</span><span class=w> </span><span class=n>id</span><span class=w> </span><span class=k>ASC</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=k>LIMIT</span><span class=w> </span><span class=mi>100</span><span class=p>;</span><span class=w>
+</span></span></span></code></pre></td></tr></table></div></div><h2 id=四redis-适合做什么>四、Redis 适合做什么？</h2><p>Redis 适合做高频、短期、快速判断的状态。</p><p>在爬虫系统里，Redis 常用于：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>URL 去重集合。
+</span></span><span class=line><span class=cl>任务队列。
+</span></span><span class=line><span class=cl>短期锁。
+</span></span><span class=line><span class=cl>限流计数。
+</span></span><span class=line><span class=cl>失败重试延迟队列。
+</span></span><span class=line><span class=cl>数据源暂停状态。
+</span></span><span class=line><span class=cl>热点缓存。
+</span></span><span class=line><span class=cl>布隆过滤器。
+</span></span></code></pre></td></tr></table></div></div><p>Redis 的优势是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>读写快。
+</span></span><span class=line><span class=cl>数据结构丰富。
+</span></span><span class=line><span class=cl>天然适合队列和集合。
+</span></span><span class=line><span class=cl>支持过期时间。
+</span></span><span class=line><span class=cl>适合高频状态判断。
+</span></span></code></pre></td></tr></table></div></div><p>但 Redis 也有边界：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不应该只依赖 Redis 保存最终结果。
+</span></span><span class=line><span class=cl>不应该把 Redis 当唯一事实来源。
+</span></span><span class=line><span class=cl>不应该在 Redis 中无限保存大体积原始数据。
+</span></span></code></pre></td></tr></table></div></div><p>更合理的分工是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Redis 判断“短期是否处理过”。
+</span></span><span class=line><span class=cl>MySQL 确认“长期事实是否存在”。
+</span></span></code></pre></td></tr></table></div></div><h2 id=五mysql-与-redis-的分工原则>五、MySQL 与 Redis 的分工原则</h2><p>一个简单判断原则是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>需要长期保存、审计、查询、恢复的数据，放 MySQL。
+</span></span><span class=line><span class=cl>需要高频判断、短期状态、队列、限流的数据，放 Redis。
+</span></span></code></pre></td></tr></table></div></div><p>可以用表格总结：</p><div class=table-wrapper><table><thead><tr><th>场景</th><th>更适合</th><th>原因</th></tr></thead><tbody><tr><td>结构化结果数据</td><td>MySQL</td><td>需要持久化和查询</td></tr><tr><td>任务最终状态</td><td>MySQL</td><td>需要审计和恢复</td></tr><tr><td>URL 短期去重</td><td>Redis</td><td>高频判断更快</td></tr><tr><td>任务队列</td><td>Redis</td><td>列表、Stream、Sorted Set 方便</td></tr><tr><td>幂等唯一约束</td><td>MySQL</td><td>数据库约束更可靠</td></tr><tr><td>限流计数</td><td>Redis</td><td>自增和过期时间方便</td></tr><tr><td>分布式锁</td><td>Redis</td><td>短期互斥</td></tr><tr><td>采集批次记录</td><td>MySQL</td><td>需要长期追踪</td></tr><tr><td>内容指纹长期库</td><td>MySQL</td><td>需要可追溯</td></tr></tbody></table></div><p>这不是绝对规则。</p><p>但它能避免一个常见错误：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>把所有状态都塞进 Redis，重启或过期后无法恢复。
+</span></span></code></pre></td></tr></table></div></div><p>也能避免另一个错误：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>所有高频判断都查 MySQL，导致数据库压力过高。
+</span></span></code></pre></td></tr></table></div></div><h2 id=六url-去重>六、URL 去重</h2><p>URL 去重是最基础的去重。</p><p>目标是避免同一个 URL 被反复入队和抓取。</p><p>最简单的方法是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>规范化 URL。
+</span></span><span class=line><span class=cl>计算 hash。
+</span></span><span class=line><span class=cl>判断是否存在。
+</span></span><span class=line><span class=cl>不存在则入队并记录。
+</span></span></code></pre></td></tr></table></div></div><h3 id=1-url-规范化>1. URL 规范化</h3><p>同一个页面可能有多个形式：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>https://example.com/a?b=1&amp;c=2
+</span></span><span class=line><span class=cl>https://example.com/a?c=2&amp;b=1
+</span></span><span class=line><span class=cl>https://example.com/a?b=1&amp;c=2&amp;utm_source=x
+</span></span><span class=line><span class=cl>https://example.com/a#comment
+</span></span></code></pre></td></tr></table></div></div><p>如果不规范化，会导致重复抓取。</p><p>常见规范化规则包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>统一协议和域名大小写。
+</span></span><span class=line><span class=cl>移除 fragment。
+</span></span><span class=line><span class=cl>排序 query 参数。
+</span></span><span class=line><span class=cl>删除无意义跟踪参数。
+</span></span><span class=line><span class=cl>补全或移除默认端口。
+</span></span><span class=line><span class=cl>处理末尾斜杠。
+</span></span></code></pre></td></tr></table></div></div><p>一个简单示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>urllib.parse</span> <span class=kn>import</span> <span class=n>parse_qsl</span><span class=p>,</span> <span class=n>urlencode</span><span class=p>,</span> <span class=n>urlsplit</span><span class=p>,</span> <span class=n>urlunsplit</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>TRACKING_PARAMS</span> <span class=o>=</span> <span class=p>{</span><span class=s2>&#34;utm_source&#34;</span><span class=p>,</span> <span class=s2>&#34;utm_medium&#34;</span><span class=p>,</span> <span class=s2>&#34;utm_campaign&#34;</span><span class=p>,</span> <span class=s2>&#34;utm_term&#34;</span><span class=p>,</span> <span class=s2>&#34;utm_content&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>normalize_url</span><span class=p>(</span><span class=n>url</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>parts</span> <span class=o>=</span> <span class=n>urlsplit</span><span class=p>(</span><span class=n>url</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>query_items</span> <span class=o>=</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>        <span class=p>(</span><span class=n>key</span><span class=p>,</span> <span class=n>value</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>for</span> <span class=n>key</span><span class=p>,</span> <span class=n>value</span> <span class=ow>in</span> <span class=n>parse_qsl</span><span class=p>(</span><span class=n>parts</span><span class=o>.</span><span class=n>query</span><span class=p>,</span> <span class=n>keep_blank_values</span><span class=o>=</span><span class=kc>True</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>if</span> <span class=n>key</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>TRACKING_PARAMS</span>
+</span></span><span class=line><span class=cl>    <span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>normalized_query</span> <span class=o>=</span> <span class=n>urlencode</span><span class=p>(</span><span class=nb>sorted</span><span class=p>(</span><span class=n>query_items</span><span class=p>))</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>urlunsplit</span><span class=p>((</span>
+</span></span><span class=line><span class=cl>        <span class=n>parts</span><span class=o>.</span><span class=n>scheme</span><span class=o>.</span><span class=n>lower</span><span class=p>(),</span>
+</span></span><span class=line><span class=cl>        <span class=n>parts</span><span class=o>.</span><span class=n>netloc</span><span class=o>.</span><span class=n>lower</span><span class=p>(),</span>
+</span></span><span class=line><span class=cl>        <span class=n>parts</span><span class=o>.</span><span class=n>path</span> <span class=ow>or</span> <span class=s2>&#34;/&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>normalized_query</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>))</span>
+</span></span></code></pre></td></tr></table></div></div><p>这是基础版本。</p><p>真实系统还要结合业务规则。</p><p>例如有些参数虽然看起来像跟踪参数，但实际会影响页面内容，就不能删除。</p><h3 id=2-url-hash>2. URL Hash</h3><p>规范化后可以计算 hash：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>hashlib</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>sha256_text</span><span class=p>(</span><span class=n>value</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>hashlib</span><span class=o>.</span><span class=n>sha256</span><span class=p>(</span><span class=n>value</span><span class=o>.</span><span class=n>encode</span><span class=p>(</span><span class=s2>&#34;utf-8&#34;</span><span class=p>))</span><span class=o>.</span><span class=n>hexdigest</span><span class=p>()</span>
+</span></span></code></pre></td></tr></table></div></div><p>入队前判断：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>normalized</span> <span class=o>=</span> <span class=n>normalize_url</span><span class=p>(</span><span class=n>url</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>url_hash</span> <span class=o>=</span> <span class=n>sha256_text</span><span class=p>(</span><span class=n>normalized</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>然后可以在 MySQL 中用唯一索引保证不重复。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>source + url_hash 唯一。
+</span></span></code></pre></td></tr></table></div></div><p>也可以在 Redis 中用 Set 做快速判断。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>SADD crawl:seen:url &lt;url_hash&gt;
+</span></span></code></pre></td></tr></table></div></div><p>如果 <code>SADD</code> 返回 1，说明是新 URL。</p><p>如果返回 0，说明已经存在。</p><h2 id=七任务去重>七、任务去重</h2><p>URL 去重解决的是“同一个 URL 是否重复”。</p><p>任务去重解决的是“同一个业务任务是否重复”。</p><p>这两者不完全一样。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>同一个商品详情页每天都要抓一次。
+</span></span><span class=line><span class=cl>同一个新闻列表页每 10 分钟要抓一次。
+</span></span><span class=line><span class=cl>同一个搜索结果页按关键词和页码区分任务。
+</span></span></code></pre></td></tr></table></div></div><p>所以任务去重通常需要更多维度：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>source。
+</span></span><span class=line><span class=cl>task_type。
+</span></span><span class=line><span class=cl>url_hash。
+</span></span><span class=line><span class=cl>keyword。
+</span></span><span class=line><span class=cl>page_no。
+</span></span><span class=line><span class=cl>scheduled_date。
+</span></span></code></pre></td></tr></table></div></div><p>可以生成任务幂等键：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>build_task_key</span><span class=p>(</span><span class=n>source</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span> <span class=n>task_type</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span> <span class=n>identity</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span> <span class=n>window</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>raw</span> <span class=o>=</span> <span class=sa>f</span><span class=s2>&#34;</span><span class=si>{</span><span class=n>source</span><span class=si>}</span><span class=s2>:</span><span class=si>{</span><span class=n>task_type</span><span class=si>}</span><span class=s2>:</span><span class=si>{</span><span class=n>identity</span><span class=si>}</span><span class=s2>:</span><span class=si>{</span><span class=n>window</span><span class=si>}</span><span class=s2>&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>sha256_text</span><span class=p>(</span><span class=n>raw</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>source=demo_shop
+</span></span><span class=line><span class=cl>task_type=product_detail
+</span></span><span class=line><span class=cl>identity=product_123
+</span></span><span class=line><span class=cl>window=2026-01-22
+</span></span></code></pre></td></tr></table></div></div><p>这表示“某个商品在某天的一次采集任务”。</p><p>而不是永远只抓一次。</p><p>任务去重要结合采集频率。</p><p>否则会出现两个极端：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>去重太弱：任务重复爆炸。
+</span></span><span class=line><span class=cl>去重太强：数据永远不更新。
+</span></span></code></pre></td></tr></table></div></div><h2 id=八内容去重>八、内容去重</h2><p>内容去重解决的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>页面抓到了，但内容是否真的变化？
+</span></span></code></pre></td></tr></table></div></div><p>常见做法是计算内容指纹。</p><p>例如对正文或关键字段计算 hash：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>content_fingerprint</span><span class=p>(</span><span class=n>title</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span> <span class=n>body</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span> <span class=n>published_at</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>raw</span> <span class=o>=</span> <span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>        <span class=n>title</span><span class=o>.</span><span class=n>strip</span><span class=p>(),</span>
+</span></span><span class=line><span class=cl>        <span class=n>body</span><span class=o>.</span><span class=n>strip</span><span class=p>(),</span>
+</span></span><span class=line><span class=cl>        <span class=n>published_at</span> <span class=ow>or</span> <span class=s2>&#34;&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>])</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>sha256_text</span><span class=p>(</span><span class=n>raw</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>如果本次 fingerprint 和上次一致，可以认为内容未变化。</p><p>但内容去重要注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不要对整个 HTML 直接 hash。
+</span></span></code></pre></td></tr></table></div></div><p>因为页面里可能有很多无关变化：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>广告位。
+</span></span><span class=line><span class=cl>推荐区。
+</span></span><span class=line><span class=cl>时间戳。
+</span></span><span class=line><span class=cl>埋点脚本。
+</span></span><span class=line><span class=cl>随机 ID。
+</span></span><span class=line><span class=cl>AB 实验参数。
+</span></span></code></pre></td></tr></table></div></div><p>更好的做法是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>先抽取业务字段。
+</span></span><span class=line><span class=cl>再对稳定字段计算指纹。
+</span></span></code></pre></td></tr></table></div></div><p>例如新闻文章可以使用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>标题。
+</span></span><span class=line><span class=cl>作者。
+</span></span><span class=line><span class=cl>发布时间。
+</span></span><span class=line><span class=cl>正文。
+</span></span></code></pre></td></tr></table></div></div><p>商品数据可以使用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>商品 ID。
+</span></span><span class=line><span class=cl>标题。
+</span></span><span class=line><span class=cl>价格。
+</span></span><span class=line><span class=cl>库存状态。
+</span></span><span class=line><span class=cl>规格。
+</span></span></code></pre></td></tr></table></div></div><p>内容去重的目标不是证明 HTML 完全一样。</p><p>而是判断业务数据是否发生变化。</p><h2 id=九结果去重>九、结果去重</h2><p>结果去重是防止结构化数据重复入库。</p><p>例如同一篇文章，不应该因为来自多个列表页就插入多次。</p><p>常见唯一键包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>source + external_id。
+</span></span><span class=line><span class=cl>source + canonical_url_hash。
+</span></span><span class=line><span class=cl>source + title + published_at。
+</span></span><span class=line><span class=cl>source + business_key。
+</span></span></code></pre></td></tr></table></div></div><p>最好使用稳定的业务 ID。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>文章 ID。
+</span></span><span class=line><span class=cl>商品 ID。
+</span></span><span class=line><span class=cl>用户 ID。
+</span></span><span class=line><span class=cl>订单 ID。
+</span></span><span class=line><span class=cl>帖子 ID。
+</span></span></code></pre></td></tr></table></div></div><p>如果没有业务 ID，就用规范化 URL 或字段组合。</p><p>结果表可以这样设计：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-sql data-lang=sql><span class=line><span class=cl><span class=k>CREATE</span><span class=w> </span><span class=k>TABLE</span><span class=w> </span><span class=n>crawled_article</span><span class=w> </span><span class=p>(</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>id</span><span class=w> </span><span class=nb>BIGINT</span><span class=w> </span><span class=k>PRIMARY</span><span class=w> </span><span class=k>KEY</span><span class=w> </span><span class=n>AUTO_INCREMENT</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=k>source</span><span class=w> </span><span class=nb>VARCHAR</span><span class=p>(</span><span class=mi>64</span><span class=p>)</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>external_id</span><span class=w> </span><span class=nb>VARCHAR</span><span class=p>(</span><span class=mi>128</span><span class=p>)</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>canonical_url_hash</span><span class=w> </span><span class=nb>CHAR</span><span class=p>(</span><span class=mi>64</span><span class=p>)</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>title</span><span class=w> </span><span class=nb>VARCHAR</span><span class=p>(</span><span class=mi>255</span><span class=p>)</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>content_hash</span><span class=w> </span><span class=nb>CHAR</span><span class=p>(</span><span class=mi>64</span><span class=p>)</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>published_at</span><span class=w> </span><span class=n>DATETIME</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>crawled_at</span><span class=w> </span><span class=n>DATETIME</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>updated_at</span><span class=w> </span><span class=n>DATETIME</span><span class=w> </span><span class=k>NOT</span><span class=w> </span><span class=k>NULL</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=k>UNIQUE</span><span class=w> </span><span class=k>KEY</span><span class=w> </span><span class=n>uk_source_url</span><span class=w> </span><span class=p>(</span><span class=k>source</span><span class=p>,</span><span class=w> </span><span class=n>canonical_url_hash</span><span class=p>),</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=k>KEY</span><span class=w> </span><span class=n>idx_source_published</span><span class=w> </span><span class=p>(</span><span class=k>source</span><span class=p>,</span><span class=w> </span><span class=n>published_at</span><span class=p>)</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=p>);</span><span class=w>
+</span></span></span></code></pre></td></tr></table></div></div><p>插入时可以使用 upsert 思路。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-sql data-lang=sql><span class=line><span class=cl><span class=k>INSERT</span><span class=w> </span><span class=k>INTO</span><span class=w> </span><span class=n>crawled_article</span><span class=w> </span><span class=p>(</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=k>source</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>external_id</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>canonical_url_hash</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>title</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>content_hash</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>published_at</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>crawled_at</span><span class=p>,</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>updated_at</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=p>)</span><span class=w> </span><span class=k>VALUES</span><span class=w> </span><span class=p>(</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=o>?</span><span class=p>,</span><span class=w> </span><span class=o>?</span><span class=p>,</span><span class=w> </span><span class=o>?</span><span class=p>,</span><span class=w> </span><span class=o>?</span><span class=p>,</span><span class=w> </span><span class=o>?</span><span class=p>,</span><span class=w> </span><span class=o>?</span><span class=p>,</span><span class=w> </span><span class=n>NOW</span><span class=p>(),</span><span class=w> </span><span class=n>NOW</span><span class=p>()</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=p>)</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=k>ON</span><span class=w> </span><span class=n>DUPLICATE</span><span class=w> </span><span class=k>KEY</span><span class=w> </span><span class=k>UPDATE</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>title</span><span class=w> </span><span class=o>=</span><span class=w> </span><span class=k>VALUES</span><span class=p>(</span><span class=n>title</span><span class=p>),</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>content_hash</span><span class=w> </span><span class=o>=</span><span class=w> </span><span class=k>VALUES</span><span class=p>(</span><span class=n>content_hash</span><span class=p>),</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=n>updated_at</span><span class=w> </span><span class=o>=</span><span class=w> </span><span class=n>NOW</span><span class=p>();</span><span class=w>
+</span></span></span></code></pre></td></tr></table></div></div><p>这能避免重复插入。</p><p>也能支持内容更新。</p><h2 id=十状态去重>十、状态去重</h2><p>状态去重经常被忽略。</p><p>它解决的问题是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>多个 Worker 是否会同时处理同一个任务？
+</span></span></code></pre></td></tr></table></div></div><p>如果只是简单查询 pending 任务：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-sql data-lang=sql><span class=line><span class=cl><span class=k>SELECT</span><span class=w> </span><span class=o>*</span><span class=w> </span><span class=k>FROM</span><span class=w> </span><span class=n>crawl_task</span><span class=w> </span><span class=k>WHERE</span><span class=w> </span><span class=n>status</span><span class=w> </span><span class=o>=</span><span class=w> </span><span class=s1>&#39;pending&#39;</span><span class=w> </span><span class=k>LIMIT</span><span class=w> </span><span class=mi>100</span><span class=p>;</span><span class=w>
+</span></span></span></code></pre></td></tr></table></div></div><p>多个 Worker 可能取到同一批任务。</p><p>更合理的方式是“领取任务”。</p><p>例如先更新状态，再执行。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-sql data-lang=sql><span class=line><span class=cl><span class=k>UPDATE</span><span class=w> </span><span class=n>crawl_task</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=k>SET</span><span class=w> </span><span class=n>status</span><span class=w> </span><span class=o>=</span><span class=w> </span><span class=s1>&#39;running&#39;</span><span class=p>,</span><span class=w> </span><span class=n>updated_at</span><span class=w> </span><span class=o>=</span><span class=w> </span><span class=n>NOW</span><span class=p>()</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=k>WHERE</span><span class=w> </span><span class=n>id</span><span class=w> </span><span class=o>=</span><span class=w> </span><span class=o>?</span><span class=w> </span><span class=k>AND</span><span class=w> </span><span class=n>status</span><span class=w> </span><span class=o>=</span><span class=w> </span><span class=s1>&#39;pending&#39;</span><span class=p>;</span><span class=w>
+</span></span></span></code></pre></td></tr></table></div></div><p>只有影响行数为 1 的 Worker 才真正领取成功。</p><p>这是一种乐观并发控制。</p><p>也可以结合 Redis 锁：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>SET crawl:lock:task:&lt;task_id&gt; &lt;worker_id&gt; NX EX 60
+</span></span></code></pre></td></tr></table></div></div><p>但要记住：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>锁是短期互斥。
+</span></span><span class=line><span class=cl>任务状态才是长期事实。
+</span></span></code></pre></td></tr></table></div></div><p>任务执行完后，应回写 MySQL 状态。</p><p>如果 Worker 崩溃，系统还需要扫描超时 running 任务，把它们恢复为 retrying 或 manual_review。</p><h2 id=十一布隆过滤器>十一、布隆过滤器</h2><p>当 URL 数量非常大时，Redis Set 可能占用较多内存。</p><p>这时可以考虑布隆过滤器。</p><p>布隆过滤器的特点是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>空间效率高。
+</span></span><span class=line><span class=cl>判断速度快。
+</span></span><span class=line><span class=cl>可能误判存在。
+</span></span><span class=line><span class=cl>不会误判不存在。
+</span></span></code></pre></td></tr></table></div></div><p>也就是说：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>它说不存在，一定不存在。
+</span></span><span class=line><span class=cl>它说存在，可能真的存在，也可能是误判。
+</span></span></code></pre></td></tr></table></div></div><p>适合场景：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>大规模 URL 去重。
+</span></span><span class=line><span class=cl>允许少量新 URL 被误判为已抓过。
+</span></span><span class=line><span class=cl>对内存敏感。
+</span></span></code></pre></td></tr></table></div></div><p>不适合场景：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>必须 100% 不漏采。
+</span></span><span class=line><span class=cl>必须可删除单个元素。
+</span></span><span class=line><span class=cl>需要精确统计。
+</span></span></code></pre></td></tr></table></div></div><p>布隆过滤器常用于第一层快速过滤。</p><p>更稳妥的架构是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Bloom Filter 快速判断
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>疑似新数据再查 Redis 或 MySQL
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>最终由唯一约束兜底
+</span></span></code></pre></td></tr></table></div></div><p>这样既能降低压力，又不完全依赖概率结构。</p><h2 id=十二增量采集策略>十二、增量采集策略</h2><p>去重和增量采集密切相关。</p><p>增量采集的目标是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>只抓新增或变化的数据。
+</span></span></code></pre></td></tr></table></div></div><p>常见策略包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>按时间增量。
+</span></span><span class=line><span class=cl>按 ID 增量。
+</span></span><span class=line><span class=cl>按列表页停止条件。
+</span></span><span class=line><span class=cl>按内容指纹变化。
+</span></span><span class=line><span class=cl>按状态字段变化。
+</span></span></code></pre></td></tr></table></div></div><h3 id=1-按时间增量>1. 按时间增量</h3><p>适合有发布时间或更新时间的数据。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>只抓 updated_at 大于上次游标的数据。
+</span></span></code></pre></td></tr></table></div></div><p>要注意时钟和排序问题。</p><p>建议保留重叠窗口：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>上次抓到 10:00。
+</span></span><span class=line><span class=cl>下次从 09:55 开始抓。
+</span></span></code></pre></td></tr></table></div></div><p>然后依靠去重避免重复入库。</p><h3 id=2-按-id-增量>2. 按 ID 增量</h3><p>适合 ID 单调递增的数据。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>只抓 id &gt; last_seen_id 的数据。
+</span></span></code></pre></td></tr></table></div></div><p>但有些系统 ID 不连续、不递增，不能盲目假设。</p><h3 id=3-按列表页停止>3. 按列表页停止</h3><p>例如列表按发布时间倒序。</p><p>当连续遇到已存在数据时，可以停止翻页。</p><p>但要谨慎。</p><p>如果列表排序不稳定，过早停止会漏数据。</p><h3 id=4-按内容指纹>4. 按内容指纹</h3><p>适合详情页更新检测。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>URL 已存在，但 content_hash 变化了。
+</span></span></code></pre></td></tr></table></div></div><p>这时应更新结果表，并记录变更时间。</p><h2 id=十三去重层级设计>十三、去重层级设计</h2><p>真实系统里，去重通常不是一层。</p><p>更常见的是多层去重：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>入口 URL 去重。
+</span></span><span class=line><span class=cl>任务幂等去重。
+</span></span><span class=line><span class=cl>队列消费去重。
+</span></span><span class=line><span class=cl>结果唯一约束。
+</span></span><span class=line><span class=cl>内容指纹更新判断。
+</span></span></code></pre></td></tr></table></div></div><p>一个完整流程可以是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>发现 URL
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>规范化 URL
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>计算 url_hash
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Redis Set 判断短期是否见过
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>MySQL 任务表唯一约束兜底
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>任务入队
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Worker 领取任务
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>解析结构化结果
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>结果表唯一约束去重
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>content_hash 判断是否更新
+</span></span></code></pre></td></tr></table></div></div><p>这套流程的价值是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>前面几层降低压力。
+</span></span><span class=line><span class=cl>后面几层保证正确性。
+</span></span></code></pre></td></tr></table></div></div><p>不要指望某一层解决所有问题。</p><h2 id=十四python-示例安全的任务入库>十四、Python 示例：安全的任务入库</h2><p>下面用一个简化示例表达任务入库思路。</p><p>这里不连接真实数据库，只演示关键逻辑。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>datetime</span> <span class=kn>import</span> <span class=n>datetime</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>NewTask</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>source</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>url</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>normalized_url</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>url_hash</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>created_at</span><span class=p>:</span> <span class=n>datetime</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>build_task</span><span class=p>(</span><span class=n>source</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span> <span class=n>url</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>NewTask</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>normalized</span> <span class=o>=</span> <span class=n>normalize_url</span><span class=p>(</span><span class=n>url</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>NewTask</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=n>source</span><span class=o>=</span><span class=n>source</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>url</span><span class=o>=</span><span class=n>url</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>normalized_url</span><span class=o>=</span><span class=n>normalized</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>url_hash</span><span class=o>=</span><span class=n>sha256_text</span><span class=p>(</span><span class=n>normalized</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>        <span class=n>created_at</span><span class=o>=</span><span class=n>datetime</span><span class=o>.</span><span class=n>now</span><span class=p>(),</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>实际入库时，应依赖数据库唯一约束。</p><p>伪代码：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>enqueue_task</span><span class=p>(</span><span class=n>task</span><span class=p>:</span> <span class=n>NewTask</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>bool</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>try</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>insert_task_to_mysql</span><span class=p>(</span><span class=n>task</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>except</span> <span class=n>DuplicateTaskError</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>False</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>push_task_to_queue</span><span class=p>(</span><span class=n>task</span><span class=o>.</span><span class=n>url_hash</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=kc>True</span>
+</span></span></code></pre></td></tr></table></div></div><p>重点是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>先让持久化层确认任务唯一。
+</span></span><span class=line><span class=cl>再把任务放入队列。
+</span></span></code></pre></td></tr></table></div></div><p>如果反过来，先入队再写库，可能出现队列里有任务但数据库没有记录的异常状态。</p><h2 id=十五常见错误写法>十五、常见错误写法</h2><h3 id=1-只用-url-字符串去重>1. 只用 URL 字符串去重</h3><p>URL 不规范化会导致重复。</p><p>参数顺序、大小写、fragment 和跟踪参数都可能影响判断。</p><h3 id=2-把-redis-当成最终事实>2. 把 Redis 当成最终事实</h3><p>Redis 适合短期状态和高频判断。</p><p>最终结果、任务状态和审计记录应落到持久化数据库。</p><h3 id=3-没有唯一索引>3. 没有唯一索引</h3><p>应用层判断不能替代数据库约束。</p><p>高并发下，两个 Worker 可能同时判断“不存在”，然后同时插入。</p><p>唯一索引是最后防线。</p><h3 id=4-对整个-html-做内容-hash>4. 对整个 HTML 做内容 hash</h3><p>页面中广告、推荐、时间戳、脚本都可能变化。</p><p>应该对稳定业务字段计算指纹。</p><h3 id=5-去重太强>5. 去重太强</h3><p>如果一个 URL 永远只抓一次，数据就无法更新。</p><p>去重要结合采集周期和业务窗口。</p><h3 id=6-去重太弱>6. 去重太弱</h3><p>如果不做任务幂等和结果唯一约束，就会重复抓取、重复入库、重复更新。</p><h3 id=7-忽略-worker-并发领取>7. 忽略 Worker 并发领取</h3><p>多个 Worker 同时处理同一个任务，会造成重复请求和状态混乱。</p><p>应通过状态更新、锁或队列确认机制控制并发。</p><h2 id=十六面试表达>十六、面试表达</h2><p>如果面试官问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>爬虫数据你一般怎么存？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会区分任务数据、原始数据、结构化结果和去重状态。MySQL 适合保存任务主表、结果表、采集批次和审计日志；Redis 更适合任务队列、短期 URL 去重、限流计数和分布式锁。最终事实会落到 MySQL，Redis 主要用于高频状态判断和削峰。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>URL 去重怎么做？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会先做 URL 规范化，比如统一域名大小写、移除 fragment、排序 query 参数、去掉无意义跟踪参数，然后计算 hash。短期可以用 Redis Set 或布隆过滤器做快速判断，长期用 MySQL 的 source + url_hash 唯一索引兜底，避免并发情况下重复入库。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务去重和内容去重有什么区别？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>任务去重关注同一个采集任务是否重复，比如同一个数据源、URL 和采集窗口是否已经入队；内容去重关注抓到的数据是否发生业务变化，通常对标题、正文、发布时间等稳定字段计算 content_hash。任务去重避免重复抓，内容去重避免重复更新或判断增量变化。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>为什么还要数据库唯一索引？应用里判断不行吗？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>应用层判断在并发下不可靠。两个 Worker 可能同时查到不存在，然后同时插入。数据库唯一索引是最后一致性防线。应用层和 Redis 可以降低压力，但最终幂等和唯一性应该由数据库约束兜底。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>布隆过滤器适合什么场景？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>布隆过滤器适合大规模 URL 去重，优点是内存占用低、判断快；缺点是可能误判存在，所以不适合必须 100% 不漏采的场景。工程上可以把它作为第一层快速过滤，再用 Redis 或 MySQL 做精确校验和兜底。</p></blockquote><h2 id=十七总结>十七、总结</h2><p>本文讲了 MySQL、Redis 与去重策略。</p><p>核心结论包括：</p><ul><li>爬虫系统中的数据包括任务数据、原始数据、结构化结果、去重指纹和状态数据。</li><li>MySQL 适合保存长期事实、结构化结果、任务状态、采集批次和审计日志。</li><li>Redis 适合做任务队列、短期去重、限流计数、分布式锁和高频状态判断。</li><li>MySQL 和 Redis 不是替代关系，应该按“长期事实”和“短期状态”分工。</li><li>URL 去重应先规范化，再计算 hash，避免参数顺序、fragment 和跟踪参数造成重复。</li><li>任务去重要结合 source、task_type、identity 和采集窗口，避免去重太强或太弱。</li><li>内容去重应对稳定业务字段计算指纹，而不是直接对整个 HTML 做 hash。</li><li>结果去重应优先使用稳定业务 ID 或规范化 URL，并用数据库唯一索引兜底。</li><li>状态去重要解决多个 Worker 同时处理同一任务的问题。</li><li>布隆过滤器适合大规模快速去重，但有误判，不能替代精确约束。</li><li>增量采集可以按时间、ID、列表停止条件或内容指纹变化实现。</li><li>多层去重的思路是：前面降低压力，后面保证正确性。</li><li>面试中表达存储和去重经验时，要从“会存数据”升级为“能设计可恢复、可去重、可增量的数据采集系统”。</li></ul><p>下一篇文章，我们会继续提升系统复杂度：</p><blockquote><p>高并发爬虫系统设计。</p></blockquote><p>我们会把前面讲过的请求、解析、队列、限流、存储、去重、监控和 Agent 诊断串起来，设计一个完整的数据采集系统架构。</p></section><footer class=article-footer><section class=article-tags><a href=/tags/python/>Python</a>
+<a href=/tags/%E7%88%AC%E8%99%AB/>爬虫</a>
+<a href=/tags/mysql/>MySQL</a>
+<a href=/tags/redis/>Redis</a>
+<a href=/tags/%E5%8E%BB%E9%87%8D/>去重</a>
+<a href=/tags/%E6%95%B0%E6%8D%AE%E5%B7%A5%E7%A8%8B/>数据工程</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/crawler-storage-task-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 34：存储、队列与任务状态常用接口</h2></div></a></article><article><a href=/p/crawler-resource-pool-design/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 14：代理池、Cookie 池与账号池设计</h2></div></a></article><article><a href=/p/crawler-llm-agent-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 36：LLM 与 Agent 数据采集接口设计</h2></div></a></article><article><a href=/p/crawler-service-platform-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 35：FastAPI 管理平台接口设计</h2></div></a></article><article><a href=/p/crawler-browser-automation-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 33：浏览器自动化常用 API 速查</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

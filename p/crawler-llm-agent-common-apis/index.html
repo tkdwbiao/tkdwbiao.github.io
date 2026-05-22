@@ -1,0 +1,1019 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇扩展篇，我们整理了 FastAPI 管理平台接口设计。\n管理平台解决的是：\n1 2 3 4 5 任务怎么创建。 状态怎么查询。 结果怎么查看。 复核怎么处理。 日志和指标怎么暴露。 这一篇是扩展篇收尾。\n我们整理 LLM 与 Agent 在数据采集系统中的接口设计。\n前面主系列已经讲过：\n1 2 LLM 适合复杂非结构化文本抽取。 Agent 适合失败诊断、流程编排和复核摘要。 但真正落地时，不能只写一句：\n1 调用大模型处理一下。 工程系统需要明确接口：\n1 2 3 4 5 6 7 抽取请求是什么？ Schema 如何定义？ 模型输出怎么校验？ 低置信度怎么复核？ Agent 可以输出哪些动作？ 哪些动作必须人工确认？ 调用日志和成本怎么记录？ 本文就围绕这些接口展开。\n重点仍然是合规、可控、可观测。\nLLM 和 Agent 用于抽取、清洗、诊断、复核建议，不用于绕过登录、验证码、风控、访问控制或频率限制。\n"><title>大模型时代的数据采集工程 36：LLM 与 Agent 数据采集接口设计</title><link rel=canonical href=https://tkdwbiao.github.io/p/crawler-llm-agent-common-apis/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="大模型时代的数据采集工程 36：LLM 与 Agent 数据采集接口设计"><meta property='og:description' content="上一篇扩展篇，我们整理了 FastAPI 管理平台接口设计。\n管理平台解决的是：\n1 2 3 4 5 任务怎么创建。 状态怎么查询。 结果怎么查看。 复核怎么处理。 日志和指标怎么暴露。 这一篇是扩展篇收尾。\n我们整理 LLM 与 Agent 在数据采集系统中的接口设计。\n前面主系列已经讲过：\n1 2 LLM 适合复杂非结构化文本抽取。 Agent 适合失败诊断、流程编排和复核摘要。 但真正落地时，不能只写一句：\n1 调用大模型处理一下。 工程系统需要明确接口：\n1 2 3 4 5 6 7 抽取请求是什么？ Schema 如何定义？ 模型输出怎么校验？ 低置信度怎么复核？ Agent 可以输出哪些动作？ 哪些动作必须人工确认？ 调用日志和成本怎么记录？ 本文就围绕这些接口展开。\n重点仍然是合规、可控、可观测。\nLLM 和 Agent 用于抽取、清洗、诊断、复核建议，不用于绕过登录、验证码、风控、访问控制或频率限制。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/crawler-llm-agent-common-apis/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='Python'><meta property='article:tag' content='爬虫'><meta property='article:tag' content='LLM'><meta property='article:tag' content='AI Agent'><meta property='article:tag' content='Pydantic'><meta property='article:tag' content='数据抽取'><meta property='article:tag' content='API'><meta property='article:published_time' content='2026-02-19T10:00:00+08:00'><meta property='article:modified_time' content='2026-02-19T10:00:00+08:00'><meta name=twitter:title content="大模型时代的数据采集工程 36：LLM 与 Agent 数据采集接口设计"><meta name=twitter:description content="上一篇扩展篇，我们整理了 FastAPI 管理平台接口设计。\n管理平台解决的是：\n1 2 3 4 5 任务怎么创建。 状态怎么查询。 结果怎么查看。 复核怎么处理。 日志和指标怎么暴露。 这一篇是扩展篇收尾。\n我们整理 LLM 与 Agent 在数据采集系统中的接口设计。\n前面主系列已经讲过：\n1 2 LLM 适合复杂非结构化文本抽取。 Agent 适合失败诊断、流程编排和复核摘要。 但真正落地时，不能只写一句：\n1 调用大模型处理一下。 工程系统需要明确接口：\n1 2 3 4 5 6 7 抽取请求是什么？ Schema 如何定义？ 模型输出怎么校验？ 低置信度怎么复核？ Agent 可以输出哪些动作？ 哪些动作必须人工确认？ 调用日志和成本怎么记录？ 本文就围绕这些接口展开。\n重点仍然是合规、可控、可观测。\nLLM 和 Agent 用于抽取、清洗、诊断、复核建议，不用于绕过登录、验证码、风控、访问控制或频率限制。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一llm-与-agent-在系统中的位置>一、LLM 与 Agent 在系统中的位置</a></li><li><a href=#二llm-抽取接口设计>二、LLM 抽取接口设计</a><ol><li><a href=#1-抽取请求-schema>1. 抽取请求 Schema</a></li></ol></li><li><a href=#三抽取结果-schema>三、抽取结果 Schema</a></li><li><a href=#四prompt-构造接口>四、Prompt 构造接口</a></li><li><a href=#五模型调用接口>五、模型调用接口</a></li><li><a href=#六json-解析与-pydantic-校验接口>六、JSON 解析与 Pydantic 校验接口</a></li><li><a href=#七业务规则校验接口>七、业务规则校验接口</a></li><li><a href=#八抽取状态机>八、抽取状态机</a></li><li><a href=#九抽取-worker-接口>九、抽取 Worker 接口</a></li><li><a href=#十缓存接口>十、缓存接口</a></li><li><a href=#十一人工复核接口>十一、人工复核接口</a></li><li><a href=#十二agent-诊断接口设计>十二、Agent 诊断接口设计</a></li><li><a href=#十三agent-动作枚举>十三、Agent 动作枚举</a></li><li><a href=#十四agent-系统提示词接口>十四、Agent 系统提示词接口</a></li><li><a href=#十五agent-诊断流程>十五、Agent 诊断流程</a></li><li><a href=#十六agent-与任务状态映射>十六、Agent 与任务状态映射</a></li><li><a href=#十七调用日志与成本接口>十七、调用日志与成本接口</a></li><li><a href=#十八安全与合规接口>十八、安全与合规接口</a></li><li><a href=#十九完整接口流程示例>十九、完整接口流程示例</a></li><li><a href=#二十常见坑点>二十、常见坑点</a><ol><li><a href=#1-把整页-html-直接丢给模型>1. 把整页 HTML 直接丢给模型</a></li><li><a href=#2-不定义-schema>2. 不定义 Schema</a></li><li><a href=#3-不做-json-校验>3. 不做 JSON 校验</a></li><li><a href=#4-不做业务规则校验>4. 不做业务规则校验</a></li><li><a href=#5-不记录模型版本和-prompt-版本>5. 不记录模型版本和 Prompt 版本</a></li><li><a href=#6-低置信度直接入库>6. 低置信度直接入库</a></li><li><a href=#7-agent-输出自然语言动作>7. Agent 输出自然语言动作</a></li><li><a href=#8-高风险动作自动执行>8. 高风险动作自动执行</a></li><li><a href=#9-不做脱敏>9. 不做脱敏</a></li><li><a href=#10-不统计成本和效果>10. 不统计成本和效果</a></li></ol></li><li><a href=#二十一面试表达>二十一、面试表达</a></li><li><a href=#二十二总结>二十二、总结</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/%E7%88%AC%E8%99%AB%E7%B3%BB%E5%88%97/ style=background-color:#efcfbe;color:#3d1f0f>爬虫系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/crawler-llm-agent-common-apis/>大模型时代的数据采集工程 36：LLM 与 Agent 数据采集接口设计</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-02-19T10:00:00+08:00>2026-02-19 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 12 分钟</time></div></footer></div></header><section class=article-content><p>上一篇扩展篇，我们整理了 FastAPI 管理平台接口设计。</p><p>管理平台解决的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务怎么创建。
+</span></span><span class=line><span class=cl>状态怎么查询。
+</span></span><span class=line><span class=cl>结果怎么查看。
+</span></span><span class=line><span class=cl>复核怎么处理。
+</span></span><span class=line><span class=cl>日志和指标怎么暴露。
+</span></span></code></pre></td></tr></table></div></div><p>这一篇是扩展篇收尾。</p><p>我们整理 LLM 与 Agent 在数据采集系统中的接口设计。</p><p>前面主系列已经讲过：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM 适合复杂非结构化文本抽取。
+</span></span><span class=line><span class=cl>Agent 适合失败诊断、流程编排和复核摘要。
+</span></span></code></pre></td></tr></table></div></div><p>但真正落地时，不能只写一句：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>调用大模型处理一下。
+</span></span></code></pre></td></tr></table></div></div><p>工程系统需要明确接口：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>抽取请求是什么？
+</span></span><span class=line><span class=cl>Schema 如何定义？
+</span></span><span class=line><span class=cl>模型输出怎么校验？
+</span></span><span class=line><span class=cl>低置信度怎么复核？
+</span></span><span class=line><span class=cl>Agent 可以输出哪些动作？
+</span></span><span class=line><span class=cl>哪些动作必须人工确认？
+</span></span><span class=line><span class=cl>调用日志和成本怎么记录？
+</span></span></code></pre></td></tr></table></div></div><p>本文就围绕这些接口展开。</p><p>重点仍然是合规、可控、可观测。</p><p>LLM 和 Agent 用于抽取、清洗、诊断、复核建议，不用于绕过登录、验证码、风控、访问控制或频率限制。</p><h2 id=一llm-与-agent-在系统中的位置>一、LLM 与 Agent 在系统中的位置</h2><p>一个大模型增强的数据采集系统可以这样分层：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Crawler Worker
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Parser / Cleaner
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>LLM Extraction Worker
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Validation / Review
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Agent Diagnosis Worker
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Manual Review / Task Scheduler
+</span></span></code></pre></td></tr></table></div></div><p>LLM 抽取层负责：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>正文摘要。
+</span></span><span class=line><span class=cl>关键词抽取。
+</span></span><span class=line><span class=cl>主题分类。
+</span></span><span class=line><span class=cl>字段归一化。
+</span></span><span class=line><span class=cl>复杂文本结构化。
+</span></span><span class=line><span class=cl>多来源字段对齐。
+</span></span></code></pre></td></tr></table></div></div><p>Agent 诊断层负责：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>分析任务失败原因。
+</span></span><span class=line><span class=cl>判断选择器是否失效。
+</span></span><span class=line><span class=cl>解释字段缺失。
+</span></span><span class=line><span class=cl>生成复核摘要。
+</span></span><span class=line><span class=cl>建议下一步动作。
+</span></span></code></pre></td></tr></table></div></div><p>二者分工不同：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM 抽取：把文本变成结构化数据。
+</span></span><span class=line><span class=cl>Agent 诊断：把上下文变成处理建议。
+</span></span></code></pre></td></tr></table></div></div><p>接口设计也应该分开。</p><h2 id=二llm-抽取接口设计>二、LLM 抽取接口设计</h2><p>一个抽取接口可以设计为：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>POST /api/llm/extractions
+</span></span><span class=line><span class=cl>GET  /api/llm/extractions/{extraction_id}
+</span></span></code></pre></td></tr></table></div></div><p>但在系统内部，它更常作为 Worker 任务执行。</p><p>核心输入包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>task_id。
+</span></span><span class=line><span class=cl>source_id。
+</span></span><span class=line><span class=cl>content_hash。
+</span></span><span class=line><span class=cl>text。
+</span></span><span class=line><span class=cl>schema_name。
+</span></span><span class=line><span class=cl>schema_version。
+</span></span><span class=line><span class=cl>prompt_version。
+</span></span><span class=line><span class=cl>model_name。
+</span></span></code></pre></td></tr></table></div></div><h3 id=1-抽取请求-schema>1. 抽取请求 Schema</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>pydantic</span> <span class=kn>import</span> <span class=n>BaseModel</span><span class=p>,</span> <span class=n>Field</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ExtractionRequest</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>content_hash</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>text</span><span class=p>:</span> <span class=nb>str</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>min_length</span><span class=o>=</span><span class=mi>1</span><span class=p>,</span> <span class=n>max_length</span><span class=o>=</span><span class=mi>20_000</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>schema_name</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>schema_version</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>prompt_version</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>model_name</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>字段说明：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>task_id：关联采集任务。
+</span></span><span class=line><span class=cl>source_id：数据源。
+</span></span><span class=line><span class=cl>content_hash：正文 hash，用于缓存和版本追踪。
+</span></span><span class=line><span class=cl>text：清洗后的输入文本。
+</span></span><span class=line><span class=cl>schema_name：目标 Schema 名称。
+</span></span><span class=line><span class=cl>schema_version：Schema 版本。
+</span></span><span class=line><span class=cl>prompt_version：Prompt 版本。
+</span></span><span class=line><span class=cl>model_name：模型名称。
+</span></span></code></pre></td></tr></table></div></div><p>注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>text 应该是清洗后的正文或摘要。
+</span></span><span class=line><span class=cl>不要把完整 Cookie、Token、账号密码、手机号、身份证号传给模型。
+</span></span></code></pre></td></tr></table></div></div><h2 id=三抽取结果-schema>三、抽取结果 Schema</h2><p>以文章抽取为例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>ExtractedArticle</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>title</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>author</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>published_at</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>summary</span><span class=p>:</span> <span class=nb>str</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>max_length</span><span class=o>=</span><span class=mi>200</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>keywords</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>default_factory</span><span class=o>=</span><span class=nb>list</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>category</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>confidence</span><span class=p>:</span> <span class=nb>float</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>ge</span><span class=o>=</span><span class=mi>0</span><span class=p>,</span> <span class=n>le</span><span class=o>=</span><span class=mi>1</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>外层结果：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>ExtractionResult</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>extraction_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>item</span><span class=p>:</span> <span class=n>ExtractedArticle</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>error_type</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>raw_output</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>model_name</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>schema_version</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>prompt_version</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>为什么要保存版本？</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>模型会变。
+</span></span><span class=line><span class=cl>Prompt 会变。
+</span></span><span class=line><span class=cl>Schema 会变。
+</span></span><span class=line><span class=cl>同一正文未来可能需要重新抽取。
+</span></span></code></pre></td></tr></table></div></div><p>保存版本才能对比结果。</p><h2 id=四prompt-构造接口>四、Prompt 构造接口</h2><p>Prompt 不应该散落在业务代码里。</p><p>可以封装：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>build_extraction_prompt</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span> <span class=n>schema_description</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=sa>f</span><span class=s2>&#34;&#34;&#34;
+</span></span></span><span class=line><span class=cl><span class=s2>你是数据采集系统中的结构化抽取助手。
+</span></span></span><span class=line><span class=cl><span class=s2>请只根据输入文本抽取信息，不要编造。
+</span></span></span><span class=line><span class=cl><span class=s2>
+</span></span></span><span class=line><span class=cl><span class=s2>要求：
+</span></span></span><span class=line><span class=cl><span class=s2>1. 只输出 JSON。
+</span></span></span><span class=line><span class=cl><span class=s2>2. 字段缺失返回 null 或空列表。
+</span></span></span><span class=line><span class=cl><span class=s2>3. 不要输出 Markdown。
+</span></span></span><span class=line><span class=cl><span class=s2>4. confidence 表示你对抽取结果的置信度，范围 0 到 1。
+</span></span></span><span class=line><span class=cl><span class=s2>
+</span></span></span><span class=line><span class=cl><span class=s2>目标 Schema：
+</span></span></span><span class=line><span class=cl><span class=si>{</span><span class=n>schema_description</span><span class=si>}</span><span class=s2>
+</span></span></span><span class=line><span class=cl><span class=s2>
+</span></span></span><span class=line><span class=cl><span class=s2>输入文本：
+</span></span></span><span class=line><span class=cl><span class=si>{</span><span class=n>text</span><span class=si>}</span><span class=s2>
+</span></span></span><span class=line><span class=cl><span class=s2>&#34;&#34;&#34;</span><span class=o>.</span><span class=n>strip</span><span class=p>()</span>
+</span></span></code></pre></td></tr></table></div></div><p>Prompt 版本要记录。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>PROMPT_VERSION</span> <span class=o>=</span> <span class=s2>&#34;article-extraction-v1&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>工程上要避免：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不同 Worker 使用不同 Prompt。
+</span></span><span class=line><span class=cl>Prompt 改了但结果表没有记录版本。
+</span></span><span class=line><span class=cl>Prompt 里要求不明确，输出难以解析。
+</span></span></code></pre></td></tr></table></div></div><h2 id=五模型调用接口>五、模型调用接口</h2><p>模型调用要封装成统一接口。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ModelResponse</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>raw_output</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>model_name</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>input_tokens</span><span class=p>:</span> <span class=nb>int</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>output_tokens</span><span class=p>:</span> <span class=nb>int</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>latency_ms</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>call_llm</span><span class=p>(</span><span class=n>prompt</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span> <span class=n>model_name</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>ModelResponse</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>raw_output</span> <span class=o>=</span> <span class=n>invoke_model_api</span><span class=p>(</span><span class=n>prompt</span><span class=o>=</span><span class=n>prompt</span><span class=p>,</span> <span class=n>model</span><span class=o>=</span><span class=n>model_name</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>ModelResponse</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=n>raw_output</span><span class=o>=</span><span class=n>raw_output</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>model_name</span><span class=o>=</span><span class=n>model_name</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>input_tokens</span><span class=o>=</span><span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>output_tokens</span><span class=o>=</span><span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>latency_ms</span><span class=o>=</span><span class=mi>0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>真实系统中要记录：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>model_name。
+</span></span><span class=line><span class=cl>request_id。
+</span></span><span class=line><span class=cl>input_tokens。
+</span></span><span class=line><span class=cl>output_tokens。
+</span></span><span class=line><span class=cl>latency_ms。
+</span></span><span class=line><span class=cl>cost。
+</span></span><span class=line><span class=cl>error_type。
+</span></span><span class=line><span class=cl>retry_count。
+</span></span></code></pre></td></tr></table></div></div><p>不要在业务代码里到处直接调用模型 SDK。</p><p>否则很难统计成本、失败率和延迟。</p><h2 id=六json-解析与-pydantic-校验接口>六、JSON 解析与 Pydantic 校验接口</h2><p>模型输出不能直接入库。</p><p>要先解析 JSON：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>json</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>pydantic</span> <span class=kn>import</span> <span class=n>ValidationError</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>parse_json_output</span><span class=p>(</span><span class=n>raw_output</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>dict</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>try</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>json</span><span class=o>.</span><span class=n>loads</span><span class=p>(</span><span class=n>raw_output</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>except</span> <span class=n>json</span><span class=o>.</span><span class=n>JSONDecodeError</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><p>再做 Schema 校验：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>validate_extracted_article</span><span class=p>(</span><span class=n>data</span><span class=p>:</span> <span class=nb>dict</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>ExtractedArticle</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>try</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>ExtractedArticle</span><span class=o>.</span><span class=n>model_validate</span><span class=p>(</span><span class=n>data</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>except</span> <span class=n>ValidationError</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><p>组合起来：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>parse_and_validate</span><span class=p>(</span><span class=n>raw_output</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>tuple</span><span class=p>[</span><span class=n>ExtractedArticle</span> <span class=o>|</span> <span class=kc>None</span><span class=p>,</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=n>data</span> <span class=o>=</span> <span class=n>parse_json_output</span><span class=p>(</span><span class=n>raw_output</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>data</span> <span class=ow>is</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span><span class=p>,</span> <span class=s2>&#34;json_decode_error&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>try</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>ExtractedArticle</span><span class=o>.</span><span class=n>model_validate</span><span class=p>(</span><span class=n>data</span><span class=p>),</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=k>except</span> <span class=n>ValidationError</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span><span class=p>,</span> <span class=s2>&#34;schema_validation_error&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>常见错误类型：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>json_decode_error。
+</span></span><span class=line><span class=cl>schema_validation_error。
+</span></span><span class=line><span class=cl>business_rule_error。
+</span></span><span class=line><span class=cl>low_confidence。
+</span></span><span class=line><span class=cl>model_timeout。
+</span></span><span class=line><span class=cl>model_rate_limited。
+</span></span></code></pre></td></tr></table></div></div><p>这些错误类型要进入任务状态机。</p><h2 id=七业务规则校验接口>七、业务规则校验接口</h2><p>Pydantic 校验类型。</p><p>业务规则校验内容质量。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>ALLOWED_CATEGORIES</span> <span class=o>=</span> <span class=p>{</span><span class=s2>&#34;科技&#34;</span><span class=p>,</span> <span class=s2>&#34;财经&#34;</span><span class=p>,</span> <span class=s2>&#34;教育&#34;</span><span class=p>,</span> <span class=s2>&#34;交通&#34;</span><span class=p>,</span> <span class=s2>&#34;医疗&#34;</span><span class=p>,</span> <span class=s2>&#34;其他&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>validate_business_rules</span><span class=p>(</span><span class=n>item</span><span class=p>:</span> <span class=n>ExtractedArticle</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=n>errors</span> <span class=o>=</span> <span class=p>[]</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>item</span><span class=o>.</span><span class=n>title</span><span class=o>.</span><span class=n>strip</span><span class=p>():</span>
+</span></span><span class=line><span class=cl>        <span class=n>errors</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=s2>&#34;title_empty&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>item</span><span class=o>.</span><span class=n>category</span> <span class=ow>not</span> <span class=ow>in</span> <span class=n>ALLOWED_CATEGORIES</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>errors</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=s2>&#34;invalid_category&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=nb>len</span><span class=p>(</span><span class=n>item</span><span class=o>.</span><span class=n>keywords</span><span class=p>)</span> <span class=o>&gt;</span> <span class=mi>8</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>errors</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=s2>&#34;too_many_keywords&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>item</span><span class=o>.</span><span class=n>confidence</span> <span class=o>&lt;</span> <span class=mf>0.7</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>errors</span><span class=o>.</span><span class=n>append</span><span class=p>(</span><span class=s2>&#34;low_confidence&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>errors</span>
+</span></span></code></pre></td></tr></table></div></div><p>为什么需要业务校验？</p><p>因为模型可能输出：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>类型正确，但内容不合理。
+</span></span></code></pre></td></tr></table></div></div><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;category&#34;</span><span class=p>:</span> <span class=s2>&#34;这是一篇关于城市发展、智能交通、公共治理和未来科技趋势的综合性报道&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>它是字符串，类型正确。</p><p>但不符合枚举。</p><h2 id=八抽取状态机>八、抽取状态机</h2><p>LLM 抽取也要有状态。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>enum</span> <span class=kn>import</span> <span class=n>Enum</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ExtractionStatus</span><span class=p>(</span><span class=nb>str</span><span class=p>,</span> <span class=n>Enum</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>PENDING</span> <span class=o>=</span> <span class=s2>&#34;pending&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>RUNNING</span> <span class=o>=</span> <span class=s2>&#34;running&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>SUCCEEDED</span> <span class=o>=</span> <span class=s2>&#34;succeeded&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>RETRYING</span> <span class=o>=</span> <span class=s2>&#34;retrying&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>REVIEW_REQUIRED</span> <span class=o>=</span> <span class=s2>&#34;review_required&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>FAILED</span> <span class=o>=</span> <span class=s2>&#34;failed&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>状态含义：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>pending：等待抽取。
+</span></span><span class=line><span class=cl>running：正在调用模型。
+</span></span><span class=line><span class=cl>succeeded：抽取成功并通过校验。
+</span></span><span class=line><span class=cl>retrying：格式类或临时错误等待重试。
+</span></span><span class=line><span class=cl>review_required：需要人工复核。
+</span></span><span class=line><span class=cl>failed：不可自动恢复。
+</span></span></code></pre></td></tr></table></div></div><p>不要把 LLM 调用隐藏在一个函数里。</p><p>它应该有记录、状态、错误和复核机制。</p><h2 id=九抽取-worker-接口>九、抽取 Worker 接口</h2><p>一个完整抽取流程：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>run_extraction</span><span class=p>(</span><span class=n>request</span><span class=p>:</span> <span class=n>ExtractionRequest</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>ExtractionResult</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>prompt</span> <span class=o>=</span> <span class=n>build_extraction_prompt</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=n>text</span><span class=o>=</span><span class=n>request</span><span class=o>.</span><span class=n>text</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>schema_description</span><span class=o>=</span><span class=n>get_schema_description</span><span class=p>(</span><span class=n>request</span><span class=o>.</span><span class=n>schema_name</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>model_response</span> <span class=o>=</span> <span class=n>call_llm</span><span class=p>(</span><span class=n>prompt</span><span class=p>,</span> <span class=n>request</span><span class=o>.</span><span class=n>model_name</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>item</span><span class=p>,</span> <span class=n>error_type</span> <span class=o>=</span> <span class=n>parse_and_validate</span><span class=p>(</span><span class=n>model_response</span><span class=o>.</span><span class=n>raw_output</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>error_type</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>handle_extraction_error</span><span class=p>(</span><span class=n>request</span><span class=p>,</span> <span class=n>model_response</span><span class=o>.</span><span class=n>raw_output</span><span class=p>,</span> <span class=n>error_type</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>business_errors</span> <span class=o>=</span> <span class=n>validate_business_rules</span><span class=p>(</span><span class=n>item</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>business_errors</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>create_review_required_result</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>            <span class=n>request</span><span class=o>=</span><span class=n>request</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=n>raw_output</span><span class=o>=</span><span class=n>model_response</span><span class=o>.</span><span class=n>raw_output</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>            <span class=n>error_type</span><span class=o>=</span><span class=s2>&#34;,&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>(</span><span class=n>business_errors</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>        <span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>save_extraction_success</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=n>request</span><span class=o>=</span><span class=n>request</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>item</span><span class=o>=</span><span class=n>item</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>raw_output</span><span class=o>=</span><span class=n>model_response</span><span class=o>.</span><span class=n>raw_output</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>model_response</span><span class=o>=</span><span class=n>model_response</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里体现了几个层次：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Prompt 构造。
+</span></span><span class=line><span class=cl>模型调用。
+</span></span><span class=line><span class=cl>JSON 解析。
+</span></span><span class=line><span class=cl>Schema 校验。
+</span></span><span class=line><span class=cl>业务规则校验。
+</span></span><span class=line><span class=cl>成功保存或人工复核。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十缓存接口>十、缓存接口</h2><p>相同正文不一定要重复调用模型。</p><p>可以用 <code>content_hash + schema_version + prompt_version + model_name</code> 做缓存键。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>build_extraction_cache_key</span><span class=p>(</span><span class=n>request</span><span class=p>:</span> <span class=n>ExtractionRequest</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;:&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>([</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;llm:extraction&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>request</span><span class=o>.</span><span class=n>content_hash</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>request</span><span class=o>.</span><span class=n>schema_version</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>request</span><span class=o>.</span><span class=n>prompt_version</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>request</span><span class=o>.</span><span class=n>model_name</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>查询缓存：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>get_cached_extraction</span><span class=p>(</span><span class=n>request</span><span class=p>:</span> <span class=n>ExtractionRequest</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>ExtractionResult</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>key</span> <span class=o>=</span> <span class=n>build_extraction_cache_key</span><span class=p>(</span><span class=n>request</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>cached</span> <span class=o>=</span> <span class=n>redis_client</span><span class=o>.</span><span class=n>get</span><span class=p>(</span><span class=n>key</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>cached</span> <span class=ow>is</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>ExtractionResult</span><span class=o>.</span><span class=n>model_validate_json</span><span class=p>(</span><span class=n>cached</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>写入缓存：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>cache_extraction</span><span class=p>(</span><span class=n>request</span><span class=p>:</span> <span class=n>ExtractionRequest</span><span class=p>,</span> <span class=n>result</span><span class=p>:</span> <span class=n>ExtractionResult</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>key</span> <span class=o>=</span> <span class=n>build_extraction_cache_key</span><span class=p>(</span><span class=n>request</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>redis_client</span><span class=o>.</span><span class=n>set</span><span class=p>(</span><span class=n>key</span><span class=p>,</span> <span class=n>result</span><span class=o>.</span><span class=n>model_dump_json</span><span class=p>(),</span> <span class=n>ex</span><span class=o>=</span><span class=mi>7</span> <span class=o>*</span> <span class=mi>24</span> <span class=o>*</span> <span class=mi>3600</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>缓存可以降低：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>成本。
+</span></span><span class=line><span class=cl>延迟。
+</span></span><span class=line><span class=cl>重复调用。
+</span></span></code></pre></td></tr></table></div></div><p>但缓存要带版本。</p><p>否则 Prompt 或 Schema 改了，旧结果会污染新流程。</p><h2 id=十一人工复核接口>十一、人工复核接口</h2><p>低置信度或校验失败要进入复核。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>ExtractionReviewCase</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>review_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>input_excerpt</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>raw_output</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>error_type</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>schema_version</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>prompt_version</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>model_name</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>创建复核：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>create_extraction_review</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>request</span><span class=p>:</span> <span class=n>ExtractionRequest</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>raw_output</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>error_type</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>ExtractionReviewCase</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>save_review_case</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=n>task_id</span><span class=o>=</span><span class=n>request</span><span class=o>.</span><span class=n>task_id</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>source_id</span><span class=o>=</span><span class=n>request</span><span class=o>.</span><span class=n>source_id</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>input_excerpt</span><span class=o>=</span><span class=n>request</span><span class=o>.</span><span class=n>text</span><span class=p>[:</span><span class=mi>1000</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>        <span class=n>raw_output</span><span class=o>=</span><span class=n>raw_output</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>error_type</span><span class=o>=</span><span class=n>error_type</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>schema_version</span><span class=o>=</span><span class=n>request</span><span class=o>.</span><span class=n>schema_version</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>prompt_version</span><span class=o>=</span><span class=n>request</span><span class=o>.</span><span class=n>prompt_version</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>model_name</span><span class=o>=</span><span class=n>request</span><span class=o>.</span><span class=n>model_name</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>复核结果可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>接受结果。
+</span></span><span class=line><span class=cl>人工修正。
+</span></span><span class=line><span class=cl>标记不可抽取。
+</span></span><span class=line><span class=cl>调整 Prompt。
+</span></span><span class=line><span class=cl>调整 Schema。
+</span></span><span class=line><span class=cl>调整清洗规则。
+</span></span></code></pre></td></tr></table></div></div><p>复核结果要反哺系统。</p><p>否则人工复核只是成本，不是改进闭环。</p><h2 id=十二agent-诊断接口设计>十二、Agent 诊断接口设计</h2><p>Agent 输入不是原始网页。</p><p>它应该读取任务上下文。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>DiagnosisRequest</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>failure_type</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>status_code</span><span class=p>:</span> <span class=nb>int</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>retry_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>page_title</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>text_excerpt</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>missing_fields</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>default_factory</span><span class=o>=</span><span class=nb>list</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>recent_logs</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>default_factory</span><span class=o>=</span><span class=nb>list</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>上下文原则：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>足够诊断。
+</span></span><span class=line><span class=cl>尽量脱敏。
+</span></span><span class=line><span class=cl>控制长度。
+</span></span><span class=line><span class=cl>保留关键证据。
+</span></span></code></pre></td></tr></table></div></div><p>不要传入：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>完整 Cookie。
+</span></span><span class=line><span class=cl>完整 Token。
+</span></span><span class=line><span class=cl>账号密码。
+</span></span><span class=line><span class=cl>手机号。
+</span></span><span class=line><span class=cl>身份证号。
+</span></span><span class=line><span class=cl>未脱敏敏感数据。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十三agent-动作枚举>十三、Agent 动作枚举</h2><p>Agent 不能输出任意动作。</p><p>应该限制为枚举。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>DiagnosisAction</span><span class=p>(</span><span class=nb>str</span><span class=p>,</span> <span class=n>Enum</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>RETRY_LATER</span> <span class=o>=</span> <span class=s2>&#34;retry_later&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>LOWER_RATE</span> <span class=o>=</span> <span class=s2>&#34;lower_rate&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>MANUAL_REVIEW</span> <span class=o>=</span> <span class=s2>&#34;manual_review&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>CHECK_AUTHORIZATION</span> <span class=o>=</span> <span class=s2>&#34;check_authorization&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>UPDATE_RULE</span> <span class=o>=</span> <span class=s2>&#34;update_rule&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>PAUSE_SOURCE</span> <span class=o>=</span> <span class=s2>&#34;pause_source&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>NO_ACTION</span> <span class=o>=</span> <span class=s2>&#34;no_action&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>输出 Schema：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>DiagnosisResult</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>reason</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>action</span><span class=p>:</span> <span class=n>DiagnosisAction</span>
+</span></span><span class=line><span class=cl>    <span class=n>confidence</span><span class=p>:</span> <span class=nb>float</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>ge</span><span class=o>=</span><span class=mi>0</span><span class=p>,</span> <span class=n>le</span><span class=o>=</span><span class=mi>1</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>evidence</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>default_factory</span><span class=o>=</span><span class=nb>list</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>为什么要枚举？</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>系统可以校验。
+</span></span><span class=line><span class=cl>系统可以映射状态。
+</span></span><span class=line><span class=cl>系统可以审计。
+</span></span><span class=line><span class=cl>系统可以阻止危险动作。
+</span></span></code></pre></td></tr></table></div></div><p>不要让 Agent 输出：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>“我建议你试试各种办法继续访问”。
+</span></span></code></pre></td></tr></table></div></div><p>而要让它输出明确、安全、可控的动作。</p><h2 id=十四agent-系统提示词接口>十四、Agent 系统提示词接口</h2><p>Agent 的系统提示词要明确边界。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>build_diagnosis_system_prompt</span><span class=p>()</span> <span class=o>-&gt;</span> <span class=nb>str</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;&#34;&#34;
+</span></span></span><span class=line><span class=cl><span class=s2>你是数据采集系统的合规诊断助手。
+</span></span></span><span class=line><span class=cl><span class=s2>你只能根据任务日志、状态码、页面摘要、字段缺失和数据源配置进行诊断。
+</span></span></span><span class=line><span class=cl><span class=s2>
+</span></span></span><span class=line><span class=cl><span class=s2>允许建议：
+</span></span></span><span class=line><span class=cl><span class=s2>- 稍后重试。
+</span></span></span><span class=line><span class=cl><span class=s2>- 降低访问频率。
+</span></span></span><span class=line><span class=cl><span class=s2>- 暂停任务或数据源。
+</span></span></span><span class=line><span class=cl><span class=s2>- 检查授权。
+</span></span></span><span class=line><span class=cl><span class=s2>- 更新解析规则。
+</span></span></span><span class=line><span class=cl><span class=s2>- 进入人工复核。
+</span></span></span><span class=line><span class=cl><span class=s2>
+</span></span></span><span class=line><span class=cl><span class=s2>禁止建议：
+</span></span></span><span class=line><span class=cl><span class=s2>- 绕过登录、权限、验证码或风控。
+</span></span></span><span class=line><span class=cl><span class=s2>- 规避限流、封禁或检测。
+</span></span></span><span class=line><span class=cl><span class=s2>- 扩大未授权采集。
+</span></span></span><span class=line><span class=cl><span class=s2>- 输出验证码答案或绕过方案。
+</span></span></span><span class=line><span class=cl><span class=s2>
+</span></span></span><span class=line><span class=cl><span class=s2>如果上下文显示验证码、权限异常、风控或授权不明，请建议暂停和人工复核。
+</span></span></span><span class=line><span class=cl><span class=s2>&#34;&#34;&#34;</span><span class=o>.</span><span class=n>strip</span><span class=p>()</span>
+</span></span></code></pre></td></tr></table></div></div><p>提示词不是唯一防线。</p><p>业务代码还要做动作白名单校验。</p><h2 id=十五agent-诊断流程>十五、Agent 诊断流程</h2><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>diagnose_task</span><span class=p>(</span><span class=n>request</span><span class=p>:</span> <span class=n>DiagnosisRequest</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>DiagnosisResult</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>system_prompt</span> <span class=o>=</span> <span class=n>build_diagnosis_system_prompt</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>    <span class=n>user_prompt</span> <span class=o>=</span> <span class=n>build_diagnosis_user_prompt</span><span class=p>(</span><span class=n>request</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>raw_output</span> <span class=o>=</span> <span class=n>call_agent</span><span class=p>(</span><span class=n>system_prompt</span><span class=p>,</span> <span class=n>user_prompt</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>result</span> <span class=o>=</span> <span class=n>DiagnosisResult</span><span class=o>.</span><span class=n>model_validate_json</span><span class=p>(</span><span class=n>raw_output</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>save_diagnosis_result</span><span class=p>(</span><span class=n>result</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>result</span>
+</span></span></code></pre></td></tr></table></div></div><p>然后应用诊断结果：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>HIGH_RISK_ACTIONS</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=n>DiagnosisAction</span><span class=o>.</span><span class=n>PAUSE_SOURCE</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>DiagnosisAction</span><span class=o>.</span><span class=n>UPDATE_RULE</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>DiagnosisAction</span><span class=o>.</span><span class=n>CHECK_AUTHORIZATION</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>apply_diagnosis</span><span class=p>(</span><span class=n>result</span><span class=p>:</span> <span class=n>DiagnosisResult</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>result</span><span class=o>.</span><span class=n>confidence</span> <span class=o>&lt;</span> <span class=mf>0.7</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>move_to_manual_review</span><span class=p>(</span><span class=n>result</span><span class=o>.</span><span class=n>task_id</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>result</span><span class=o>.</span><span class=n>action</span> <span class=ow>in</span> <span class=n>HIGH_RISK_ACTIONS</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>create_review_case</span><span class=p>(</span><span class=n>result</span><span class=o>.</span><span class=n>task_id</span><span class=p>,</span> <span class=n>result</span><span class=o>.</span><span class=n>reason</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>result</span><span class=o>.</span><span class=n>action</span> <span class=o>==</span> <span class=n>DiagnosisAction</span><span class=o>.</span><span class=n>RETRY_LATER</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>schedule_retry</span><span class=p>(</span><span class=n>result</span><span class=o>.</span><span class=n>task_id</span><span class=p>,</span> <span class=n>delay_seconds</span><span class=o>=</span><span class=mi>300</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>result</span><span class=o>.</span><span class=n>action</span> <span class=o>==</span> <span class=n>DiagnosisAction</span><span class=o>.</span><span class=n>MANUAL_REVIEW</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>move_to_manual_review</span><span class=p>(</span><span class=n>result</span><span class=o>.</span><span class=n>task_id</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>原则：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>低置信度人工复核。
+</span></span><span class=line><span class=cl>高风险动作人工确认。
+</span></span><span class=line><span class=cl>低风险动作可自动执行。
+</span></span><span class=line><span class=cl>所有动作写审计日志。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十六agent-与任务状态映射>十六、Agent 与任务状态映射</h2><p>可以定义映射：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>ACTION_TO_STATUS</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=n>DiagnosisAction</span><span class=o>.</span><span class=n>RETRY_LATER</span><span class=p>:</span> <span class=s2>&#34;retrying&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>DiagnosisAction</span><span class=o>.</span><span class=n>LOWER_RATE</span><span class=p>:</span> <span class=s2>&#34;rate_limited&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>DiagnosisAction</span><span class=o>.</span><span class=n>MANUAL_REVIEW</span><span class=p>:</span> <span class=s2>&#34;manual_review&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>DiagnosisAction</span><span class=o>.</span><span class=n>CHECK_AUTHORIZATION</span><span class=p>:</span> <span class=s2>&#34;auth_required&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>DiagnosisAction</span><span class=o>.</span><span class=n>UPDATE_RULE</span><span class=p>:</span> <span class=s2>&#34;manual_review&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>DiagnosisAction</span><span class=o>.</span><span class=n>PAUSE_SOURCE</span><span class=p>:</span> <span class=s2>&#34;manual_review&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>DiagnosisAction</span><span class=o>.</span><span class=n>NO_ACTION</span><span class=p>:</span> <span class=s2>&#34;failed&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这样 Agent 输出就能进入任务状态机。</p><p>但注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>状态映射不等于动作直接执行。
+</span></span></code></pre></td></tr></table></div></div><p>例如暂停整个数据源、修改规则、恢复授权任务，都应人工确认。</p><h2 id=十七调用日志与成本接口>十七、调用日志与成本接口</h2><p>LLM 和 Agent 调用必须可观测。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>ModelCallLog</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>call_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>call_type</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>model_name</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>prompt_version</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>input_tokens</span><span class=p>:</span> <span class=nb>int</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>output_tokens</span><span class=p>:</span> <span class=nb>int</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>latency_ms</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>error_type</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><p>记录接口：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>log_model_call</span><span class=p>(</span><span class=n>log</span><span class=p>:</span> <span class=n>ModelCallLog</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>save_model_call_log</span><span class=p>(</span><span class=n>log</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>要统计：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>调用量。
+</span></span><span class=line><span class=cl>成功率。
+</span></span><span class=line><span class=cl>失败率。
+</span></span><span class=line><span class=cl>平均延迟。
+</span></span><span class=line><span class=cl>平均 token。
+</span></span><span class=line><span class=cl>平均成本。
+</span></span><span class=line><span class=cl>JSON 解析失败率。
+</span></span><span class=line><span class=cl>Schema 校验失败率。
+</span></span><span class=line><span class=cl>人工复核比例。
+</span></span><span class=line><span class=cl>Agent 诊断采纳率。
+</span></span></code></pre></td></tr></table></div></div><p>没有这些指标，就无法判断 LLM / Agent 是否真的提升了系统。</p><h2 id=十八安全与合规接口>十八、安全与合规接口</h2><p>LLM / Agent 前必须做脱敏。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>SENSITIVE_KEYS</span> <span class=o>=</span> <span class=p>{</span><span class=s2>&#34;cookie&#34;</span><span class=p>,</span> <span class=s2>&#34;authorization&#34;</span><span class=p>,</span> <span class=s2>&#34;token&#34;</span><span class=p>,</span> <span class=s2>&#34;password&#34;</span><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>redact_context</span><span class=p>(</span><span class=n>context</span><span class=p>:</span> <span class=nb>dict</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>dict</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>redacted</span> <span class=o>=</span> <span class=p>{}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>for</span> <span class=n>key</span><span class=p>,</span> <span class=n>value</span> <span class=ow>in</span> <span class=n>context</span><span class=o>.</span><span class=n>items</span><span class=p>():</span>
+</span></span><span class=line><span class=cl>        <span class=k>if</span> <span class=n>key</span><span class=o>.</span><span class=n>lower</span><span class=p>()</span> <span class=ow>in</span> <span class=n>SENSITIVE_KEYS</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>            <span class=n>redacted</span><span class=p>[</span><span class=n>key</span><span class=p>]</span> <span class=o>=</span> <span class=s2>&#34;[REDACTED]&#34;</span>
+</span></span><span class=line><span class=cl>        <span class=k>else</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>            <span class=n>redacted</span><span class=p>[</span><span class=n>key</span><span class=p>]</span> <span class=o>=</span> <span class=n>value</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>redacted</span>
+</span></span></code></pre></td></tr></table></div></div><p>还要控制输入长度：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>truncate_text</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span> <span class=n>max_chars</span><span class=p>:</span> <span class=nb>int</span> <span class=o>=</span> <span class=mi>20_000</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>text</span><span class=p>[:</span><span class=n>max_chars</span><span class=p>]</span>
+</span></span></code></pre></td></tr></table></div></div><p>安全边界包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不传敏感凭证。
+</span></span><span class=line><span class=cl>不传无关个人信息。
+</span></span><span class=line><span class=cl>不让 Agent 输出绕过动作。
+</span></span><span class=line><span class=cl>不自动执行高风险动作。
+</span></span><span class=line><span class=cl>所有调用可审计。
+</span></span><span class=line><span class=cl>复核记录可追踪。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十九完整接口流程示例>十九、完整接口流程示例</h2><p>一个 LLM 抽取流程：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Parser 输出正文
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>构造 ExtractionRequest
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>脱敏和截断
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>检查缓存
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>调用 LLM
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>JSON 解析
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Pydantic 校验
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>业务规则校验
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>成功入库 / 人工复核
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>记录模型调用日志
+</span></span></code></pre></td></tr></table></div></div><p>一个 Agent 诊断流程：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务失败
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>收集状态码、日志、字段缺失、页面摘要
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>脱敏和截断
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>调用 Agent
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>校验动作枚举
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>低风险动作自动执行
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>高风险动作进入人工复核
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>写诊断记录和审计日志
+</span></span></code></pre></td></tr></table></div></div><p>这两个流程都强调：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>模型建议不是最终事实。
+</span></span><span class=line><span class=cl>系统校验和人工复核负责边界。
+</span></span></code></pre></td></tr></table></div></div><h2 id=二十常见坑点>二十、常见坑点</h2><h3 id=1-把整页-html-直接丢给模型>1. 把整页 HTML 直接丢给模型</h3><p>成本高、噪声多、效果不稳定。</p><p>应先清洗正文。</p><h3 id=2-不定义-schema>2. 不定义 Schema</h3><p>没有 Schema，输出无法稳定入库。</p><h3 id=3-不做-json-校验>3. 不做 JSON 校验</h3><p>模型可能输出解释文字、Markdown 或格式错误 JSON。</p><h3 id=4-不做业务规则校验>4. 不做业务规则校验</h3><p>类型正确不等于内容合理。</p><h3 id=5-不记录模型版本和-prompt-版本>5. 不记录模型版本和 Prompt 版本</h3><p>后续无法复现和对比结果。</p><h3 id=6-低置信度直接入库>6. 低置信度直接入库</h3><p>会污染数据质量。</p><h3 id=7-agent-输出自然语言动作>7. Agent 输出自然语言动作</h3><p>系统无法校验和审计。</p><h3 id=8-高风险动作自动执行>8. 高风险动作自动执行</h3><p>暂停数据源、修改规则、恢复授权任务都应人工确认。</p><h3 id=9-不做脱敏>9. 不做脱敏</h3><p>传入 Cookie、Token、账号密码等敏感信息会带来安全风险。</p><h3 id=10-不统计成本和效果>10. 不统计成本和效果</h3><p>无法判断 LLM / Agent 是否值得使用。</p><h2 id=二十一面试表达>二十一、面试表达</h2><p>如果面试官问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM 抽取接口怎么设计？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会把 LLM 抽取设计成独立 Worker 或内部接口，输入包括 task_id、source_id、content_hash、清洗后的 text、schema_version、prompt_version 和 model_name。模型输出必须先做 JSON 解析，再做 Pydantic 校验和业务规则校验，通过后入库，失败或低置信度进入人工复核。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>如何保证 LLM 输出可靠？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会从输入清洗、Prompt 约束、Schema 校验、业务规则校验、置信度阈值、有限重试和人工复核几个层面保证。不会直接把模型回答当成可信结果。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Agent 在爬虫系统里怎么接？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>Agent 主要接在失败诊断和人工复核环节。输入是任务状态、状态码、失败类型、字段缺失、页面摘要和最近日志，输出是结构化诊断结果，包括 reason、action、confidence 和 evidence。action 必须是白名单枚举。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>如何防止 Agent 误操作？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会限制 Agent 只能输出动作枚举，系统只接受白名单动作；低置信度进入人工复核；暂停数据源、修改规则、授权相关操作等高风险动作必须人工确认；上下文先脱敏，系统提示词明确禁止绕过登录、验证码、风控和限流。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM / Agent 接入后怎么评估效果？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会看抽取成功率、JSON 解析失败率、Schema 校验失败率、人工复核比例、平均延迟、平均成本、Agent 诊断采纳率、误判率和重复失败减少比例。如果效果不稳定，就优化正文清洗、Prompt、Schema、动作枚举和复核闭环。</p></blockquote><h2 id=二十二总结>二十二、总结</h2><p>本文整理了 LLM 与 Agent 数据采集接口设计。</p><p>核心结论包括：</p><ul><li>LLM 抽取和 Agent 诊断是两个不同接口，不应该混在一起。</li><li>LLM 抽取输入应包含 task_id、source_id、content_hash、text、schema_version、prompt_version 和 model_name。</li><li>Prompt 要版本化，模型调用要统一封装。</li><li>模型输出必须经过 JSON 解析、Pydantic 校验和业务规则校验。</li><li>LLM 抽取要有状态机，包括 pending、running、succeeded、retrying、review_required、failed。</li><li>相同 content_hash、schema_version、prompt_version、model_name 可以做缓存，降低成本。</li><li>低置信度、校验失败和异常输出要进入人工复核。</li><li>Agent 输入应该是脱敏后的任务上下文，而不是敏感凭证或完整无关数据。</li><li>Agent 输出必须使用动作枚举、原因、置信度和证据。</li><li>低风险动作可以自动执行，高风险动作必须人工确认。</li><li>LLM / Agent 调用要记录 token、延迟、成本、成功率、失败率和复核比例。</li><li>安全边界必须内置在系统提示词、动作白名单、脱敏、审计和人工复核中。</li></ul><p>到这里，扩展篇 31 到 36 也完成了一轮闭环：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>HTTP 客户端 API。
+</span></span><span class=line><span class=cl>网页解析 API。
+</span></span><span class=line><span class=cl>浏览器自动化 API。
+</span></span><span class=line><span class=cl>存储、队列与任务状态接口。
+</span></span><span class=line><span class=cl>FastAPI 管理平台接口。
+</span></span><span class=line><span class=cl>LLM 与 Agent 数据采集接口。
+</span></span></code></pre></td></tr></table></div></div><p>这些内容可以作为前 30 篇主线之后的工程速查手册。</p><p>如果说前 30 篇回答的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>如何系统学习大模型时代的数据采集工程？
+</span></span></code></pre></td></tr></table></div></div><p>那么这 6 篇扩展篇回答的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>真正写项目时，各模块常用 API 和接口应该怎么组织？
+</span></span></code></pre></td></tr></table></div></div><p>至此，本系列的“主线篇 + API 扩展篇”就形成了一个更完整的面试与工程知识库。</p></section><footer class=article-footer><section class=article-tags><a href=/tags/python/>Python</a>
+<a href=/tags/%E7%88%AC%E8%99%AB/>爬虫</a>
+<a href=/tags/llm/>LLM</a>
+<a href=/tags/ai-agent/>AI Agent</a>
+<a href=/tags/pydantic/>Pydantic</a>
+<a href=/tags/%E6%95%B0%E6%8D%AE%E6%8A%BD%E5%8F%96/>数据抽取</a>
+<a href=/tags/api/>API</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/llm-web-content-schema-extraction/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 27：网页正文提取与 Schema 化抽取实战</h2></div></a></article><article><a href=/p/llm-powered-crawler-data-extraction/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 26：LLM 赋能爬虫数据抽取</h2></div></a></article><article><a href=/p/crawler-engineer-interview-summary/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 30：爬虫工程师面试高频问题总结</h2></div></a></article><article><a href=/p/llm-enhanced-intelligent-crawler-system/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 29：设计一个大模型增强的智能采集系统</h2></div></a></article><article><a href=/p/ai-agent-for-crawler-workflow/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 28：AI Agent 在数据采集流程中的应用</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

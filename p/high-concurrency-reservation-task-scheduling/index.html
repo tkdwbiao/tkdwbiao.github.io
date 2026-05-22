@@ -1,0 +1,822 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇文章里，我们讨论了自动化任务中的验证码识别边界。\n核心结论是：\n1 2 3 验证码是风险信号。 自动化任务遇到验证码时，应暂停、记录、人工确认。 不应该把验证码识别接入真实业务自动化流程。 这一篇继续讨论一个面试里很常见、也很容易被误用的话题：高并发预约类系统。\n很多爬虫或自动化项目简历里会出现：\n1 2 3 4 5 抢票。 预约。 秒杀。 高并发提交。 协议级自动化。 这些词非常敏感。\n如果把它们理解成“如何绕过规则抢占资源”，那就偏离了工程和合规边界。\n本文不写抢票脚本，不写真实平台接口调用，不写绕过风控、验证码或排队系统的方法。\n本文讨论的是：\n如果我们要设计一个自有或授权场景下的高并发预约任务系统，应该如何设计队列、状态机、限流、重试、幂等、监控和公平性。\n"><title>大模型时代的数据采集工程 21：高并发预约类系统的任务调度设计</title><link rel=canonical href=https://tkdwbiao.github.io/p/high-concurrency-reservation-task-scheduling/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="大模型时代的数据采集工程 21：高并发预约类系统的任务调度设计"><meta property='og:description' content="上一篇文章里，我们讨论了自动化任务中的验证码识别边界。\n核心结论是：\n1 2 3 验证码是风险信号。 自动化任务遇到验证码时，应暂停、记录、人工确认。 不应该把验证码识别接入真实业务自动化流程。 这一篇继续讨论一个面试里很常见、也很容易被误用的话题：高并发预约类系统。\n很多爬虫或自动化项目简历里会出现：\n1 2 3 4 5 抢票。 预约。 秒杀。 高并发提交。 协议级自动化。 这些词非常敏感。\n如果把它们理解成“如何绕过规则抢占资源”，那就偏离了工程和合规边界。\n本文不写抢票脚本，不写真实平台接口调用，不写绕过风控、验证码或排队系统的方法。\n本文讨论的是：\n如果我们要设计一个自有或授权场景下的高并发预约任务系统，应该如何设计队列、状态机、限流、重试、幂等、监控和公平性。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/high-concurrency-reservation-task-scheduling/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='Python'><meta property='article:tag' content='爬虫'><meta property='article:tag' content='任务调度'><meta property='article:tag' content='队列'><meta property='article:tag' content='限流'><meta property='article:tag' content='系统设计'><meta property='article:published_time' content='2026-01-20T10:00:00+08:00'><meta property='article:modified_time' content='2026-01-20T10:00:00+08:00'><meta name=twitter:title content="大模型时代的数据采集工程 21：高并发预约类系统的任务调度设计"><meta name=twitter:description content="上一篇文章里，我们讨论了自动化任务中的验证码识别边界。\n核心结论是：\n1 2 3 验证码是风险信号。 自动化任务遇到验证码时，应暂停、记录、人工确认。 不应该把验证码识别接入真实业务自动化流程。 这一篇继续讨论一个面试里很常见、也很容易被误用的话题：高并发预约类系统。\n很多爬虫或自动化项目简历里会出现：\n1 2 3 4 5 抢票。 预约。 秒杀。 高并发提交。 协议级自动化。 这些词非常敏感。\n如果把它们理解成“如何绕过规则抢占资源”，那就偏离了工程和合规边界。\n本文不写抢票脚本，不写真实平台接口调用，不写绕过风控、验证码或排队系统的方法。\n本文讨论的是：\n如果我们要设计一个自有或授权场景下的高并发预约任务系统，应该如何设计队列、状态机、限流、重试、幂等、监控和公平性。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二预约类系统的本质>二、预约类系统的本质</a></li><li><a href=#三为什么不能用简单并发提交>三、为什么不能用简单并发提交？</a><ol><li><a href=#1-会放大系统压力>1. 会放大系统压力</a></li><li><a href=#2-会破坏公平性>2. 会破坏公平性</a></li><li><a href=#3-失败不可控>3. 失败不可控</a></li><li><a href=#4-无法复盘>4. 无法复盘</a></li></ol></li><li><a href=#四任务状态机设计>四、任务状态机设计</a></li><li><a href=#五任务模型设计>五、任务模型设计</a></li><li><a href=#六队列设计>六、队列设计</a><ol><li><a href=#1-普通-fifo-队列>1. 普通 FIFO 队列</a></li><li><a href=#2-优先级队列>2. 优先级队列</a></li><li><a href=#3-延迟队列>3. 延迟队列</a></li><li><a href=#4-死信队列>4. 死信队列</a></li></ol></li><li><a href=#七限流设计>七、限流设计</a></li><li><a href=#八重试策略>八、重试策略</a></li><li><a href=#九幂等设计>九、幂等设计</a></li><li><a href=#十库存和资源占用>十、库存和资源占用</a><ol><li><a href=#1-直接扣减>1. 直接扣减</a></li><li><a href=#2-先占位再确认>2. 先占位再确认</a></li></ol></li><li><a href=#十一公平性设计>十一、公平性设计</a></li><li><a href=#十二调度器设计>十二、调度器设计</a></li><li><a href=#十三数据库与-redis-的分工>十三、数据库与 Redis 的分工</a></li><li><a href=#十四监控与告警>十四、监控与告警</a></li><li><a href=#十五人工复核与降级>十五、人工复核与降级</a></li><li><a href=#十六llm--agent-能做什么>十六、LLM / Agent 能做什么？</a></li><li><a href=#十七常见错误写法>十七、常见错误写法</a><ol><li><a href=#1-把高并发理解成无限并发>1. 把高并发理解成无限并发</a></li><li><a href=#2-没有任务状态机>2. 没有任务状态机</a></li><li><a href=#3-所有失败都重试>3. 所有失败都重试</a></li><li><a href=#4-忽略幂等>4. 忽略幂等</a></li><li><a href=#5-不做限流>5. 不做限流</a></li><li><a href=#6-不考虑公平性>6. 不考虑公平性</a></li><li><a href=#7-用真实平台做自动化冲击>7. 用真实平台做自动化冲击</a></li></ol></li><li><a href=#十八面试表达>十八、面试表达</a></li><li><a href=#十九总结>十九、总结</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/%E7%88%AC%E8%99%AB%E7%B3%BB%E5%88%97/ style=background-color:#efcfbe;color:#3d1f0f>爬虫系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/high-concurrency-reservation-task-scheduling/>大模型时代的数据采集工程 21：高并发预约类系统的任务调度设计</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-01-20T10:00:00+08:00>2026-01-20 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 14 分钟</time></div></footer></div></header><section class=article-content><p>上一篇文章里，我们讨论了自动化任务中的验证码识别边界。</p><p>核心结论是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>验证码是风险信号。
+</span></span><span class=line><span class=cl>自动化任务遇到验证码时，应暂停、记录、人工确认。
+</span></span><span class=line><span class=cl>不应该把验证码识别接入真实业务自动化流程。
+</span></span></code></pre></td></tr></table></div></div><p>这一篇继续讨论一个面试里很常见、也很容易被误用的话题：高并发预约类系统。</p><p>很多爬虫或自动化项目简历里会出现：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>抢票。
+</span></span><span class=line><span class=cl>预约。
+</span></span><span class=line><span class=cl>秒杀。
+</span></span><span class=line><span class=cl>高并发提交。
+</span></span><span class=line><span class=cl>协议级自动化。
+</span></span></code></pre></td></tr></table></div></div><p>这些词非常敏感。</p><p>如果把它们理解成“如何绕过规则抢占资源”，那就偏离了工程和合规边界。</p><p>本文不写抢票脚本，不写真实平台接口调用，不写绕过风控、验证码或排队系统的方法。</p><p>本文讨论的是：</p><blockquote><p>如果我们要设计一个自有或授权场景下的高并发预约任务系统，应该如何设计队列、状态机、限流、重试、幂等、监控和公平性。</p></blockquote><h2 id=一前言>一、前言</h2><p>高并发预约系统不是简单的 <code>for</code> 循环提交请求。</p><p>它通常涉及：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户请求。
+</span></span><span class=line><span class=cl>预约资源。
+</span></span><span class=line><span class=cl>时间窗口。
+</span></span><span class=line><span class=cl>库存或名额。
+</span></span><span class=line><span class=cl>排队规则。
+</span></span><span class=line><span class=cl>限流策略。
+</span></span><span class=line><span class=cl>任务状态。
+</span></span><span class=line><span class=cl>失败重试。
+</span></span><span class=line><span class=cl>幂等控制。
+</span></span><span class=line><span class=cl>监控告警。
+</span></span><span class=line><span class=cl>人工兜底。
+</span></span></code></pre></td></tr></table></div></div><p>比如自有系统里的这些场景：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>企业内部会议室预约。
+</span></span><span class=line><span class=cl>医院测试环境挂号流程压测。
+</span></span><span class=line><span class=cl>活动报名系统。
+</span></span><span class=line><span class=cl>实验室设备预约。
+</span></span><span class=line><span class=cl>课程选课系统。
+</span></span><span class=line><span class=cl>内部工单派发。
+</span></span></code></pre></td></tr></table></div></div><p>这些场景可以合法地讨论调度设计。</p><p>但对于第三方公共资源平台，尤其是票务、文博、医疗、教育等场景，应遵守平台规则和公共公平性。</p><p>所以本文的边界是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>讲系统设计。
+</span></span><span class=line><span class=cl>讲队列和状态机。
+</span></span><span class=line><span class=cl>讲限流、重试、幂等和监控。
+</span></span><span class=line><span class=cl>讲自有系统和授权测试。
+</span></span><span class=line><span class=cl>不讲真实平台抢占资源。
+</span></span><span class=line><span class=cl>不讲绕过排队、验证码、风控或访问限制。
+</span></span></code></pre></td></tr></table></div></div><p>这也是面试中更专业的表达方式。</p><p>不是说：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>我会写抢票脚本。
+</span></span></code></pre></td></tr></table></div></div><p>而是说：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>我理解高并发预约系统里的任务调度、资源竞争、限流保护、失败分类、幂等提交和公平性设计。
+</span></span></code></pre></td></tr></table></div></div><h2 id=二预约类系统的本质>二、预约类系统的本质</h2><p>预约类系统的本质是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>有限资源在特定时间窗口内被多个请求竞争。
+</span></span></code></pre></td></tr></table></div></div><p>资源可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>一个时间段。
+</span></span><span class=line><span class=cl>一个座位。
+</span></span><span class=line><span class=cl>一个名额。
+</span></span><span class=line><span class=cl>一个库存。
+</span></span><span class=line><span class=cl>一个服务窗口。
+</span></span><span class=line><span class=cl>一个处理能力。
+</span></span></code></pre></td></tr></table></div></div><p>高并发来自两个方向。</p><p>第一，用户集中提交：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>预约开放时间固定。
+</span></span><span class=line><span class=cl>热门资源数量有限。
+</span></span><span class=line><span class=cl>大量用户在同一时间进入系统。
+</span></span></code></pre></td></tr></table></div></div><p>第二，系统处理链路复杂：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>登录校验。
+</span></span><span class=line><span class=cl>资格校验。
+</span></span><span class=line><span class=cl>库存查询。
+</span></span><span class=line><span class=cl>下单或占位。
+</span></span><span class=line><span class=cl>支付或确认。
+</span></span><span class=line><span class=cl>通知。
+</span></span><span class=line><span class=cl>日志审计。
+</span></span></code></pre></td></tr></table></div></div><p>因此，预约系统不是单接口问题。</p><p>它是一个完整链路问题。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>入口流量
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>鉴权与资格校验
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>排队与限流
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>任务调度
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>库存或资源占用
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>确认与幂等
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>通知与审计
+</span></span></code></pre></td></tr></table></div></div><p>如果面试官问“怎么设计抢票系统”，更安全也更专业的回答是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>我会从预约系统的任务调度和资源竞争模型讲起，而不是讨论绕过平台规则。
+</span></span></code></pre></td></tr></table></div></div><h2 id=三为什么不能用简单并发提交>三、为什么不能用简单并发提交？</h2><p>很多初学者会想到：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>开很多线程。
+</span></span><span class=line><span class=cl>开很多协程。
+</span></span><span class=line><span class=cl>同时发很多请求。
+</span></span><span class=line><span class=cl>失败就重试。
+</span></span></code></pre></td></tr></table></div></div><p>这在工程上有很多问题。</p><h3 id=1-会放大系统压力>1. 会放大系统压力</h3><p>无控制并发会造成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>服务端压力升高。
+</span></span><span class=line><span class=cl>网关限流。
+</span></span><span class=line><span class=cl>账号风控。
+</span></span><span class=line><span class=cl>IP 风险升高。
+</span></span><span class=line><span class=cl>任务大量失败。
+</span></span><span class=line><span class=cl>日志和监控噪声增加。
+</span></span></code></pre></td></tr></table></div></div><h3 id=2-会破坏公平性>2. 会破坏公平性</h3><p>公共预约资源通常需要公平规则。</p><p>如果自动化系统通过高频请求抢占资源，就会影响正常用户。</p><p>这不是工程能力，而是规则破坏。</p><h3 id=3-失败不可控>3. 失败不可控</h3><p>没有状态机的并发提交，很容易出现：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不知道哪些任务成功。
+</span></span><span class=line><span class=cl>不知道哪些任务失败。
+</span></span><span class=line><span class=cl>不知道哪些任务可以重试。
+</span></span><span class=line><span class=cl>重复提交。
+</span></span><span class=line><span class=cl>重复占位。
+</span></span><span class=line><span class=cl>任务卡死。
+</span></span></code></pre></td></tr></table></div></div><h3 id=4-无法复盘>4. 无法复盘</h3><p>如果没有日志和审计，事后无法回答：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>为什么失败？
+</span></span><span class=line><span class=cl>失败发生在哪一步？
+</span></span><span class=line><span class=cl>是否触发限流？
+</span></span><span class=line><span class=cl>是否重复提交？
+</span></span><span class=line><span class=cl>是否误伤正常请求？
+</span></span></code></pre></td></tr></table></div></div><p>所以高并发预约任务设计的重点不是“更快提交”。</p><p>而是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>可控。
+</span></span><span class=line><span class=cl>可观测。
+</span></span><span class=line><span class=cl>可恢复。
+</span></span><span class=line><span class=cl>可审计。
+</span></span><span class=line><span class=cl>符合规则。
+</span></span></code></pre></td></tr></table></div></div><h2 id=四任务状态机设计>四、任务状态机设计</h2><p>高并发任务首先要有状态。</p><p>没有状态，就无法调度。</p><p>一个预约任务可以抽象为：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>待执行。
+</span></span><span class=line><span class=cl>排队中。
+</span></span><span class=line><span class=cl>执行中。
+</span></span><span class=line><span class=cl>成功。
+</span></span><span class=line><span class=cl>失败。
+</span></span><span class=line><span class=cl>可重试。
+</span></span><span class=line><span class=cl>已暂停。
+</span></span><span class=line><span class=cl>需要人工确认。
+</span></span><span class=line><span class=cl>已终止。
+</span></span></code></pre></td></tr></table></div></div><p>示例状态：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>enum</span> <span class=kn>import</span> <span class=n>Enum</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ReservationTaskStatus</span><span class=p>(</span><span class=nb>str</span><span class=p>,</span> <span class=n>Enum</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>PENDING</span> <span class=o>=</span> <span class=s2>&#34;pending&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>QUEUED</span> <span class=o>=</span> <span class=s2>&#34;queued&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>RUNNING</span> <span class=o>=</span> <span class=s2>&#34;running&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>SUCCEEDED</span> <span class=o>=</span> <span class=s2>&#34;succeeded&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>RETRYING</span> <span class=o>=</span> <span class=s2>&#34;retrying&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>RATE_LIMITED</span> <span class=o>=</span> <span class=s2>&#34;rate_limited&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>AUTH_REQUIRED</span> <span class=o>=</span> <span class=s2>&#34;auth_required&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>MANUAL_REVIEW</span> <span class=o>=</span> <span class=s2>&#34;manual_review&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>FAILED</span> <span class=o>=</span> <span class=s2>&#34;failed&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>DEAD</span> <span class=o>=</span> <span class=s2>&#34;dead&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>这些状态的意义是：</p><div class=table-wrapper><table><thead><tr><th>状态</th><th>含义</th><th>是否自动继续</th></tr></thead><tbody><tr><td>pending</td><td>任务已创建，尚未入队</td><td>是</td></tr><tr><td>queued</td><td>已进入队列等待执行</td><td>是</td></tr><tr><td>running</td><td>正在执行</td><td>否</td></tr><tr><td>succeeded</td><td>成功完成</td><td>否</td></tr><tr><td>retrying</td><td>等待下一次重试</td><td>是</td></tr><tr><td>rate_limited</td><td>触发限流</td><td>视策略而定</td></tr><tr><td>auth_required</td><td>登录态或授权异常</td><td>否</td></tr><tr><td>manual_review</td><td>需要人工确认</td><td>否</td></tr><tr><td>failed</td><td>明确失败</td><td>否</td></tr><tr><td>dead</td><td>超过最大处理边界</td><td>否</td></tr></tbody></table></div><p>这里要注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不是所有失败都应该重试。
+</span></span></code></pre></td></tr></table></div></div><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>网络超时：可以有限重试。
+</span></span><span class=line><span class=cl>参数错误：不应该重试。
+</span></span><span class=line><span class=cl>权限不足：不应该重试。
+</span></span><span class=line><span class=cl>资源已满：通常不应该高频重试。
+</span></span><span class=line><span class=cl>验证码或风控：应暂停人工确认。
+</span></span></code></pre></td></tr></table></div></div><h2 id=五任务模型设计>五、任务模型设计</h2><p>预约任务至少要记录这些信息：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>task_id。
+</span></span><span class=line><span class=cl>user_id 或业务主体。
+</span></span><span class=line><span class=cl>resource_id。
+</span></span><span class=line><span class=cl>time_slot。
+</span></span><span class=line><span class=cl>priority。
+</span></span><span class=line><span class=cl>status。
+</span></span><span class=line><span class=cl>retry_count。
+</span></span><span class=line><span class=cl>max_retries。
+</span></span><span class=line><span class=cl>idempotency_key。
+</span></span><span class=line><span class=cl>created_at。
+</span></span><span class=line><span class=cl>scheduled_at。
+</span></span><span class=line><span class=cl>updated_at。
+</span></span><span class=line><span class=cl>last_error。
+</span></span></code></pre></td></tr></table></div></div><p>一个简单模型可以这样表达：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>datetime</span> <span class=kn>import</span> <span class=n>datetime</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ReservationTask</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>user_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>resource_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>time_slot</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=n>ReservationTaskStatus</span>
+</span></span><span class=line><span class=cl>    <span class=n>retry_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_retries</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>idempotency_key</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>created_at</span><span class=p>:</span> <span class=n>datetime</span>
+</span></span><span class=line><span class=cl>    <span class=n>scheduled_at</span><span class=p>:</span> <span class=n>datetime</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>updated_at</span><span class=p>:</span> <span class=n>datetime</span>
+</span></span><span class=line><span class=cl>    <span class=n>last_error</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里的 <code>idempotency_key</code> 很关键。</p><p>它用于避免重复提交。</p><p>例如同一个用户预约同一个资源和时间段，可以生成稳定的幂等键：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>user_id + resource_id + time_slot
+</span></span></code></pre></td></tr></table></div></div><p>在自有系统中，服务端应该保证：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>同一个幂等键重复提交，不会创建重复预约。
+</span></span></code></pre></td></tr></table></div></div><p>这比客户端盲目控制更可靠。</p><h2 id=六队列设计>六、队列设计</h2><p>高并发预约任务不应该全部同时执行。</p><p>更合理的方式是进入队列。</p><p>队列的作用是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>削峰。
+</span></span><span class=line><span class=cl>排序。
+</span></span><span class=line><span class=cl>隔离。
+</span></span><span class=line><span class=cl>限速。
+</span></span><span class=line><span class=cl>失败重试。
+</span></span><span class=line><span class=cl>监控积压。
+</span></span></code></pre></td></tr></table></div></div><p>常见队列可以分为几类。</p><h3 id=1-普通-fifo-队列>1. 普通 FIFO 队列</h3><p>先进先出，适合简单任务。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>task_1 -&gt; task_2 -&gt; task_3
+</span></span></code></pre></td></tr></table></div></div><p>优点：简单公平。</p><p>缺点：不能表达优先级和延迟执行。</p><h3 id=2-优先级队列>2. 优先级队列</h3><p>按业务优先级排序。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>人工确认后的任务优先级更高。
+</span></span><span class=line><span class=cl>VIP 测试任务优先级更高。
+</span></span><span class=line><span class=cl>临近截止时间的任务优先级更高。
+</span></span></code></pre></td></tr></table></div></div><p>但优先级必须谨慎使用。</p><p>否则会破坏公平性。</p><h3 id=3-延迟队列>3. 延迟队列</h3><p>用于重试和定时执行。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>10 秒后重试。
+</span></span><span class=line><span class=cl>1 分钟后重试。
+</span></span><span class=line><span class=cl>预约窗口开始前 5 秒入队。
+</span></span></code></pre></td></tr></table></div></div><h3 id=4-死信队列>4. 死信队列</h3><p>用于存放无法继续处理的任务。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>超过最大重试次数。
+</span></span><span class=line><span class=cl>参数非法。
+</span></span><span class=line><span class=cl>权限不足。
+</span></span><span class=line><span class=cl>人工确认拒绝。
+</span></span></code></pre></td></tr></table></div></div><p>死信队列不是垃圾桶。</p><p>它是复盘和排查入口。</p><h2 id=七限流设计>七、限流设计</h2><p>限流是高并发系统的核心。</p><p>它不是为了让系统变慢。</p><p>而是为了让系统稳定。</p><p>常见限流维度包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>全局限流。
+</span></span><span class=line><span class=cl>按用户限流。
+</span></span><span class=line><span class=cl>按资源限流。
+</span></span><span class=line><span class=cl>按时间段限流。
+</span></span><span class=line><span class=cl>按接口限流。
+</span></span><span class=line><span class=cl>按下游服务限流。
+</span></span></code></pre></td></tr></table></div></div><p>例如自有预约系统可以定义：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>全局每秒最多处理 100 个预约任务。
+</span></span><span class=line><span class=cl>单用户每分钟最多提交 3 次。
+</span></span><span class=line><span class=cl>单资源每秒最多处理 10 次请求。
+</span></span><span class=line><span class=cl>库存服务每秒最多接收 50 次写操作。
+</span></span></code></pre></td></tr></table></div></div><p>一个简单的令牌桶概念：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>time</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>TokenBucket</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>def</span> <span class=fm>__init__</span><span class=p>(</span><span class=bp>self</span><span class=p>,</span> <span class=n>capacity</span><span class=p>:</span> <span class=nb>int</span><span class=p>,</span> <span class=n>refill_rate</span><span class=p>:</span> <span class=nb>float</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>        <span class=bp>self</span><span class=o>.</span><span class=n>capacity</span> <span class=o>=</span> <span class=n>capacity</span>
+</span></span><span class=line><span class=cl>        <span class=bp>self</span><span class=o>.</span><span class=n>refill_rate</span> <span class=o>=</span> <span class=n>refill_rate</span>
+</span></span><span class=line><span class=cl>        <span class=bp>self</span><span class=o>.</span><span class=n>tokens</span> <span class=o>=</span> <span class=n>capacity</span>
+</span></span><span class=line><span class=cl>        <span class=bp>self</span><span class=o>.</span><span class=n>updated_at</span> <span class=o>=</span> <span class=n>time</span><span class=o>.</span><span class=n>monotonic</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>def</span> <span class=nf>allow</span><span class=p>(</span><span class=bp>self</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>bool</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>now</span> <span class=o>=</span> <span class=n>time</span><span class=o>.</span><span class=n>monotonic</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>        <span class=n>elapsed</span> <span class=o>=</span> <span class=n>now</span> <span class=o>-</span> <span class=bp>self</span><span class=o>.</span><span class=n>updated_at</span>
+</span></span><span class=line><span class=cl>        <span class=bp>self</span><span class=o>.</span><span class=n>tokens</span> <span class=o>=</span> <span class=nb>min</span><span class=p>(</span><span class=bp>self</span><span class=o>.</span><span class=n>capacity</span><span class=p>,</span> <span class=bp>self</span><span class=o>.</span><span class=n>tokens</span> <span class=o>+</span> <span class=n>elapsed</span> <span class=o>*</span> <span class=bp>self</span><span class=o>.</span><span class=n>refill_rate</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=bp>self</span><span class=o>.</span><span class=n>updated_at</span> <span class=o>=</span> <span class=n>now</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>        <span class=k>if</span> <span class=bp>self</span><span class=o>.</span><span class=n>tokens</span> <span class=o>&gt;=</span> <span class=mi>1</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>            <span class=bp>self</span><span class=o>.</span><span class=n>tokens</span> <span class=o>-=</span> <span class=mi>1</span>
+</span></span><span class=line><span class=cl>            <span class=k>return</span> <span class=kc>True</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>False</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个例子只用于理解限流思想。</p><p>真实系统中，分布式限流通常需要 Redis、网关或专门的限流组件。</p><h2 id=八重试策略>八、重试策略</h2><p>重试是必要的，但必须有边界。</p><p>可以重试的情况：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>网络短暂超时。
+</span></span><span class=line><span class=cl>下游临时不可用。
+</span></span><span class=line><span class=cl>队列消费失败。
+</span></span><span class=line><span class=cl>数据库连接短暂异常。
+</span></span></code></pre></td></tr></table></div></div><p>不应该自动重试的情况：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>参数错误。
+</span></span><span class=line><span class=cl>权限不足。
+</span></span><span class=line><span class=cl>登录态失效。
+</span></span><span class=line><span class=cl>资源已售罄或已约满。
+</span></span><span class=line><span class=cl>验证码或风控挑战。
+</span></span><span class=line><span class=cl>业务规则不满足。
+</span></span></code></pre></td></tr></table></div></div><p>可以用失败分类控制重试：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>dataclasses</span> <span class=kn>import</span> <span class=n>dataclass</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>enum</span> <span class=kn>import</span> <span class=n>Enum</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>FailureType</span><span class=p>(</span><span class=nb>str</span><span class=p>,</span> <span class=n>Enum</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>TEMPORARY</span> <span class=o>=</span> <span class=s2>&#34;temporary&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>RATE_LIMITED</span> <span class=o>=</span> <span class=s2>&#34;rate_limited&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>SOLD_OUT</span> <span class=o>=</span> <span class=s2>&#34;sold_out&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>AUTH_REQUIRED</span> <span class=o>=</span> <span class=s2>&#34;auth_required&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>INVALID_REQUEST</span> <span class=o>=</span> <span class=s2>&#34;invalid_request&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=n>MANUAL_REVIEW</span> <span class=o>=</span> <span class=s2>&#34;manual_review&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@dataclass</span>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>RetryDecision</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>should_retry</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span><span class=line><span class=cl>    <span class=n>delay_seconds</span><span class=p>:</span> <span class=nb>int</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>next_status</span><span class=p>:</span> <span class=n>ReservationTaskStatus</span>
+</span></span><span class=line><span class=cl>    <span class=n>reason</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>决策函数可以这样设计：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>decide_retry</span><span class=p>(</span><span class=n>failure_type</span><span class=p>:</span> <span class=n>FailureType</span><span class=p>,</span> <span class=n>retry_count</span><span class=p>:</span> <span class=nb>int</span><span class=p>,</span> <span class=n>max_retries</span><span class=p>:</span> <span class=nb>int</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>RetryDecision</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>failure_type</span> <span class=o>==</span> <span class=n>FailureType</span><span class=o>.</span><span class=n>TEMPORARY</span> <span class=ow>and</span> <span class=n>retry_count</span> <span class=o>&lt;</span> <span class=n>max_retries</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>delay</span> <span class=o>=</span> <span class=nb>min</span><span class=p>(</span><span class=mi>60</span><span class=p>,</span> <span class=mi>2</span> <span class=o>**</span> <span class=n>retry_count</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>RetryDecision</span><span class=p>(</span><span class=kc>True</span><span class=p>,</span> <span class=n>delay</span><span class=p>,</span> <span class=n>ReservationTaskStatus</span><span class=o>.</span><span class=n>RETRYING</span><span class=p>,</span> <span class=s2>&#34;temporary_failure&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>failure_type</span> <span class=o>==</span> <span class=n>FailureType</span><span class=o>.</span><span class=n>RATE_LIMITED</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>RetryDecision</span><span class=p>(</span><span class=kc>True</span><span class=p>,</span> <span class=mi>60</span><span class=p>,</span> <span class=n>ReservationTaskStatus</span><span class=o>.</span><span class=n>RATE_LIMITED</span><span class=p>,</span> <span class=s2>&#34;rate_limited&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>failure_type</span> <span class=ow>in</span> <span class=p>{</span><span class=n>FailureType</span><span class=o>.</span><span class=n>AUTH_REQUIRED</span><span class=p>,</span> <span class=n>FailureType</span><span class=o>.</span><span class=n>MANUAL_REVIEW</span><span class=p>}:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>RetryDecision</span><span class=p>(</span><span class=kc>False</span><span class=p>,</span> <span class=kc>None</span><span class=p>,</span> <span class=n>ReservationTaskStatus</span><span class=o>.</span><span class=n>MANUAL_REVIEW</span><span class=p>,</span> <span class=n>failure_type</span><span class=o>.</span><span class=n>value</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>RetryDecision</span><span class=p>(</span><span class=kc>False</span><span class=p>,</span> <span class=kc>None</span><span class=p>,</span> <span class=n>ReservationTaskStatus</span><span class=o>.</span><span class=n>FAILED</span><span class=p>,</span> <span class=n>failure_type</span><span class=o>.</span><span class=n>value</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>关键点是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>重试必须分类。
+</span></span><span class=line><span class=cl>重试必须限次。
+</span></span><span class=line><span class=cl>重试必须有退避。
+</span></span><span class=line><span class=cl>重试必须可观测。
+</span></span></code></pre></td></tr></table></div></div><h2 id=九幂等设计>九、幂等设计</h2><p>高并发预约系统最怕重复提交。</p><p>重复提交可能导致：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>重复预约。
+</span></span><span class=line><span class=cl>重复扣库存。
+</span></span><span class=line><span class=cl>重复扣费。
+</span></span><span class=line><span class=cl>重复发送通知。
+</span></span><span class=line><span class=cl>状态不一致。
+</span></span></code></pre></td></tr></table></div></div><p>幂等设计要从服务端做起。</p><p>常见手段包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>幂等键。
+</span></span><span class=line><span class=cl>唯一索引。
+</span></span><span class=line><span class=cl>状态检查。
+</span></span><span class=line><span class=cl>事务。
+</span></span><span class=line><span class=cl>分布式锁。
+</span></span><span class=line><span class=cl>请求流水号。
+</span></span></code></pre></td></tr></table></div></div><p>例如数据库中可以建立唯一约束：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>(user_id, resource_id, time_slot)
+</span></span></code></pre></td></tr></table></div></div><p>这样即使请求重复到达，也不会创建多条预约记录。</p><p>客户端也应该保存任务状态：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>已经成功的任务不再提交。
+</span></span><span class=line><span class=cl>正在执行的任务不重复调度。
+</span></span><span class=line><span class=cl>重试任务沿用同一个 idempotency_key。
+</span></span></code></pre></td></tr></table></div></div><p>幂等不是“多判断几次”。</p><p>幂等是系统级约束。</p><h2 id=十库存和资源占用>十、库存和资源占用</h2><p>预约类系统通常涉及库存或名额。</p><p>常见模型有两种。</p><h3 id=1-直接扣减>1. 直接扣减</h3><p>请求成功时直接扣减库存。</p><p>优点：简单。</p><p>缺点：高并发下容易出现竞争，需要事务和锁保护。</p><h3 id=2-先占位再确认>2. 先占位再确认</h3><p>先创建短时间占位，用户确认后正式完成。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>创建预约占位。
+</span></span><span class=line><span class=cl>设置过期时间。
+</span></span><span class=line><span class=cl>用户确认。
+</span></span><span class=line><span class=cl>确认成功后转为正式预约。
+</span></span><span class=line><span class=cl>过期未确认则释放名额。
+</span></span></code></pre></td></tr></table></div></div><p>这适合需要支付、人工确认或多步骤流程的场景。</p><p>但也要防止占位滥用。</p><p>所以应限制：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>单用户占位数量。
+</span></span><span class=line><span class=cl>占位过期时间。
+</span></span><span class=line><span class=cl>重复占位规则。
+</span></span><span class=line><span class=cl>异常占位释放。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十一公平性设计>十一、公平性设计</h2><p>高并发预约系统不能只追求吞吐。</p><p>还要考虑公平性。</p><p>常见公平性策略包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>先到先服务。
+</span></span><span class=line><span class=cl>随机抽签。
+</span></span><span class=line><span class=cl>资格优先。
+</span></span><span class=line><span class=cl>预约次数限制。
+</span></span><span class=line><span class=cl>排队号。
+</span></span><span class=line><span class=cl>分时段开放。
+</span></span><span class=line><span class=cl>冷却时间。
+</span></span></code></pre></td></tr></table></div></div><p>不同业务适合不同规则。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>内部会议室：先到先服务。
+</span></span><span class=line><span class=cl>热门活动报名：抽签可能更公平。
+</span></span><span class=line><span class=cl>稀缺公共资源：需要资格校验和次数限制。
+</span></span><span class=line><span class=cl>测试压测环境：按团队配额。
+</span></span></code></pre></td></tr></table></div></div><p>从工程角度看，公平性规则必须：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>明确。
+</span></span><span class=line><span class=cl>可解释。
+</span></span><span class=line><span class=cl>可审计。
+</span></span><span class=line><span class=cl>可回放。
+</span></span></code></pre></td></tr></table></div></div><p>如果规则不可解释，用户会认为系统不公平。</p><p>如果规则不可审计，运营和技术都无法复盘。</p><h2 id=十二调度器设计>十二、调度器设计</h2><p>一个预约任务调度器通常包含：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务生产者。
+</span></span><span class=line><span class=cl>任务队列。
+</span></span><span class=line><span class=cl>调度器。
+</span></span><span class=line><span class=cl>执行器。
+</span></span><span class=line><span class=cl>状态存储。
+</span></span><span class=line><span class=cl>限流器。
+</span></span><span class=line><span class=cl>监控系统。
+</span></span><span class=line><span class=cl>人工复核入口。
+</span></span></code></pre></td></tr></table></div></div><p>简化流程：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>创建任务
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>写入数据库
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>进入队列
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>调度器拉取任务
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>检查限流和状态
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>执行预约逻辑
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>更新任务状态
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>成功、重试、暂停或失败
+</span></span></code></pre></td></tr></table></div></div><p>伪代码可以这样表达：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>process_task</span><span class=p>(</span><span class=n>task</span><span class=p>:</span> <span class=n>ReservationTask</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>ReservationTaskStatus</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>task</span><span class=o>.</span><span class=n>status</span> <span class=ow>not</span> <span class=ow>in</span> <span class=p>{</span><span class=n>ReservationTaskStatus</span><span class=o>.</span><span class=n>QUEUED</span><span class=p>,</span> <span class=n>ReservationTaskStatus</span><span class=o>.</span><span class=n>RETRYING</span><span class=p>}:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>task</span><span class=o>.</span><span class=n>status</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>global_limiter</span><span class=o>.</span><span class=n>allow</span><span class=p>():</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>ReservationTaskStatus</span><span class=o>.</span><span class=n>RATE_LIMITED</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>result</span> <span class=o>=</span> <span class=n>execute_authorized_reservation</span><span class=p>(</span><span class=n>task</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>result</span> <span class=o>==</span> <span class=s2>&#34;ok&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>ReservationTaskStatus</span><span class=o>.</span><span class=n>SUCCEEDED</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>result</span> <span class=o>==</span> <span class=s2>&#34;temporary_error&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>ReservationTaskStatus</span><span class=o>.</span><span class=n>RETRYING</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>result</span> <span class=ow>in</span> <span class=p>{</span><span class=s2>&#34;auth_required&#34;</span><span class=p>,</span> <span class=s2>&#34;manual_review&#34;</span><span class=p>}:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>ReservationTaskStatus</span><span class=o>.</span><span class=n>MANUAL_REVIEW</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>ReservationTaskStatus</span><span class=o>.</span><span class=n>FAILED</span>
+</span></span></code></pre></td></tr></table></div></div><p>注意这里的 <code>execute_authorized_reservation</code> 表示自有或授权系统里的业务执行。</p><p>它不是第三方平台抢占资源脚本。</p><h2 id=十三数据库与-redis-的分工>十三、数据库与 Redis 的分工</h2><p>在预约任务系统中，MySQL 和 Redis 经常配合使用。</p><p>MySQL 适合：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务主记录。
+</span></span><span class=line><span class=cl>预约结果。
+</span></span><span class=line><span class=cl>用户资格。
+</span></span><span class=line><span class=cl>资源配置。
+</span></span><span class=line><span class=cl>审计日志。
+</span></span><span class=line><span class=cl>最终一致的数据。
+</span></span></code></pre></td></tr></table></div></div><p>Redis 适合：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>队列。
+</span></span><span class=line><span class=cl>短期状态。
+</span></span><span class=line><span class=cl>分布式锁。
+</span></span><span class=line><span class=cl>限流计数。
+</span></span><span class=line><span class=cl>占位过期。
+</span></span><span class=line><span class=cl>热点库存缓存。
+</span></span></code></pre></td></tr></table></div></div><p>但要注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Redis 里的状态不能替代最终数据库记录。
+</span></span></code></pre></td></tr></table></div></div><p>例如预约成功结果必须落到数据库。</p><p>Redis 可以帮助加速和削峰，但最终事实应以持久化存储为准。</p><h2 id=十四监控与告警>十四、监控与告警</h2><p>高并发任务系统必须可观测。</p><p>关键指标包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务创建量。
+</span></span><span class=line><span class=cl>队列积压量。
+</span></span><span class=line><span class=cl>任务成功率。
+</span></span><span class=line><span class=cl>任务失败率。
+</span></span><span class=line><span class=cl>平均排队时间。
+</span></span><span class=line><span class=cl>平均执行时间。
+</span></span><span class=line><span class=cl>重试次数分布。
+</span></span><span class=line><span class=cl>限流次数。
+</span></span><span class=line><span class=cl>人工复核数量。
+</span></span><span class=line><span class=cl>资源占用率。
+</span></span><span class=line><span class=cl>库存剩余量。
+</span></span></code></pre></td></tr></table></div></div><p>还要记录关键日志：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>task_id。
+</span></span><span class=line><span class=cl>user_id 或脱敏主体。
+</span></span><span class=line><span class=cl>resource_id。
+</span></span><span class=line><span class=cl>time_slot。
+</span></span><span class=line><span class=cl>status。
+</span></span><span class=line><span class=cl>retry_count。
+</span></span><span class=line><span class=cl>failure_type。
+</span></span><span class=line><span class=cl>idempotency_key。
+</span></span><span class=line><span class=cl>created_at。
+</span></span><span class=line><span class=cl>updated_at。
+</span></span><span class=line><span class=cl>trace_id。
+</span></span></code></pre></td></tr></table></div></div><p>告警示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>队列积压超过阈值。
+</span></span><span class=line><span class=cl>失败率突然升高。
+</span></span><span class=line><span class=cl>限流次数异常增加。
+</span></span><span class=line><span class=cl>某个资源请求量异常集中。
+</span></span><span class=line><span class=cl>任务长时间停留在 running。
+</span></span><span class=line><span class=cl>人工复核积压过多。
+</span></span></code></pre></td></tr></table></div></div><p>监控不是上线后的补丁。</p><p>它应该从设计阶段就进入系统。</p><h2 id=十五人工复核与降级>十五、人工复核与降级</h2><p>不是所有问题都应该自动处理。</p><p>遇到这些情况，应进入人工复核：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>权限不明确。
+</span></span><span class=line><span class=cl>资源规则冲突。
+</span></span><span class=line><span class=cl>用户资格异常。
+</span></span><span class=line><span class=cl>触发风控或验证码。
+</span></span><span class=line><span class=cl>频率异常。
+</span></span><span class=line><span class=cl>数据不一致。
+</span></span></code></pre></td></tr></table></div></div><p>系统也应准备降级方案：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>暂停新任务创建。
+</span></span><span class=line><span class=cl>降低队列消费速度。
+</span></span><span class=line><span class=cl>关闭非核心资源预约。
+</span></span><span class=line><span class=cl>切换只读查询。
+</span></span><span class=line><span class=cl>延迟通知。
+</span></span><span class=line><span class=cl>人工处理重点任务。
+</span></span></code></pre></td></tr></table></div></div><p>降级的目标不是完美服务。</p><p>而是在压力下保护核心链路。</p><h2 id=十六llm--agent-能做什么>十六、LLM / Agent 能做什么？</h2><p>LLM / Agent 不应该用于推演真实平台绕过策略。</p><p>但在自有预约系统中，它可以做很多合规辅助。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>分析任务失败日志。
+</span></span><span class=line><span class=cl>总结高峰期异常原因。
+</span></span><span class=line><span class=cl>根据监控指标生成运维建议。
+</span></span><span class=line><span class=cl>辅助分类失败类型。
+</span></span><span class=line><span class=cl>生成测试用例。
+</span></span><span class=line><span class=cl>检查任务配置是否存在风险。
+</span></span><span class=line><span class=cl>辅助撰写复盘报告。
+</span></span></code></pre></td></tr></table></div></div><p>一个安全提示词示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你是自有预约系统的调度诊断助手。
+</span></span><span class=line><span class=cl>请根据任务状态、失败类型、队列积压、限流次数和日志摘要分析问题原因。
+</span></span><span class=line><span class=cl>只允许给出降频、扩容、暂停、人工复核、优化队列和检查幂等等建议。
+</span></span><span class=line><span class=cl>不要提供绕过第三方平台限制、验证码、排队系统或风控机制的方案。
+</span></span></code></pre></td></tr></table></div></div><p>这和本系列主线一致：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Agent 负责理解和诊断。
+</span></span><span class=line><span class=cl>系统负责状态和调度。
+</span></span><span class=line><span class=cl>人工负责授权和边界。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十七常见错误写法>十七、常见错误写法</h2><h3 id=1-把高并发理解成无限并发>1. 把高并发理解成无限并发</h3><p>无限并发不是能力。</p><p>可控并发才是能力。</p><h3 id=2-没有任务状态机>2. 没有任务状态机</h3><p>没有状态，就无法知道任务处于哪个阶段。</p><p>失败、重试、暂停和成功都会混在一起。</p><h3 id=3-所有失败都重试>3. 所有失败都重试</h3><p>这会放大故障。</p><p>权限错误、参数错误、风控挑战和资源已满都不应该盲目重试。</p><h3 id=4-忽略幂等>4. 忽略幂等</h3><p>高并发下重复提交很常见。</p><p>没有幂等保护，系统会出现重复预约、重复扣减和状态不一致。</p><h3 id=5-不做限流>5. 不做限流</h3><p>不做限流会把压力直接打到下游系统。</p><p>最终不是更快，而是更不稳定。</p><h3 id=6-不考虑公平性>6. 不考虑公平性</h3><p>预约系统往往涉及稀缺资源。</p><p>公平性不是附加项，而是业务规则的一部分。</p><h3 id=7-用真实平台做自动化冲击>7. 用真实平台做自动化冲击</h3><p>这不属于合规工程实践。</p><p>应该限定在自有系统、测试环境或明确授权场景中。</p><h2 id=十八面试表达>十八、面试表达</h2><p>如果面试官问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你怎么设计一个高并发预约系统？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会先把预约问题抽象成有限资源在时间窗口内被大量请求竞争的问题。系统上会设计任务状态机、队列、限流、幂等和监控。请求不会直接无限并发打到下游，而是先进入队列，由调度器按规则消费。服务端通过幂等键、唯一约束和事务避免重复预约，通过限流保护下游，通过监控观察队列积压、成功率、失败率和重试情况。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>失败任务怎么处理？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会先做失败分类。网络超时、临时下游异常可以有限重试，并使用指数退避；参数错误、权限不足、资源已满、登录态异常、验证码或风控挑战不应该盲目重试，而应进入失败、暂停或人工复核状态。所有重试都要有最大次数、延迟策略和日志记录。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>如何避免重复提交？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>幂等要放在服务端做。可以用 user_id、resource_id、time_slot 生成幂等键，并在数据库建立唯一约束。客户端重试时沿用同一个 idempotency_key，服务端收到重复请求时返回已有结果或拒绝重复创建，避免重复预约、重复扣库存或重复扣费。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你做过抢票或预约自动化吗？
+</span></span></code></pre></td></tr></table></div></div><p>更稳妥的表达是：</p><blockquote><p>我更倾向于从授权系统设计角度理解这类问题。高并发预约的关键不是绕过平台规则，而是任务调度、资源竞争、限流保护、幂等提交、状态追踪和公平性设计。如果是自有或授权场景，我可以设计队列、状态机、重试、监控和人工复核流程；如果是第三方公共资源平台，应遵守平台规则，不做绕过排队、验证码或风控的自动化。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM / Agent 能帮预约系统做什么？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>Agent 更适合做日志诊断和运维辅助，比如分析失败原因、总结高峰期队列积压、判断是否需要降频或人工复核、生成测试用例和复盘报告。它不应该用于推演第三方平台绕过策略，也不应该帮助突破验证码、排队或风控机制。</p></blockquote><h2 id=十九总结>十九、总结</h2><p>本文讲了高并发预约类系统的任务调度设计。</p><p>核心结论包括：</p><ul><li>预约类系统的本质是有限资源在时间窗口内被大量请求竞争。</li><li>高并发设计不是无限并发提交，而是可控、可观测、可恢复、可审计。</li><li>任务状态机是调度基础，应区分 pending、queued、running、succeeded、retrying、manual_review、dead 等状态。</li><li>队列用于削峰、排序、延迟重试、隔离和监控积压。</li><li>限流应覆盖全局、用户、资源、接口和下游服务等维度。</li><li>重试必须分类、限次、退避，并且不能对权限错误、资源已满、验证码或风控挑战盲目重试。</li><li>幂等应由服务端保证，常见手段包括幂等键、唯一约束、事务和状态检查。</li><li>库存或名额处理要关注占位、确认、过期释放和滥用限制。</li><li>公平性是预约系统的重要业务规则，不应被自动化冲击破坏。</li><li>MySQL 适合保存最终事实和审计记录，Redis 适合队列、限流、锁和短期状态。</li><li>监控指标应覆盖队列积压、成功率、失败率、重试、限流和人工复核。</li><li>LLM / Agent 适合做日志诊断、失败分类、复盘和测试辅助，不适合推演绕过策略。</li><li>面试中表达预约类经验时，要从“抢资源脚本”升级为“高并发任务调度系统设计”。</li></ul><p>下一篇文章，我们会进入数据存储与去重：</p><blockquote><p>MySQL、Redis 与去重策略。</p></blockquote><p>我们会从数据模型、唯一键、布隆过滤器、Redis Set、任务去重、内容去重和状态去重角度，继续把爬虫能力落到工程系统里。</p></section><footer class=article-footer><section class=article-tags><a href=/tags/python/>Python</a>
+<a href=/tags/%E7%88%AC%E8%99%AB/>爬虫</a>
+<a href=/tags/%E4%BB%BB%E5%8A%A1%E8%B0%83%E5%BA%A6/>任务调度</a>
+<a href=/tags/%E9%98%9F%E5%88%97/>队列</a>
+<a href=/tags/%E9%99%90%E6%B5%81/>限流</a>
+<a href=/tags/%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1/>系统设计</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/crawler-storage-task-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 34：存储、队列与任务状态常用接口</h2></div></a></article><article><a href=/p/high-concurrency-crawler-system-design/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 23：高并发爬虫系统设计</h2></div></a></article><article><a href=/p/llm-enhanced-intelligent-crawler-system/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 29：设计一个大模型增强的智能采集系统</h2></div></a></article><article><a href=/p/crawler-rate-limit-retry-scheduling/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 13：限速、重试与任务调度</h2></div></a></article><article><a href=/p/crawler-llm-agent-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 36：LLM 与 Agent 数据采集接口设计</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

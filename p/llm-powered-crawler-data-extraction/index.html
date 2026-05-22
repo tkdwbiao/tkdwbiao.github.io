@@ -1,0 +1,660 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇文章里，我们讲了 Docker 与 Linux 部署爬虫系统。\n核心结论是：\n1 2 爬虫系统不能只在本地脚本里运行。 它需要部署、配置、日志、进程守护、监控、数据卷和安全边界。 从这一篇开始，我们进入本系列最后一个大模块：LLM 与 AI Agent 赋能数据采集。\n传统爬虫更擅长处理结构清晰的数据。\n例如：\n1 2 3 4 5 固定列表页。 固定详情页。 固定 CSS Selector。 固定 XPath。 固定 JSON 字段。 但真实网页里经常会遇到：\n1 2 3 4 5 6 字段位置变化。 正文混在广告和推荐内容中。 页面结构半结构化。 多个来源字段命名不一致。 同一类信息有不同表达方式。 解析规则维护成本高。 这时，大模型可以作为补充能力。\n本文讨论：\nLLM 如何辅助网页数据抽取，如何设计 Prompt、Schema、JSON 输出、置信度、校验、重试、成本控制和人工复核流程。\n"><title>大模型时代的数据采集工程 26：LLM 赋能爬虫数据抽取</title><link rel=canonical href=https://tkdwbiao.github.io/p/llm-powered-crawler-data-extraction/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="大模型时代的数据采集工程 26：LLM 赋能爬虫数据抽取"><meta property='og:description' content="上一篇文章里，我们讲了 Docker 与 Linux 部署爬虫系统。\n核心结论是：\n1 2 爬虫系统不能只在本地脚本里运行。 它需要部署、配置、日志、进程守护、监控、数据卷和安全边界。 从这一篇开始，我们进入本系列最后一个大模块：LLM 与 AI Agent 赋能数据采集。\n传统爬虫更擅长处理结构清晰的数据。\n例如：\n1 2 3 4 5 固定列表页。 固定详情页。 固定 CSS Selector。 固定 XPath。 固定 JSON 字段。 但真实网页里经常会遇到：\n1 2 3 4 5 6 字段位置变化。 正文混在广告和推荐内容中。 页面结构半结构化。 多个来源字段命名不一致。 同一类信息有不同表达方式。 解析规则维护成本高。 这时，大模型可以作为补充能力。\n本文讨论：\nLLM 如何辅助网页数据抽取，如何设计 Prompt、Schema、JSON 输出、置信度、校验、重试、成本控制和人工复核流程。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/llm-powered-crawler-data-extraction/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='Python'><meta property='article:tag' content='爬虫'><meta property='article:tag' content='LLM'><meta property='article:tag' content='数据抽取'><meta property='article:tag' content='Schema'><meta property='article:tag' content='AI Agent'><meta property='article:published_time' content='2026-01-30T10:00:00+08:00'><meta property='article:modified_time' content='2026-01-30T10:00:00+08:00'><meta name=twitter:title content="大模型时代的数据采集工程 26：LLM 赋能爬虫数据抽取"><meta name=twitter:description content="上一篇文章里，我们讲了 Docker 与 Linux 部署爬虫系统。\n核心结论是：\n1 2 爬虫系统不能只在本地脚本里运行。 它需要部署、配置、日志、进程守护、监控、数据卷和安全边界。 从这一篇开始，我们进入本系列最后一个大模块：LLM 与 AI Agent 赋能数据采集。\n传统爬虫更擅长处理结构清晰的数据。\n例如：\n1 2 3 4 5 固定列表页。 固定详情页。 固定 CSS Selector。 固定 XPath。 固定 JSON 字段。 但真实网页里经常会遇到：\n1 2 3 4 5 6 字段位置变化。 正文混在广告和推荐内容中。 页面结构半结构化。 多个来源字段命名不一致。 同一类信息有不同表达方式。 解析规则维护成本高。 这时，大模型可以作为补充能力。\n本文讨论：\nLLM 如何辅助网页数据抽取，如何设计 Prompt、Schema、JSON 输出、置信度、校验、重试、成本控制和人工复核流程。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二传统抽取的局限>二、传统抽取的局限</a><ol><li><a href=#1-页面结构变化>1. 页面结构变化</a></li><li><a href=#2-不同来源结构不一致>2. 不同来源结构不一致</a></li><li><a href=#3-文本语义难以规则化>3. 文本语义难以规则化</a></li><li><a href=#4-字段需要归一化>4. 字段需要归一化</a></li></ol></li><li><a href=#三llm-适合做什么>三、LLM 适合做什么？</a></li><li><a href=#四llm-抽取流程>四、LLM 抽取流程</a></li><li><a href=#五定义-schema>五、定义 Schema</a></li><li><a href=#六prompt-设计>六、Prompt 设计</a></li><li><a href=#七json-输出与解析>七、JSON 输出与解析</a></li><li><a href=#八置信度和人工复核>八、置信度和人工复核</a></li><li><a href=#九输入清洗与截断>九、输入清洗与截断</a></li><li><a href=#十规则抽取和-llm-抽取如何配合>十、规则抽取和 LLM 抽取如何配合？</a></li><li><a href=#十一成本和延迟控制>十一、成本和延迟控制</a></li><li><a href=#十二质量评估>十二、质量评估</a></li><li><a href=#十三常见失败场景>十三、常见失败场景</a></li><li><a href=#十四数据安全和隐私>十四、数据安全和隐私</a></li><li><a href=#十五llm-不应该做什么>十五、LLM 不应该做什么？</a></li><li><a href=#十六llm-抽取在系统中的位置>十六、LLM 抽取在系统中的位置</a></li><li><a href=#十七面试表达>十七、面试表达</a></li><li><a href=#十八总结>十八、总结</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/%E7%88%AC%E8%99%AB%E7%B3%BB%E5%88%97/ style=background-color:#efcfbe;color:#3d1f0f>爬虫系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/llm-powered-crawler-data-extraction/>大模型时代的数据采集工程 26：LLM 赋能爬虫数据抽取</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-01-30T10:00:00+08:00>2026-01-30 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 12 分钟</time></div></footer></div></header><section class=article-content><p>上一篇文章里，我们讲了 Docker 与 Linux 部署爬虫系统。</p><p>核心结论是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>爬虫系统不能只在本地脚本里运行。
+</span></span><span class=line><span class=cl>它需要部署、配置、日志、进程守护、监控、数据卷和安全边界。
+</span></span></code></pre></td></tr></table></div></div><p>从这一篇开始，我们进入本系列最后一个大模块：LLM 与 AI Agent 赋能数据采集。</p><p>传统爬虫更擅长处理结构清晰的数据。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>固定列表页。
+</span></span><span class=line><span class=cl>固定详情页。
+</span></span><span class=line><span class=cl>固定 CSS Selector。
+</span></span><span class=line><span class=cl>固定 XPath。
+</span></span><span class=line><span class=cl>固定 JSON 字段。
+</span></span></code></pre></td></tr></table></div></div><p>但真实网页里经常会遇到：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>字段位置变化。
+</span></span><span class=line><span class=cl>正文混在广告和推荐内容中。
+</span></span><span class=line><span class=cl>页面结构半结构化。
+</span></span><span class=line><span class=cl>多个来源字段命名不一致。
+</span></span><span class=line><span class=cl>同一类信息有不同表达方式。
+</span></span><span class=line><span class=cl>解析规则维护成本高。
+</span></span></code></pre></td></tr></table></div></div><p>这时，大模型可以作为补充能力。</p><p>本文讨论：</p><blockquote><p>LLM 如何辅助网页数据抽取，如何设计 Prompt、Schema、JSON 输出、置信度、校验、重试、成本控制和人工复核流程。</p></blockquote><h2 id=一前言>一、前言</h2><p>在前面的文章里，我们已经讲过很多传统抽取方法：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>BeautifulSoup。
+</span></span><span class=line><span class=cl>XPath。
+</span></span><span class=line><span class=cl>CSS Selector。
+</span></span><span class=line><span class=cl>正则表达式。
+</span></span><span class=line><span class=cl>JSON 解析。
+</span></span><span class=line><span class=cl>页面清洗。
+</span></span></code></pre></td></tr></table></div></div><p>这些方法非常重要。</p><p>它们的优势是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>稳定。
+</span></span><span class=line><span class=cl>快速。
+</span></span><span class=line><span class=cl>成本低。
+</span></span><span class=line><span class=cl>可解释。
+</span></span><span class=line><span class=cl>可测试。
+</span></span></code></pre></td></tr></table></div></div><p>所以大模型不是用来替代所有解析规则的。</p><p>更合理的定位是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>传统规则负责稳定结构。
+</span></span><span class=line><span class=cl>LLM 负责理解复杂文本和半结构化页面。
+</span></span></code></pre></td></tr></table></div></div><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>列表页 URL 抽取：优先用 CSS Selector。
+</span></span><span class=line><span class=cl>详情页固定字段：优先用 XPath。
+</span></span><span class=line><span class=cl>正文摘要、字段归一化、复杂文本分类：可以用 LLM。
+</span></span><span class=line><span class=cl>异常页面诊断：可以用 LLM。
+</span></span></code></pre></td></tr></table></div></div><p>如果把所有页面都丢给 LLM，会出现问题：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>成本高。
+</span></span><span class=line><span class=cl>延迟高。
+</span></span><span class=line><span class=cl>输出不稳定。
+</span></span><span class=line><span class=cl>难以复现。
+</span></span><span class=line><span class=cl>可能产生幻觉。
+</span></span><span class=line><span class=cl>难以做大规模吞吐。
+</span></span></code></pre></td></tr></table></div></div><p>所以本文的重点不是“用 LLM 取代爬虫”。</p><p>而是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>把 LLM 放到合适的位置，作为抽取、清洗、诊断和复核辅助。
+</span></span></code></pre></td></tr></table></div></div><h2 id=二传统抽取的局限>二、传统抽取的局限</h2><p>传统抽取依赖页面结构。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=n>title</span> <span class=o>=</span> <span class=n>soup</span><span class=o>.</span><span class=n>select_one</span><span class=p>(</span><span class=s2>&#34;h1.article-title&#34;</span><span class=p>)</span><span class=o>.</span><span class=n>get_text</span><span class=p>(</span><span class=n>strip</span><span class=o>=</span><span class=kc>True</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>time</span> <span class=o>=</span> <span class=n>soup</span><span class=o>.</span><span class=n>select_one</span><span class=p>(</span><span class=s2>&#34;span.publish-time&#34;</span><span class=p>)</span><span class=o>.</span><span class=n>get_text</span><span class=p>(</span><span class=n>strip</span><span class=o>=</span><span class=kc>True</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=n>body</span> <span class=o>=</span> <span class=n>soup</span><span class=o>.</span><span class=n>select_one</span><span class=p>(</span><span class=s2>&#34;div.article-content&#34;</span><span class=p>)</span><span class=o>.</span><span class=n>get_text</span><span class=p>(</span><span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=p>,</span> <span class=n>strip</span><span class=o>=</span><span class=kc>True</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>这种方式在页面结构稳定时非常好。</p><p>但问题也很明显。</p><h3 id=1-页面结构变化>1. 页面结构变化</h3><p>如果网站把：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>h1.article-title
+</span></span></code></pre></td></tr></table></div></div><p>改成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>h1.title
+</span></span></code></pre></td></tr></table></div></div><p>解析就可能失败。</p><h3 id=2-不同来源结构不一致>2. 不同来源结构不一致</h3><p>同样是文章页面，不同数据源可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>article-title。
+</span></span><span class=line><span class=cl>post-title。
+</span></span><span class=line><span class=cl>headline。
+</span></span><span class=line><span class=cl>news-title。
+</span></span></code></pre></td></tr></table></div></div><p>如果每个来源都写一套规则，维护成本会增加。</p><h3 id=3-文本语义难以规则化>3. 文本语义难以规则化</h3><p>例如从一段招聘描述里抽取：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>岗位名称。
+</span></span><span class=line><span class=cl>工作地点。
+</span></span><span class=line><span class=cl>薪资范围。
+</span></span><span class=line><span class=cl>技能要求。
+</span></span><span class=line><span class=cl>经验年限。
+</span></span><span class=line><span class=cl>是否远程。
+</span></span></code></pre></td></tr></table></div></div><p>这些信息可能散落在自然语言中。</p><p>用正则很容易脆弱。</p><h3 id=4-字段需要归一化>4. 字段需要归一化</h3><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>三年以上经验。
+</span></span><span class=line><span class=cl>3 年+。
+</span></span><span class=line><span class=cl>至少 3 years。
+</span></span><span class=line><span class=cl>经验不限。
+</span></span></code></pre></td></tr></table></div></div><p>都需要映射成统一结构。</p><p>这是 LLM 可以发挥作用的地方。</p><h2 id=三llm-适合做什么>三、LLM 适合做什么？</h2><p>在数据采集系统里，LLM 适合这些任务：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>从正文中抽取结构化字段。
+</span></span><span class=line><span class=cl>将不同来源字段归一化。
+</span></span><span class=line><span class=cl>判断页面类型。
+</span></span><span class=line><span class=cl>识别正文和噪声内容。
+</span></span><span class=line><span class=cl>生成摘要。
+</span></span><span class=line><span class=cl>判断字段缺失原因。
+</span></span><span class=line><span class=cl>把自然语言转换成标准枚举。
+</span></span><span class=line><span class=cl>辅助异常页面诊断。
+</span></span></code></pre></td></tr></table></div></div><p>不适合这些任务：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>替代所有网页解析。
+</span></span><span class=line><span class=cl>处理超高频低价值页面。
+</span></span><span class=line><span class=cl>绕过访问控制。
+</span></span><span class=line><span class=cl>识别验证码答案。
+</span></span><span class=line><span class=cl>生成规避风控策略。
+</span></span><span class=line><span class=cl>处理未经授权的敏感数据。
+</span></span></code></pre></td></tr></table></div></div><p>一个重要原则是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>先用确定性规则缩小输入，再让 LLM 处理真正需要理解的部分。
+</span></span></code></pre></td></tr></table></div></div><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>HTML → 清洗正文 → 截断无关内容 → LLM 抽取字段 → Pydantic 校验 → 入库或人工复核。
+</span></span></code></pre></td></tr></table></div></div><p>而不是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>整个 HTML 原样丢给 LLM。
+</span></span></code></pre></td></tr></table></div></div><h2 id=四llm-抽取流程>四、LLM 抽取流程</h2><p>一个比较稳妥的 LLM 抽取流程是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>抓取页面
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>解析 HTML
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>清洗正文和候选字段
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>构造 Prompt
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>LLM 输出 JSON
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Schema 校验
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>置信度判断
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>入库或人工复核
+</span></span></code></pre></td></tr></table></div></div><p>这里有几个关键点。</p><p>第一，输入要干净。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不要把导航栏、广告、推荐列表、评论区全部塞进去。
+</span></span></code></pre></td></tr></table></div></div><p>第二，输出要结构化。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不要让模型自由写一段自然语言。
+</span></span></code></pre></td></tr></table></div></div><p>第三，结果要校验。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不要相信模型输出一定合法。
+</span></span></code></pre></td></tr></table></div></div><p>第四，低置信度要进入人工复核。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM 是辅助，不是最终事实来源。
+</span></span></code></pre></td></tr></table></div></div><h2 id=五定义-schema>五、定义 Schema</h2><p>在工程里，先定义目标结构很重要。</p><p>例如我们要从文章正文中抽取文章信息：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>pydantic</span> <span class=kn>import</span> <span class=n>BaseModel</span><span class=p>,</span> <span class=n>Field</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ArticleExtraction</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>title</span><span class=p>:</span> <span class=nb>str</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>description</span><span class=o>=</span><span class=s2>&#34;文章标题&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>author</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>default</span><span class=o>=</span><span class=kc>None</span><span class=p>,</span> <span class=n>description</span><span class=o>=</span><span class=s2>&#34;作者&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>published_at</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>default</span><span class=o>=</span><span class=kc>None</span><span class=p>,</span> <span class=n>description</span><span class=o>=</span><span class=s2>&#34;发布时间，尽量使用 ISO 日期格式&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>summary</span><span class=p>:</span> <span class=nb>str</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>description</span><span class=o>=</span><span class=s2>&#34;不超过 120 字的摘要&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>keywords</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>default_factory</span><span class=o>=</span><span class=nb>list</span><span class=p>,</span> <span class=n>description</span><span class=o>=</span><span class=s2>&#34;关键词列表&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>confidence</span><span class=p>:</span> <span class=nb>float</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>ge</span><span class=o>=</span><span class=mi>0</span><span class=p>,</span> <span class=n>le</span><span class=o>=</span><span class=mi>1</span><span class=p>,</span> <span class=n>description</span><span class=o>=</span><span class=s2>&#34;模型对抽取结果的置信度&#34;</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>Schema 的作用是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>明确字段。
+</span></span><span class=line><span class=cl>约束类型。
+</span></span><span class=line><span class=cl>限制范围。
+</span></span><span class=line><span class=cl>方便校验。
+</span></span><span class=line><span class=cl>便于前后端和数据库对齐。
+</span></span></code></pre></td></tr></table></div></div><p>如果没有 Schema，LLM 输出可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>这篇文章主要讲了……
+</span></span></code></pre></td></tr></table></div></div><p>这对自动入库没有帮助。</p><p>我们需要的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;title&#34;</span><span class=p>:</span> <span class=s2>&#34;...&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;author&#34;</span><span class=p>:</span> <span class=s2>&#34;...&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;published_at&#34;</span><span class=p>:</span> <span class=s2>&#34;...&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;summary&#34;</span><span class=p>:</span> <span class=s2>&#34;...&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;keywords&#34;</span><span class=p>:</span> <span class=p>[</span><span class=s2>&#34;...&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;confidence&#34;</span><span class=p>:</span> <span class=mf>0.86</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><h2 id=六prompt-设计>六、Prompt 设计</h2><p>Prompt 要清楚告诉模型：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你是谁。
+</span></span><span class=line><span class=cl>输入是什么。
+</span></span><span class=line><span class=cl>要抽取什么字段。
+</span></span><span class=line><span class=cl>输出格式是什么。
+</span></span><span class=line><span class=cl>不确定时怎么办。
+</span></span><span class=line><span class=cl>禁止编造。
+</span></span></code></pre></td></tr></table></div></div><p>示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你是数据采集系统中的结构化抽取助手。
+</span></span><span class=line><span class=cl>请根据输入的网页正文抽取文章信息。
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>要求：
+</span></span><span class=line><span class=cl>1. 只能基于输入内容抽取，不要编造。
+</span></span><span class=line><span class=cl>2. 如果字段不存在，返回 null 或空列表。
+</span></span><span class=line><span class=cl>3. published_at 尽量转换为 YYYY-MM-DD 格式。
+</span></span><span class=line><span class=cl>4. summary 不超过 120 个中文字符。
+</span></span><span class=line><span class=cl>5. 只输出 JSON，不要输出解释文字。
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>字段：
+</span></span><span class=line><span class=cl>- title: 文章标题
+</span></span><span class=line><span class=cl>- author: 作者，没有则为 null
+</span></span><span class=line><span class=cl>- published_at: 发布时间，没有则为 null
+</span></span><span class=line><span class=cl>- summary: 摘要
+</span></span><span class=line><span class=cl>- keywords: 关键词列表
+</span></span><span class=line><span class=cl>- confidence: 0 到 1 的置信度
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>网页正文：
+</span></span><span class=line><span class=cl>{{content}}
+</span></span></code></pre></td></tr></table></div></div><p>注意两点。</p><p>第一，不要只写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>帮我提取一下信息。
+</span></span></code></pre></td></tr></table></div></div><p>这太宽泛。</p><p>第二，要明确：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不要编造。
+</span></span><span class=line><span class=cl>没有就返回 null。
+</span></span><span class=line><span class=cl>只输出 JSON。
+</span></span></code></pre></td></tr></table></div></div><p>这能显著降低后处理难度。</p><h2 id=七json-输出与解析>七、JSON 输出与解析</h2><p>LLM 输出后，需要解析 JSON。</p><p>简化示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>import</span> <span class=nn>json</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>pydantic</span> <span class=kn>import</span> <span class=n>ValidationError</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>parse_llm_output</span><span class=p>(</span><span class=n>raw_text</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>ArticleExtraction</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>try</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>data</span> <span class=o>=</span> <span class=n>json</span><span class=o>.</span><span class=n>loads</span><span class=p>(</span><span class=n>raw_text</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>ArticleExtraction</span><span class=o>.</span><span class=n>model_validate</span><span class=p>(</span><span class=n>data</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>except</span> <span class=p>(</span><span class=n>json</span><span class=o>.</span><span class=n>JSONDecodeError</span><span class=p>,</span> <span class=n>ValidationError</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><p>如果解析失败，不要直接丢弃。</p><p>可以记录：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>原始输出。
+</span></span><span class=line><span class=cl>输入摘要。
+</span></span><span class=line><span class=cl>错误类型。
+</span></span><span class=line><span class=cl>模型名称。
+</span></span><span class=line><span class=cl>任务 ID。
+</span></span></code></pre></td></tr></table></div></div><p>然后根据策略：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>重试一次。
+</span></span><span class=line><span class=cl>换更严格 Prompt。
+</span></span><span class=line><span class=cl>进入人工复核。
+</span></span><span class=line><span class=cl>标记抽取失败。
+</span></span></code></pre></td></tr></table></div></div><p>但不要无限重试。</p><p>LLM 调用也要有成本和边界。</p><h2 id=八置信度和人工复核>八、置信度和人工复核</h2><p>LLM 输出的 <code>confidence</code> 不是绝对真理。</p><p>但它可以作为流程信号。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>confidence &gt;= 0.85：自动入库。
+</span></span><span class=line><span class=cl>0.6 &lt;= confidence &lt; 0.85：入库但标记待抽检。
+</span></span><span class=line><span class=cl>confidence &lt; 0.6：进入人工复核。
+</span></span></code></pre></td></tr></table></div></div><p>还可以结合规则校验：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>标题不能为空。
+</span></span><span class=line><span class=cl>发布时间不能晚于当前时间太多。
+</span></span><span class=line><span class=cl>摘要长度不能超过限制。
+</span></span><span class=line><span class=cl>关键词数量不能超过上限。
+</span></span><span class=line><span class=cl>正文为空时不能给高置信度。
+</span></span></code></pre></td></tr></table></div></div><p>一个决策函数：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>decide_review</span><span class=p>(</span><span class=n>result</span><span class=p>:</span> <span class=n>ArticleExtraction</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>result</span><span class=o>.</span><span class=n>confidence</span> <span class=o>&lt;</span> <span class=mf>0.6</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;manual_review&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=ow>not</span> <span class=n>result</span><span class=o>.</span><span class=n>title</span><span class=o>.</span><span class=n>strip</span><span class=p>():</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;manual_review&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=nb>len</span><span class=p>(</span><span class=n>result</span><span class=o>.</span><span class=n>summary</span><span class=p>)</span> <span class=o>&gt;</span> <span class=mi>120</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=s2>&#34;manual_review&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;accepted&#34;</span>
+</span></span></code></pre></td></tr></table></div></div><p>人工复核不是失败。</p><p>它是让系统在不确定时保持可靠的机制。</p><h2 id=九输入清洗与截断>九、输入清洗与截断</h2><p>LLM 的输入上下文有限，调用成本也和输入长度有关。</p><p>所以输入要处理。</p><p>常见步骤：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>移除 script、style、导航和页脚。
+</span></span><span class=line><span class=cl>提取正文候选区域。
+</span></span><span class=line><span class=cl>保留标题、发布时间、作者附近文本。
+</span></span><span class=line><span class=cl>去除重复空白。
+</span></span><span class=line><span class=cl>截断过长内容。
+</span></span></code></pre></td></tr></table></div></div><p>示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>bs4</span> <span class=kn>import</span> <span class=n>BeautifulSoup</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>html_to_text</span><span class=p>(</span><span class=n>html</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>soup</span> <span class=o>=</span> <span class=n>BeautifulSoup</span><span class=p>(</span><span class=n>html</span><span class=p>,</span> <span class=s2>&#34;html.parser&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>for</span> <span class=n>tag</span> <span class=ow>in</span> <span class=n>soup</span><span class=p>([</span><span class=s2>&#34;script&#34;</span><span class=p>,</span> <span class=s2>&#34;style&#34;</span><span class=p>,</span> <span class=s2>&#34;noscript&#34;</span><span class=p>]):</span>
+</span></span><span class=line><span class=cl>        <span class=n>tag</span><span class=o>.</span><span class=n>decompose</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=n>text</span> <span class=o>=</span> <span class=n>soup</span><span class=o>.</span><span class=n>get_text</span><span class=p>(</span><span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=p>,</span> <span class=n>strip</span><span class=o>=</span><span class=kc>True</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>lines</span> <span class=o>=</span> <span class=p>[</span><span class=n>line</span><span class=o>.</span><span class=n>strip</span><span class=p>()</span> <span class=k>for</span> <span class=n>line</span> <span class=ow>in</span> <span class=n>text</span><span class=o>.</span><span class=n>splitlines</span><span class=p>()</span> <span class=k>if</span> <span class=n>line</span><span class=o>.</span><span class=n>strip</span><span class=p>()]</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;</span><span class=se>\n</span><span class=s2>&#34;</span><span class=o>.</span><span class=n>join</span><span class=p>(</span><span class=n>lines</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>truncate_text</span><span class=p>(</span><span class=n>text</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span> <span class=n>max_chars</span><span class=p>:</span> <span class=nb>int</span> <span class=o>=</span> <span class=mi>6000</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>str</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=nb>len</span><span class=p>(</span><span class=n>text</span><span class=p>)</span> <span class=o>&lt;=</span> <span class=n>max_chars</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=n>text</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>text</span><span class=p>[:</span><span class=n>max_chars</span><span class=p>]</span>
+</span></span></code></pre></td></tr></table></div></div><p>这只是基础版本。</p><p>更好的做法是先用规则识别正文区域，再交给 LLM。</p><p>这样既降低成本，也减少噪声。</p><h2 id=十规则抽取和-llm-抽取如何配合>十、规则抽取和 LLM 抽取如何配合？</h2><p>不要把规则和 LLM 对立起来。</p><p>更合理的是分层：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>规则抽取：稳定字段。
+</span></span><span class=line><span class=cl>LLM 抽取：复杂语义字段。
+</span></span><span class=line><span class=cl>规则校验：输出质量。
+</span></span><span class=line><span class=cl>人工复核：低置信度结果。
+</span></span></code></pre></td></tr></table></div></div><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>URL、标题、发布时间：优先用 XPath。
+</span></span><span class=line><span class=cl>正文摘要、关键词、主题分类：用 LLM。
+</span></span><span class=line><span class=cl>价格、日期、数字：用规则校验。
+</span></span><span class=line><span class=cl>最终结果：Pydantic 校验。
+</span></span></code></pre></td></tr></table></div></div><p>一个组合流程：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>extract_article</span><span class=p>(</span><span class=n>html</span><span class=p>:</span> <span class=nb>str</span><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>ArticleExtraction</span> <span class=o>|</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>text</span> <span class=o>=</span> <span class=n>truncate_text</span><span class=p>(</span><span class=n>html_to_text</span><span class=p>(</span><span class=n>html</span><span class=p>))</span>
+</span></span><span class=line><span class=cl>    <span class=n>raw_output</span> <span class=o>=</span> <span class=n>call_llm</span><span class=p>(</span><span class=n>build_prompt</span><span class=p>(</span><span class=n>text</span><span class=p>))</span>
+</span></span><span class=line><span class=cl>    <span class=n>result</span> <span class=o>=</span> <span class=n>parse_llm_output</span><span class=p>(</span><span class=n>raw_output</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>result</span> <span class=ow>is</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>decide_review</span><span class=p>(</span><span class=n>result</span><span class=p>)</span> <span class=o>==</span> <span class=s2>&#34;manual_review&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>save_review_case</span><span class=p>(</span><span class=n>text</span><span class=p>,</span> <span class=n>raw_output</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>result</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里的 <code>call_llm</code> 和 <code>save_review_case</code> 是系统能力，不展开具体厂商 API。</p><p>在真实项目中，应根据使用的模型服务封装客户端。</p><h2 id=十一成本和延迟控制>十一、成本和延迟控制</h2><p>LLM 抽取的成本比规则抽取高。</p><p>所以要做控制。</p><p>常见策略包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>只对需要理解的页面调用 LLM。
+</span></span><span class=line><span class=cl>先用规则过滤无效页面。
+</span></span><span class=line><span class=cl>对相同内容 hash 做缓存。
+</span></span><span class=line><span class=cl>限制输入长度。
+</span></span><span class=line><span class=cl>限制输出字段。
+</span></span><span class=line><span class=cl>批量任务异步处理。
+</span></span><span class=line><span class=cl>低价值字段不调用大模型。
+</span></span><span class=line><span class=cl>失败不无限重试。
+</span></span></code></pre></td></tr></table></div></div><p>例如，可以根据内容 hash 缓存结果：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>content_hash -&gt; extraction_result
+</span></span></code></pre></td></tr></table></div></div><p>如果页面内容没有变化，就不需要重复调用 LLM。</p><p>这和前面讲的内容去重是配套的。</p><p>还要关注延迟：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户请求不要同步等待大量 LLM 抽取。
+</span></span><span class=line><span class=cl>应将抽取任务放入队列。
+</span></span><span class=line><span class=cl>Worker 异步处理。
+</span></span><span class=line><span class=cl>前端通过任务状态查询结果。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十二质量评估>十二、质量评估</h2><p>LLM 抽取上线后，要评估质量。</p><p>指标包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>字段完整率。
+</span></span><span class=line><span class=cl>字段准确率。
+</span></span><span class=line><span class=cl>JSON 解析成功率。
+</span></span><span class=line><span class=cl>Schema 校验通过率。
+</span></span><span class=line><span class=cl>人工复核比例。
+</span></span><span class=line><span class=cl>低置信度比例。
+</span></span><span class=line><span class=cl>平均调用延迟。
+</span></span><span class=line><span class=cl>平均调用成本。
+</span></span><span class=line><span class=cl>重复调用率。
+</span></span></code></pre></td></tr></table></div></div><p>还可以抽样检查：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>每天随机抽取 100 条结果人工审核。
+</span></span><span class=line><span class=cl>对比规则抽取和 LLM 抽取差异。
+</span></span><span class=line><span class=cl>统计最常缺失字段。
+</span></span><span class=line><span class=cl>统计最常失败的数据源。
+</span></span></code></pre></td></tr></table></div></div><p>没有质量评估，LLM 抽取很容易变成黑盒。</p><p>工程上要让它可观察、可回归、可改进。</p><h2 id=十三常见失败场景>十三、常见失败场景</h2><p>LLM 抽取常见失败包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>输出不是合法 JSON。
+</span></span><span class=line><span class=cl>字段类型不符合 Schema。
+</span></span><span class=line><span class=cl>编造输入中不存在的信息。
+</span></span><span class=line><span class=cl>摘要过长。
+</span></span><span class=line><span class=cl>日期格式不统一。
+</span></span><span class=line><span class=cl>关键词太泛。
+</span></span><span class=line><span class=cl>把广告内容当正文。
+</span></span><span class=line><span class=cl>把推荐列表当主要内容。
+</span></span><span class=line><span class=cl>置信度虚高。
+</span></span></code></pre></td></tr></table></div></div><p>处理方式：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>更严格 Prompt。
+</span></span><span class=line><span class=cl>缩小输入范围。
+</span></span><span class=line><span class=cl>增加 Schema 校验。
+</span></span><span class=line><span class=cl>增加规则后处理。
+</span></span><span class=line><span class=cl>低置信度人工复核。
+</span></span><span class=line><span class=cl>建立失败样本集。
+</span></span></code></pre></td></tr></table></div></div><p>失败样本很重要。</p><p>它可以帮助你改进 Prompt、清洗逻辑和抽取规则。</p><h2 id=十四数据安全和隐私>十四、数据安全和隐私</h2><p>LLM 抽取可能涉及外部模型服务。</p><p>因此要注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不要发送敏感账号信息。
+</span></span><span class=line><span class=cl>不要发送 Token、Cookie、手机号、身份证号。
+</span></span><span class=line><span class=cl>不要发送未经授权的私密数据。
+</span></span><span class=line><span class=cl>日志中不要保存完整敏感输入。
+</span></span><span class=line><span class=cl>根据业务要求选择私有化模型或本地模型。
+</span></span></code></pre></td></tr></table></div></div><p>在数据采集系统中，可以增加脱敏步骤：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>输入 LLM 前脱敏。
+</span></span><span class=line><span class=cl>输出入库前校验。
+</span></span><span class=line><span class=cl>日志只保存摘要或 hash。
+</span></span><span class=line><span class=cl>敏感字段进入人工审批。
+</span></span></code></pre></td></tr></table></div></div><p>合规原则仍然是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>最小化输入。
+</span></span><span class=line><span class=cl>明确用途。
+</span></span><span class=line><span class=cl>可审计。
+</span></span><span class=line><span class=cl>可删除。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十五llm-不应该做什么>十五、LLM 不应该做什么？</h2><p>本系列反复强调边界。</p><p>在数据采集里，LLM 不应该用于：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>绕过登录限制。
+</span></span><span class=line><span class=cl>识别真实业务验证码答案。
+</span></span><span class=line><span class=cl>生成规避风控策略。
+</span></span><span class=line><span class=cl>推演封禁绕过方案。
+</span></span><span class=line><span class=cl>扩大未授权采集规模。
+</span></span><span class=line><span class=cl>处理来源不明的敏感数据。
+</span></span></code></pre></td></tr></table></div></div><p>如果 LLM 判断页面是验证码、登录页、权限页或风控页，正确动作是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>暂停任务。
+</span></span><span class=line><span class=cl>记录上下文。
+</span></span><span class=line><span class=cl>降低频率。
+</span></span><span class=line><span class=cl>检查授权。
+</span></span><span class=line><span class=cl>人工复核。
+</span></span><span class=line><span class=cl>申请正式接口。
+</span></span></code></pre></td></tr></table></div></div><p>不是继续突破。</p><p>这也是智能采集系统和滥用自动化的区别。</p><h2 id=十六llm-抽取在系统中的位置>十六、LLM 抽取在系统中的位置</h2><p>结合前面几篇文章，一个完整架构可以是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>抓取 Worker
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>规则解析
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>正文清洗
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>LLM 抽取 Worker
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Pydantic 校验
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>质量评分
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>结果入库 / 人工复核
+</span></span></code></pre></td></tr></table></div></div><p>建议把 LLM 抽取做成独立 Worker。</p><p>原因是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM 调用延迟高。
+</span></span><span class=line><span class=cl>成本高。
+</span></span><span class=line><span class=cl>失败模式不同。
+</span></span><span class=line><span class=cl>需要单独限流。
+</span></span><span class=line><span class=cl>需要单独监控。
+</span></span></code></pre></td></tr></table></div></div><p>不要让抓取 Worker 同步等待大量 LLM 调用。</p><p>这样系统会更稳定。</p><h2 id=十七面试表达>十七、面试表达</h2><p>如果面试官问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM 怎么用于爬虫数据抽取？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我不会用 LLM 替代所有解析规则。稳定结构仍然优先用 XPath、CSS Selector、JSON 解析和正则。LLM 更适合处理半结构化页面、正文理解、字段归一化、摘要、关键词和异常页面诊断。工程上会先清洗输入，再让模型输出 JSON，通过 Pydantic Schema 校验，结合置信度和规则判断是否入库或人工复核。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>如何保证 LLM 输出可用？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会先定义 Schema，再设计 Prompt 要求只输出 JSON，并明确没有字段就返回 null，不允许编造。模型输出后做 JSON 解析和 Pydantic 校验，再做业务规则校验，例如标题不能为空、日期格式合理、摘要长度受限。低置信度或校验失败的结果进入人工复核，不直接入库。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM 抽取成本怎么控制？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>成本控制主要靠分层抽取。能用规则稳定解决的字段不用 LLM；调用前先清洗和截断正文；相同 content_hash 的页面复用缓存；LLM 抽取异步化，单独限流；失败有限重试；只对高价值字段或复杂文本调用模型。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM 抽取有什么风险？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>风险包括输出不稳定、JSON 不合法、字段幻觉、日期格式不一致、成本和延迟较高，以及敏感数据传给外部模型的合规风险。所以要做 Schema 校验、规则校验、置信度判断、人工复核、日志脱敏和输入最小化。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LLM 能不能帮助反爬？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会把 LLM 用在合规诊断上，比如判断页面是否是登录页、验证码页、限流页或解析规则失效，并建议降频、暂停、人工复核或申请正式接口。不应该用它生成绕过验证码、风控、访问控制或封禁的方案。</p></blockquote><h2 id=十八总结>十八、总结</h2><p>本文讲了 LLM 如何赋能爬虫数据抽取。</p><p>核心结论包括：</p><ul><li>LLM 不是传统解析规则的替代品，而是复杂语义抽取和诊断能力的补充。</li><li>XPath、CSS Selector、JSON 解析和正则仍然适合稳定、低成本、可解释的结构化抽取。</li><li>LLM 更适合半结构化页面、正文理解、字段归一化、摘要、关键词和异常页面分类。</li><li>稳妥流程是：HTML 清洗、正文截断、Prompt 构造、JSON 输出、Schema 校验、置信度判断、入库或人工复核。</li><li>Schema 是 LLM 抽取工程化的核心，它约束字段、类型和输出结构。</li><li>Prompt 要明确禁止编造，字段缺失返回 null，只输出 JSON。</li><li>模型输出必须经过 JSON 解析、Pydantic 校验和业务规则校验。</li><li>置信度可以作为流程信号，但不能作为唯一真理。</li><li>输入清洗和截断可以降低成本、减少噪声、提升稳定性。</li><li>规则抽取和 LLM 抽取应分层协作，而不是互相替代。</li><li>成本控制依赖内容去重、缓存、异步 Worker、输入长度控制和有限重试。</li><li>质量评估要关注字段完整率、准确率、JSON 解析成功率、人工复核比例、延迟和成本。</li><li>LLM 抽取要重视数据安全，避免发送敏感账号、Token、Cookie、手机号等信息。</li><li>LLM 不应用于验证码绕过、风控规避、访问控制突破或扩大未授权采集。</li><li>面试表达要体现“规则 + LLM + Schema + 校验 + 复核”的工程闭环。</li></ul><p>下一篇文章，我们会继续把 LLM 抽取落到更具体的实践：</p><blockquote><p>网页正文提取与 Schema 化抽取实战。</p></blockquote><p>我们会用 HTML / Markdown / 纯文本输入，结合 Pydantic Schema、结构化 JSON、校验、重试和人工复核，做一个更完整的抽取流程示例。</p></section><footer class=article-footer><section class=article-tags><a href=/tags/python/>Python</a>
+<a href=/tags/%E7%88%AC%E8%99%AB/>爬虫</a>
+<a href=/tags/llm/>LLM</a>
+<a href=/tags/%E6%95%B0%E6%8D%AE%E6%8A%BD%E5%8F%96/>数据抽取</a>
+<a href=/tags/schema/>Schema</a>
+<a href=/tags/ai-agent/>AI Agent</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/crawler-llm-agent-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 36：LLM 与 Agent 数据采集接口设计</h2></div></a></article><article><a href=/p/llm-web-content-schema-extraction/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 27：网页正文提取与 Schema 化抽取实战</h2></div></a></article><article><a href=/p/crawler-engineer-interview-summary/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 30：爬虫工程师面试高频问题总结</h2></div></a></article><article><a href=/p/llm-enhanced-intelligent-crawler-system/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 29：设计一个大模型增强的智能采集系统</h2></div></a></article><article><a href=/p/ai-agent-for-crawler-workflow/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 28：AI Agent 在数据采集流程中的应用</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

@@ -1,0 +1,1122 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇扩展篇，我们整理了存储、队列与任务状态常用接口。\n那一层解决的是：\n1 2 3 4 5 任务怎么存。 任务怎么入队。 任务怎么重试。 任务怎么去重。 Worker 怎么恢复。 这一篇继续往上走，整理 FastAPI 管理平台接口设计。\n一个爬虫系统如果只有 Worker，没有管理平台，会很难长期运行。\n因为你需要知道：\n1 2 3 4 5 6 7 8 9 任务创建了吗？ 现在是什么状态？ 为什么失败？ 能不能暂停？ 能不能重试？ 结果在哪里？ 哪些数据源被限流？ 哪些任务需要人工复核？ Worker 是否正常？ 这些问题都适合通过后端管理接口暴露出来。\nFastAPI 很适合作为这一层。\n本文整理爬虫管理平台常用接口设计，包括：\n1 2 3 4 5 6 7 任务接口。 数据源接口。 结果接口。 人工复核接口。 日志接口。 指标接口。 鉴权和审计。 重点不是把爬虫逻辑写进 API，而是让 API 成为任务管理、状态查询和人工操作入口。\n"><title>大模型时代的数据采集工程 35：FastAPI 管理平台接口设计</title><link rel=canonical href=https://tkdwbiao.github.io/p/crawler-service-platform-common-apis/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="大模型时代的数据采集工程 35：FastAPI 管理平台接口设计"><meta property='og:description' content="上一篇扩展篇，我们整理了存储、队列与任务状态常用接口。\n那一层解决的是：\n1 2 3 4 5 任务怎么存。 任务怎么入队。 任务怎么重试。 任务怎么去重。 Worker 怎么恢复。 这一篇继续往上走，整理 FastAPI 管理平台接口设计。\n一个爬虫系统如果只有 Worker，没有管理平台，会很难长期运行。\n因为你需要知道：\n1 2 3 4 5 6 7 8 9 任务创建了吗？ 现在是什么状态？ 为什么失败？ 能不能暂停？ 能不能重试？ 结果在哪里？ 哪些数据源被限流？ 哪些任务需要人工复核？ Worker 是否正常？ 这些问题都适合通过后端管理接口暴露出来。\nFastAPI 很适合作为这一层。\n本文整理爬虫管理平台常用接口设计，包括：\n1 2 3 4 5 6 7 任务接口。 数据源接口。 结果接口。 人工复核接口。 日志接口。 指标接口。 鉴权和审计。 重点不是把爬虫逻辑写进 API，而是让 API 成为任务管理、状态查询和人工操作入口。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/crawler-service-platform-common-apis/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='Python'><meta property='article:tag' content='FastAPI'><meta property='article:tag' content='爬虫'><meta property='article:tag' content='后端接口'><meta property='article:tag' content='任务管理'><meta property='article:tag' content='API'><meta property='article:published_time' content='2026-02-17T10:00:00+08:00'><meta property='article:modified_time' content='2026-02-17T10:00:00+08:00'><meta name=twitter:title content="大模型时代的数据采集工程 35：FastAPI 管理平台接口设计"><meta name=twitter:description content="上一篇扩展篇，我们整理了存储、队列与任务状态常用接口。\n那一层解决的是：\n1 2 3 4 5 任务怎么存。 任务怎么入队。 任务怎么重试。 任务怎么去重。 Worker 怎么恢复。 这一篇继续往上走，整理 FastAPI 管理平台接口设计。\n一个爬虫系统如果只有 Worker，没有管理平台，会很难长期运行。\n因为你需要知道：\n1 2 3 4 5 6 7 8 9 任务创建了吗？ 现在是什么状态？ 为什么失败？ 能不能暂停？ 能不能重试？ 结果在哪里？ 哪些数据源被限流？ 哪些任务需要人工复核？ Worker 是否正常？ 这些问题都适合通过后端管理接口暴露出来。\nFastAPI 很适合作为这一层。\n本文整理爬虫管理平台常用接口设计，包括：\n1 2 3 4 5 6 7 任务接口。 数据源接口。 结果接口。 人工复核接口。 日志接口。 指标接口。 鉴权和审计。 重点不是把爬虫逻辑写进 API，而是让 API 成为任务管理、状态查询和人工操作入口。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一fastapi-在爬虫系统中的位置>一、FastAPI 在爬虫系统中的位置</a></li><li><a href=#二接口分组设计>二、接口分组设计</a></li><li><a href=#三基础-fastapi-结构>三、基础 FastAPI 结构</a></li><li><a href=#四任务创建接口>四、任务创建接口</a><ol><li><a href=#1-请求和响应-schema>1. 请求和响应 Schema</a></li><li><a href=#2-post-apitasks>2. POST /api/tasks</a></li></ol></li><li><a href=#五任务列表接口>五、任务列表接口</a><ol><li><a href=#1-查询参数>1. 查询参数</a></li></ol></li><li><a href=#六任务详情接口>六、任务详情接口</a></li><li><a href=#七任务操作接口>七、任务操作接口</a><ol><li><a href=#1-暂停任务>1. 暂停任务</a></li><li><a href=#2-重试任务>2. 重试任务</a></li><li><a href=#3-取消任务>3. 取消任务</a></li></ol></li><li><a href=#八数据源配置接口>八、数据源配置接口</a></li><li><a href=#九结果查询接口>九、结果查询接口</a></li><li><a href=#十人工复核接口>十、人工复核接口</a></li><li><a href=#十一日志查询接口>十一、日志查询接口</a></li><li><a href=#十二指标接口>十二、指标接口</a></li><li><a href=#十三worker-状态接口>十三、Worker 状态接口</a></li><li><a href=#十四统一错误响应>十四、统一错误响应</a></li><li><a href=#十五鉴权和权限控制>十五、鉴权和权限控制</a></li><li><a href=#十六审计日志>十六、审计日志</a></li><li><a href=#十七接口设计常见坑点>十七、接口设计常见坑点</a><ol><li><a href=#1-api-直接执行爬虫>1. API 直接执行爬虫</a></li><li><a href=#2-没有分页>2. 没有分页</a></li><li><a href=#3-没有状态流转校验>3. 没有状态流转校验</a></li><li><a href=#4-缺少审计日志>4. 缺少审计日志</a></li><li><a href=#5-暴露敏感信息>5. 暴露敏感信息</a></li><li><a href=#6-管理接口没有权限控制>6. 管理接口没有权限控制</a></li><li><a href=#7-swagger-文档没有-schema>7. Swagger 文档没有 Schema</a></li></ol></li><li><a href=#十八面试表达>十八、面试表达</a></li><li><a href=#十九总结>十九、总结</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/%E7%88%AC%E8%99%AB%E7%B3%BB%E5%88%97/ style=background-color:#efcfbe;color:#3d1f0f>爬虫系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/crawler-service-platform-common-apis/>大模型时代的数据采集工程 35：FastAPI 管理平台接口设计</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-02-17T10:00:00+08:00>2026-02-17 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 11 分钟</time></div></footer></div></header><section class=article-content><p>上一篇扩展篇，我们整理了存储、队列与任务状态常用接口。</p><p>那一层解决的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务怎么存。
+</span></span><span class=line><span class=cl>任务怎么入队。
+</span></span><span class=line><span class=cl>任务怎么重试。
+</span></span><span class=line><span class=cl>任务怎么去重。
+</span></span><span class=line><span class=cl>Worker 怎么恢复。
+</span></span></code></pre></td></tr></table></div></div><p>这一篇继续往上走，整理 FastAPI 管理平台接口设计。</p><p>一个爬虫系统如果只有 Worker，没有管理平台，会很难长期运行。</p><p>因为你需要知道：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务创建了吗？
+</span></span><span class=line><span class=cl>现在是什么状态？
+</span></span><span class=line><span class=cl>为什么失败？
+</span></span><span class=line><span class=cl>能不能暂停？
+</span></span><span class=line><span class=cl>能不能重试？
+</span></span><span class=line><span class=cl>结果在哪里？
+</span></span><span class=line><span class=cl>哪些数据源被限流？
+</span></span><span class=line><span class=cl>哪些任务需要人工复核？
+</span></span><span class=line><span class=cl>Worker 是否正常？
+</span></span></code></pre></td></tr></table></div></div><p>这些问题都适合通过后端管理接口暴露出来。</p><p>FastAPI 很适合作为这一层。</p><p>本文整理爬虫管理平台常用接口设计，包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务接口。
+</span></span><span class=line><span class=cl>数据源接口。
+</span></span><span class=line><span class=cl>结果接口。
+</span></span><span class=line><span class=cl>人工复核接口。
+</span></span><span class=line><span class=cl>日志接口。
+</span></span><span class=line><span class=cl>指标接口。
+</span></span><span class=line><span class=cl>鉴权和审计。
+</span></span></code></pre></td></tr></table></div></div><p>重点不是把爬虫逻辑写进 API，而是让 API 成为任务管理、状态查询和人工操作入口。</p><h2 id=一fastapi-在爬虫系统中的位置>一、FastAPI 在爬虫系统中的位置</h2><p>一个工程化爬虫系统可以拆成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>前端管理后台
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>FastAPI 管理平台
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>MySQL 任务表 / 配置表 / 结果表
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Redis 队列 / 限流 / 心跳
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Crawler Worker / Parser Worker / LLM Worker / Agent Worker
+</span></span></code></pre></td></tr></table></div></div><p>FastAPI 的职责是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>接收任务创建请求。
+</span></span><span class=line><span class=cl>校验参数。
+</span></span><span class=line><span class=cl>写入任务表。
+</span></span><span class=line><span class=cl>推送队列。
+</span></span><span class=line><span class=cl>查询任务状态。
+</span></span><span class=line><span class=cl>查询采集结果。
+</span></span><span class=line><span class=cl>处理人工复核。
+</span></span><span class=line><span class=cl>管理数据源配置。
+</span></span><span class=line><span class=cl>展示日志和指标。
+</span></span><span class=line><span class=cl>记录审计日志。
+</span></span></code></pre></td></tr></table></div></div><p>FastAPI 不应该直接做：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>执行耗时爬虫。
+</span></span><span class=line><span class=cl>长时间阻塞等待页面。
+</span></span><span class=line><span class=cl>在请求线程里跑浏览器。
+</span></span><span class=line><span class=cl>在接口里无限重试。
+</span></span></code></pre></td></tr></table></div></div><p>更合理的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>API 负责提交任务。
+</span></span><span class=line><span class=cl>Worker 负责执行任务。
+</span></span><span class=line><span class=cl>状态通过数据库和队列同步。
+</span></span></code></pre></td></tr></table></div></div><p>这也是面试中很重要的表达。</p><h2 id=二接口分组设计>二、接口分组设计</h2><p>可以按资源分组：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>/api/tasks：任务管理。
+</span></span><span class=line><span class=cl>/api/sources：数据源配置。
+</span></span><span class=line><span class=cl>/api/results：结果查询。
+</span></span><span class=line><span class=cl>/api/reviews：人工复核。
+</span></span><span class=line><span class=cl>/api/logs：日志查询。
+</span></span><span class=line><span class=cl>/api/metrics：系统指标。
+</span></span><span class=line><span class=cl>/api/workers：Worker 状态。
+</span></span></code></pre></td></tr></table></div></div><p>常见接口：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>POST   /api/tasks
+</span></span><span class=line><span class=cl>GET    /api/tasks
+</span></span><span class=line><span class=cl>GET    /api/tasks/{task_id}
+</span></span><span class=line><span class=cl>POST   /api/tasks/{task_id}/pause
+</span></span><span class=line><span class=cl>POST   /api/tasks/{task_id}/retry
+</span></span><span class=line><span class=cl>POST   /api/tasks/{task_id}/cancel
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>GET    /api/sources
+</span></span><span class=line><span class=cl>POST   /api/sources
+</span></span><span class=line><span class=cl>PATCH  /api/sources/{source_id}
+</span></span><span class=line><span class=cl>POST   /api/sources/{source_id}/pause
+</span></span><span class=line><span class=cl>POST   /api/sources/{source_id}/resume
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>GET    /api/results
+</span></span><span class=line><span class=cl>GET    /api/results/{item_id}
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>GET    /api/reviews
+</span></span><span class=line><span class=cl>POST   /api/reviews/{review_id}/approve
+</span></span><span class=line><span class=cl>POST   /api/reviews/{review_id}/reject
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>GET    /api/logs/tasks/{task_id}
+</span></span><span class=line><span class=cl>GET    /api/metrics/summary
+</span></span><span class=line><span class=cl>GET    /api/workers
+</span></span></code></pre></td></tr></table></div></div><p>接口设计要围绕任务生命周期，而不是围绕“脚本函数”。</p><h2 id=三基础-fastapi-结构>三、基础 FastAPI 结构</h2><p>一个简化项目结构：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>app/
+</span></span><span class=line><span class=cl>  main.py
+</span></span><span class=line><span class=cl>  api/
+</span></span><span class=line><span class=cl>    tasks.py
+</span></span><span class=line><span class=cl>    sources.py
+</span></span><span class=line><span class=cl>    results.py
+</span></span><span class=line><span class=cl>    reviews.py
+</span></span><span class=line><span class=cl>    metrics.py
+</span></span><span class=line><span class=cl>  schemas/
+</span></span><span class=line><span class=cl>    task.py
+</span></span><span class=line><span class=cl>    source.py
+</span></span><span class=line><span class=cl>    result.py
+</span></span><span class=line><span class=cl>    review.py
+</span></span><span class=line><span class=cl>  services/
+</span></span><span class=line><span class=cl>    task_service.py
+</span></span><span class=line><span class=cl>    source_service.py
+</span></span><span class=line><span class=cl>    queue_service.py
+</span></span><span class=line><span class=cl>  models/
+</span></span><span class=line><span class=cl>    task.py
+</span></span><span class=line><span class=cl>    source.py
+</span></span><span class=line><span class=cl>    result.py
+</span></span></code></pre></td></tr></table></div></div><p><code>main.py</code>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>fastapi</span> <span class=kn>import</span> <span class=n>FastAPI</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>app.api</span> <span class=kn>import</span> <span class=n>metrics</span><span class=p>,</span> <span class=n>results</span><span class=p>,</span> <span class=n>reviews</span><span class=p>,</span> <span class=n>sources</span><span class=p>,</span> <span class=n>tasks</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>app</span> <span class=o>=</span> <span class=n>FastAPI</span><span class=p>(</span><span class=n>title</span><span class=o>=</span><span class=s2>&#34;Crawler Management API&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>app</span><span class=o>.</span><span class=n>include_router</span><span class=p>(</span><span class=n>tasks</span><span class=o>.</span><span class=n>router</span><span class=p>,</span> <span class=n>prefix</span><span class=o>=</span><span class=s2>&#34;/api/tasks&#34;</span><span class=p>,</span> <span class=n>tags</span><span class=o>=</span><span class=p>[</span><span class=s2>&#34;tasks&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl><span class=n>app</span><span class=o>.</span><span class=n>include_router</span><span class=p>(</span><span class=n>sources</span><span class=o>.</span><span class=n>router</span><span class=p>,</span> <span class=n>prefix</span><span class=o>=</span><span class=s2>&#34;/api/sources&#34;</span><span class=p>,</span> <span class=n>tags</span><span class=o>=</span><span class=p>[</span><span class=s2>&#34;sources&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl><span class=n>app</span><span class=o>.</span><span class=n>include_router</span><span class=p>(</span><span class=n>results</span><span class=o>.</span><span class=n>router</span><span class=p>,</span> <span class=n>prefix</span><span class=o>=</span><span class=s2>&#34;/api/results&#34;</span><span class=p>,</span> <span class=n>tags</span><span class=o>=</span><span class=p>[</span><span class=s2>&#34;results&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl><span class=n>app</span><span class=o>.</span><span class=n>include_router</span><span class=p>(</span><span class=n>reviews</span><span class=o>.</span><span class=n>router</span><span class=p>,</span> <span class=n>prefix</span><span class=o>=</span><span class=s2>&#34;/api/reviews&#34;</span><span class=p>,</span> <span class=n>tags</span><span class=o>=</span><span class=p>[</span><span class=s2>&#34;reviews&#34;</span><span class=p>])</span>
+</span></span><span class=line><span class=cl><span class=n>app</span><span class=o>.</span><span class=n>include_router</span><span class=p>(</span><span class=n>metrics</span><span class=o>.</span><span class=n>router</span><span class=p>,</span> <span class=n>prefix</span><span class=o>=</span><span class=s2>&#34;/api/metrics&#34;</span><span class=p>,</span> <span class=n>tags</span><span class=o>=</span><span class=p>[</span><span class=s2>&#34;metrics&#34;</span><span class=p>])</span>
+</span></span></code></pre></td></tr></table></div></div><p>这样 Swagger 文档会按 tag 分组。</p><p>本地访问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>/docs
+</span></span><span class=line><span class=cl>/redoc
+</span></span></code></pre></td></tr></table></div></div><h2 id=四任务创建接口>四、任务创建接口</h2><h3 id=1-请求和响应-schema>1. 请求和响应 Schema</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>pydantic</span> <span class=kn>import</span> <span class=n>BaseModel</span><span class=p>,</span> <span class=n>Field</span><span class=p>,</span> <span class=n>HttpUrl</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>TaskCreateRequest</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>min_length</span><span class=o>=</span><span class=mi>1</span><span class=p>,</span> <span class=n>max_length</span><span class=o>=</span><span class=mi>64</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>url</span><span class=p>:</span> <span class=n>HttpUrl</span>
+</span></span><span class=line><span class=cl>    <span class=n>priority</span><span class=p>:</span> <span class=nb>int</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>default</span><span class=o>=</span><span class=mi>0</span><span class=p>,</span> <span class=n>ge</span><span class=o>=</span><span class=mi>0</span><span class=p>,</span> <span class=n>le</span><span class=o>=</span><span class=mi>100</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>TaskCreateResponse</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span></code></pre></td></tr></table></div></div><p>字段说明：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>source_id：数据源 ID。
+</span></span><span class=line><span class=cl>url：目标 URL。
+</span></span><span class=line><span class=cl>priority：任务优先级。
+</span></span></code></pre></td></tr></table></div></div><p>使用 <code>HttpUrl</code> 可以做基础 URL 校验。</p><p>但业务授权范围不能只靠类型校验。</p><p>还要在服务层检查：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>数据源是否存在。
+</span></span><span class=line><span class=cl>数据源是否启用。
+</span></span><span class=line><span class=cl>URL 是否在允许范围内。
+</span></span><span class=line><span class=cl>频率配置是否存在。
+</span></span></code></pre></td></tr></table></div></div><h3 id=2-post-apitasks>2. POST /api/tasks</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>fastapi</span> <span class=kn>import</span> <span class=n>APIRouter</span><span class=p>,</span> <span class=n>Depends</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>app.schemas.task</span> <span class=kn>import</span> <span class=n>TaskCreateRequest</span><span class=p>,</span> <span class=n>TaskCreateResponse</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>app.services.task_service</span> <span class=kn>import</span> <span class=n>TaskService</span><span class=p>,</span> <span class=n>get_task_service</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>router</span> <span class=o>=</span> <span class=n>APIRouter</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@router.post</span><span class=p>(</span><span class=s2>&#34;&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=n>TaskCreateResponse</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>create_task</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>request</span><span class=p>:</span> <span class=n>TaskCreateRequest</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>TaskService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_task_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>TaskCreateResponse</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>task</span> <span class=o>=</span> <span class=n>service</span><span class=o>.</span><span class=n>create_task</span><span class=p>(</span><span class=n>request</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>TaskCreateResponse</span><span class=p>(</span><span class=n>task_id</span><span class=o>=</span><span class=n>task</span><span class=o>.</span><span class=n>task_id</span><span class=p>,</span> <span class=n>status</span><span class=o>=</span><span class=n>task</span><span class=o>.</span><span class=n>status</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>服务层负责：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>检查数据源。
+</span></span><span class=line><span class=cl>规范化 URL。
+</span></span><span class=line><span class=cl>计算 url_hash。
+</span></span><span class=line><span class=cl>写入任务表。
+</span></span><span class=line><span class=cl>推送队列。
+</span></span><span class=line><span class=cl>写审计日志。
+</span></span></code></pre></td></tr></table></div></div><p>不要把这些逻辑都写在路由函数里。</p><p>路由应该薄，服务层负责业务。</p><h2 id=五任务列表接口>五、任务列表接口</h2><h3 id=1-查询参数>1. 查询参数</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>fastapi</span> <span class=kn>import</span> <span class=n>Query</span>
+</span></span><span class=line><span class=cl><span class=kn>from</span> <span class=nn>pydantic</span> <span class=kn>import</span> <span class=n>BaseModel</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>TaskListItem</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>url</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>priority</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>retry_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>created_at</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>updated_at</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>TaskListResponse</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>total</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>items</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=n>TaskListItem</span><span class=p>]</span>
+</span></span></code></pre></td></tr></table></div></div><p>接口：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=nd>@router.get</span><span class=p>(</span><span class=s2>&#34;&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=n>TaskListResponse</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>list_tasks</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>page</span><span class=p>:</span> <span class=nb>int</span> <span class=o>=</span> <span class=n>Query</span><span class=p>(</span><span class=n>default</span><span class=o>=</span><span class=mi>1</span><span class=p>,</span> <span class=n>ge</span><span class=o>=</span><span class=mi>1</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>size</span><span class=p>:</span> <span class=nb>int</span> <span class=o>=</span> <span class=n>Query</span><span class=p>(</span><span class=n>default</span><span class=o>=</span><span class=mi>20</span><span class=p>,</span> <span class=n>ge</span><span class=o>=</span><span class=mi>1</span><span class=p>,</span> <span class=n>le</span><span class=o>=</span><span class=mi>100</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>TaskService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_task_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>TaskListResponse</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>service</span><span class=o>.</span><span class=n>list_tasks</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=n>status</span><span class=o>=</span><span class=n>status</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>source_id</span><span class=o>=</span><span class=n>source_id</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>page</span><span class=o>=</span><span class=n>page</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>size</span><span class=o>=</span><span class=n>size</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>常见过滤条件：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>status。
+</span></span><span class=line><span class=cl>source_id。
+</span></span><span class=line><span class=cl>failure_type。
+</span></span><span class=line><span class=cl>created_at 范围。
+</span></span><span class=line><span class=cl>updated_at 范围。
+</span></span></code></pre></td></tr></table></div></div><p>分页要限制 size。</p><p>不要允许一次查询几十万条。</p><h2 id=六任务详情接口>六、任务详情接口</h2><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>TaskDetailResponse</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>url</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>priority</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>retry_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_retry_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>next_run_at</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>failure_type</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>last_error</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>created_at</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>updated_at</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@router.get</span><span class=p>(</span><span class=s2>&#34;/</span><span class=si>{task_id}</span><span class=s2>&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=n>TaskDetailResponse</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>get_task</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>TaskService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_task_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>TaskDetailResponse</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>service</span><span class=o>.</span><span class=n>get_task</span><span class=p>(</span><span class=n>task_id</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>任务详情要展示：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>当前状态。
+</span></span><span class=line><span class=cl>失败原因。
+</span></span><span class=line><span class=cl>重试次数。
+</span></span><span class=line><span class=cl>下一次执行时间。
+</span></span><span class=line><span class=cl>最近错误。
+</span></span><span class=line><span class=cl>创建和更新时间。
+</span></span></code></pre></td></tr></table></div></div><p>如果管理后台要做排查，还可以关联：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>最近日志。
+</span></span><span class=line><span class=cl>诊断结果。
+</span></span><span class=line><span class=cl>失败截图。
+</span></span><span class=line><span class=cl>人工复核记录。
+</span></span></code></pre></td></tr></table></div></div><h2 id=七任务操作接口>七、任务操作接口</h2><p>任务操作常见有：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>暂停。
+</span></span><span class=line><span class=cl>恢复。
+</span></span><span class=line><span class=cl>重试。
+</span></span><span class=line><span class=cl>取消。
+</span></span><span class=line><span class=cl>进入人工复核。
+</span></span></code></pre></td></tr></table></div></div><h3 id=1-暂停任务>1. 暂停任务</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>TaskActionResponse</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>message</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@router.post</span><span class=p>(</span><span class=s2>&#34;/</span><span class=si>{task_id}</span><span class=s2>/pause&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=n>TaskActionResponse</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>pause_task</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>TaskService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_task_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>TaskActionResponse</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>task</span> <span class=o>=</span> <span class=n>service</span><span class=o>.</span><span class=n>pause_task</span><span class=p>(</span><span class=n>task_id</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>TaskActionResponse</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=n>task_id</span><span class=o>=</span><span class=n>task</span><span class=o>.</span><span class=n>task_id</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>status</span><span class=o>=</span><span class=n>task</span><span class=o>.</span><span class=n>status</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>message</span><span class=o>=</span><span class=s2>&#34;task paused&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=2-重试任务>2. 重试任务</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=nd>@router.post</span><span class=p>(</span><span class=s2>&#34;/</span><span class=si>{task_id}</span><span class=s2>/retry&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=n>TaskActionResponse</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>retry_task</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>TaskService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_task_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>TaskActionResponse</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>task</span> <span class=o>=</span> <span class=n>service</span><span class=o>.</span><span class=n>retry_task</span><span class=p>(</span><span class=n>task_id</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>TaskActionResponse</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=n>task_id</span><span class=o>=</span><span class=n>task</span><span class=o>.</span><span class=n>task_id</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>status</span><span class=o>=</span><span class=n>task</span><span class=o>.</span><span class=n>status</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>message</span><span class=o>=</span><span class=s2>&#34;task queued for retry&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>重试前要检查：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务是否允许重试。
+</span></span><span class=line><span class=cl>是否超过最大重试次数。
+</span></span><span class=line><span class=cl>是否属于权限、验证码、风控等需要复核状态。
+</span></span><span class=line><span class=cl>数据源是否启用。
+</span></span></code></pre></td></tr></table></div></div><p>不要让 API 无条件重试任何任务。</p><h3 id=3-取消任务>3. 取消任务</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=nd>@router.post</span><span class=p>(</span><span class=s2>&#34;/</span><span class=si>{task_id}</span><span class=s2>/cancel&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=n>TaskActionResponse</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>cancel_task</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>TaskService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_task_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>TaskActionResponse</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>task</span> <span class=o>=</span> <span class=n>service</span><span class=o>.</span><span class=n>cancel_task</span><span class=p>(</span><span class=n>task_id</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>TaskActionResponse</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=n>task_id</span><span class=o>=</span><span class=n>task</span><span class=o>.</span><span class=n>task_id</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>status</span><span class=o>=</span><span class=n>task</span><span class=o>.</span><span class=n>status</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>message</span><span class=o>=</span><span class=s2>&#34;task canceled&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>取消操作应该写审计日志。</p><p>因为它改变任务生命周期。</p><h2 id=八数据源配置接口>八、数据源配置接口</h2><p>数据源配置决定任务边界。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>SourceCreateRequest</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>min_length</span><span class=o>=</span><span class=mi>1</span><span class=p>,</span> <span class=n>max_length</span><span class=o>=</span><span class=mi>64</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>name</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>base_url</span><span class=p>:</span> <span class=n>HttpUrl</span>
+</span></span><span class=line><span class=cl>    <span class=n>allowed_paths</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>default_factory</span><span class=o>=</span><span class=nb>list</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_requests_per_minute</span><span class=p>:</span> <span class=nb>int</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>default</span><span class=o>=</span><span class=mi>60</span><span class=p>,</span> <span class=n>ge</span><span class=o>=</span><span class=mi>1</span><span class=p>,</span> <span class=n>le</span><span class=o>=</span><span class=mi>600</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>enabled</span><span class=p>:</span> <span class=nb>bool</span> <span class=o>=</span> <span class=kc>True</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>SourceResponse</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>name</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>base_url</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>allowed_paths</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_requests_per_minute</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>enabled</span><span class=p>:</span> <span class=nb>bool</span>
+</span></span></code></pre></td></tr></table></div></div><p>创建数据源：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=nd>@router.post</span><span class=p>(</span><span class=s2>&#34;&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=n>SourceResponse</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>create_source</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>request</span><span class=p>:</span> <span class=n>SourceCreateRequest</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>SourceService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_source_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>SourceResponse</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>service</span><span class=o>.</span><span class=n>create_source</span><span class=p>(</span><span class=n>request</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>更新数据源：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>SourceUpdateRequest</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>name</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>allowed_paths</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=nb>str</span><span class=p>]</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>max_requests_per_minute</span><span class=p>:</span> <span class=nb>int</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>default</span><span class=o>=</span><span class=kc>None</span><span class=p>,</span> <span class=n>ge</span><span class=o>=</span><span class=mi>1</span><span class=p>,</span> <span class=n>le</span><span class=o>=</span><span class=mi>600</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>enabled</span><span class=p>:</span> <span class=nb>bool</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@router.patch</span><span class=p>(</span><span class=s2>&#34;/</span><span class=si>{source_id}</span><span class=s2>&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=n>SourceResponse</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>update_source</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>request</span><span class=p>:</span> <span class=n>SourceUpdateRequest</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>SourceService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_source_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>SourceResponse</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>service</span><span class=o>.</span><span class=n>update_source</span><span class=p>(</span><span class=n>source_id</span><span class=p>,</span> <span class=n>request</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>数据源配置要包含：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>授权范围。
+</span></span><span class=line><span class=cl>允许路径。
+</span></span><span class=line><span class=cl>频率上限。
+</span></span><span class=line><span class=cl>是否启用。
+</span></span><span class=line><span class=cl>负责人。
+</span></span><span class=line><span class=cl>备注。
+</span></span></code></pre></td></tr></table></div></div><p>这体现合规边界。</p><h2 id=九结果查询接口>九、结果查询接口</h2><p>结果查询要支持分页和过滤。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>ResultItem</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>item_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>title</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>canonical_url</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>content_hash</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>extraction_status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>confidence</span><span class=p>:</span> <span class=nb>float</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>created_at</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ResultListResponse</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>total</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>items</span><span class=p>:</span> <span class=nb>list</span><span class=p>[</span><span class=n>ResultItem</span><span class=p>]</span>
+</span></span></code></pre></td></tr></table></div></div><p>接口：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=nd>@router.get</span><span class=p>(</span><span class=s2>&#34;&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=n>ResultListResponse</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>list_results</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>keyword</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>page</span><span class=p>:</span> <span class=nb>int</span> <span class=o>=</span> <span class=n>Query</span><span class=p>(</span><span class=n>default</span><span class=o>=</span><span class=mi>1</span><span class=p>,</span> <span class=n>ge</span><span class=o>=</span><span class=mi>1</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>size</span><span class=p>:</span> <span class=nb>int</span> <span class=o>=</span> <span class=n>Query</span><span class=p>(</span><span class=n>default</span><span class=o>=</span><span class=mi>20</span><span class=p>,</span> <span class=n>ge</span><span class=o>=</span><span class=mi>1</span><span class=p>,</span> <span class=n>le</span><span class=o>=</span><span class=mi>100</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>ResultService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_result_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>ResultListResponse</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>service</span><span class=o>.</span><span class=n>list_results</span><span class=p>(</span><span class=n>source_id</span><span class=p>,</span> <span class=n>keyword</span><span class=p>,</span> <span class=n>page</span><span class=p>,</span> <span class=n>size</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>详情接口：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=nd>@router.get</span><span class=p>(</span><span class=s2>&#34;/</span><span class=si>{item_id}</span><span class=s2>&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=n>ResultItem</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>get_result</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>item_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>ResultService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_result_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>ResultItem</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>service</span><span class=o>.</span><span class=n>get_result</span><span class=p>(</span><span class=n>item_id</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>结果接口不应该暴露敏感字段。</p><p>如果有原始 HTML、Cookie、Token、账号信息，应做脱敏或限制权限。</p><h2 id=十人工复核接口>十、人工复核接口</h2><p>人工复核是爬虫系统的安全阀。</p><p>复核场景包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>验证码。
+</span></span><span class=line><span class=cl>权限异常。
+</span></span><span class=line><span class=cl>风控提示。
+</span></span><span class=line><span class=cl>字段严重缺失。
+</span></span><span class=line><span class=cl>LLM 低置信度。
+</span></span><span class=line><span class=cl>Agent 低置信度诊断。
+</span></span><span class=line><span class=cl>数据质量异常。
+</span></span></code></pre></td></tr></table></div></div><p>Schema：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>ReviewItem</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>review_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>reason</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>page_title</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>screenshot_url</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>created_at</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>ReviewDecisionRequest</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>decision</span><span class=p>:</span> <span class=nb>str</span> <span class=o>=</span> <span class=n>Field</span><span class=p>(</span><span class=n>pattern</span><span class=o>=</span><span class=s2>&#34;^(approve|reject|retry|dead)$&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=n>note</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span>
+</span></span></code></pre></td></tr></table></div></div><p>列表接口：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=nd>@router.get</span><span class=p>(</span><span class=s2>&#34;&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=nb>list</span><span class=p>[</span><span class=n>ReviewItem</span><span class=p>])</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>list_reviews</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span> <span class=o>=</span> <span class=kc>None</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>ReviewService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_review_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>list</span><span class=p>[</span><span class=n>ReviewItem</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>service</span><span class=o>.</span><span class=n>list_reviews</span><span class=p>(</span><span class=n>status</span><span class=o>=</span><span class=n>status</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>处理接口：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=nd>@router.post</span><span class=p>(</span><span class=s2>&#34;/</span><span class=si>{review_id}</span><span class=s2>/decision&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>decide_review</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>review_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>request</span><span class=p>:</span> <span class=n>ReviewDecisionRequest</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>ReviewService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_review_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>dict</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=o>.</span><span class=n>decide</span><span class=p>(</span><span class=n>review_id</span><span class=p>,</span> <span class=n>request</span><span class=o>.</span><span class=n>decision</span><span class=p>,</span> <span class=n>request</span><span class=o>.</span><span class=n>note</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;review_id&#34;</span><span class=p>:</span> <span class=n>review_id</span><span class=p>,</span> <span class=s2>&#34;status&#34;</span><span class=p>:</span> <span class=s2>&#34;processed&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>复核动作要写审计日志。</p><p>特别是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>恢复任务。
+</span></span><span class=line><span class=cl>暂停数据源。
+</span></span><span class=line><span class=cl>标记 dead。
+</span></span><span class=line><span class=cl>修改解析规则。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十一日志查询接口>十一、日志查询接口</h2><p>日志接口用于排查任务。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>TaskLogItem</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>level</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>event</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>message</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>created_at</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@router.get</span><span class=p>(</span><span class=s2>&#34;/tasks/</span><span class=si>{task_id}</span><span class=s2>&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=nb>list</span><span class=p>[</span><span class=n>TaskLogItem</span><span class=p>])</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>get_task_logs</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>limit</span><span class=p>:</span> <span class=nb>int</span> <span class=o>=</span> <span class=n>Query</span><span class=p>(</span><span class=n>default</span><span class=o>=</span><span class=mi>100</span><span class=p>,</span> <span class=n>ge</span><span class=o>=</span><span class=mi>1</span><span class=p>,</span> <span class=n>le</span><span class=o>=</span><span class=mi>500</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>LogService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_log_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>list</span><span class=p>[</span><span class=n>TaskLogItem</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>service</span><span class=o>.</span><span class=n>get_task_logs</span><span class=p>(</span><span class=n>task_id</span><span class=p>,</span> <span class=n>limit</span><span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>日志建议记录事件，而不是只记录字符串。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>task_created。
+</span></span><span class=line><span class=cl>task_queued。
+</span></span><span class=line><span class=cl>fetch_started。
+</span></span><span class=line><span class=cl>fetch_succeeded。
+</span></span><span class=line><span class=cl>fetch_failed。
+</span></span><span class=line><span class=cl>parse_failed。
+</span></span><span class=line><span class=cl>retry_scheduled。
+</span></span><span class=line><span class=cl>manual_review_created。
+</span></span></code></pre></td></tr></table></div></div><p>日志要避免输出：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>完整 Cookie。
+</span></span><span class=line><span class=cl>完整 Token。
+</span></span><span class=line><span class=cl>账号密码。
+</span></span><span class=line><span class=cl>手机号。
+</span></span><span class=line><span class=cl>身份证号。
+</span></span><span class=line><span class=cl>未经脱敏的敏感数据。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十二指标接口>十二、指标接口</h2><p>管理平台需要总览指标。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>MetricsSummary</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>pending_tasks</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>queued_tasks</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>running_tasks</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>succeeded_tasks</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>failed_tasks</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>dead_tasks</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>review_tasks</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>queue_length</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>retry_queue_length</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>worker_alive_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@router.get</span><span class=p>(</span><span class=s2>&#34;/summary&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=n>MetricsSummary</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>get_metrics_summary</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>MetricsService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_metrics_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=n>MetricsSummary</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>service</span><span class=o>.</span><span class=n>get_summary</span><span class=p>()</span>
+</span></span></code></pre></td></tr></table></div></div><p>常见指标：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务总量。
+</span></span><span class=line><span class=cl>队列积压。
+</span></span><span class=line><span class=cl>成功率。
+</span></span><span class=line><span class=cl>失败率。
+</span></span><span class=line><span class=cl>解析失败率。
+</span></span><span class=line><span class=cl>人工复核数量。
+</span></span><span class=line><span class=cl>死信数量。
+</span></span><span class=line><span class=cl>Worker 心跳。
+</span></span><span class=line><span class=cl>各数据源 403 / 429 数量。
+</span></span><span class=line><span class=cl>LLM 调用成功率。
+</span></span></code></pre></td></tr></table></div></div><p>这些指标可以用于：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>管理后台展示。
+</span></span><span class=line><span class=cl>Prometheus 抓取。
+</span></span><span class=line><span class=cl>告警规则。
+</span></span><span class=line><span class=cl>Agent 诊断输入。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十三worker-状态接口>十三、Worker 状态接口</h2><p>Worker 状态来自 Redis 心跳。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>class</span> <span class=nc>WorkerStatus</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>worker_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>hostname</span><span class=p>:</span> <span class=nb>str</span> <span class=o>|</span> <span class=kc>None</span>
+</span></span><span class=line><span class=cl>    <span class=n>status</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>running_count</span><span class=p>:</span> <span class=nb>int</span>
+</span></span><span class=line><span class=cl>    <span class=n>last_seen</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@router.get</span><span class=p>(</span><span class=s2>&#34;/workers&#34;</span><span class=p>,</span> <span class=n>response_model</span><span class=o>=</span><span class=nb>list</span><span class=p>[</span><span class=n>WorkerStatus</span><span class=p>])</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>list_workers</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>WorkerService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_worker_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>list</span><span class=p>[</span><span class=n>WorkerStatus</span><span class=p>]:</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>service</span><span class=o>.</span><span class=n>list_workers</span><span class=p>()</span>
+</span></span></code></pre></td></tr></table></div></div><p>展示字段：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>worker_id。
+</span></span><span class=line><span class=cl>hostname。
+</span></span><span class=line><span class=cl>last_seen。
+</span></span><span class=line><span class=cl>running_count。
+</span></span><span class=line><span class=cl>current_task_id。
+</span></span><span class=line><span class=cl>version。
+</span></span></code></pre></td></tr></table></div></div><p>如果 Worker 长时间无心跳，管理平台可以提示：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Worker 可能离线。
+</span></span><span class=line><span class=cl>检查卡住的 running 任务。
+</span></span><span class=line><span class=cl>考虑触发恢复流程。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十四统一错误响应>十四、统一错误响应</h2><p>FastAPI 可以通过 HTTPException 返回错误。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>fastapi</span> <span class=kn>import</span> <span class=n>HTTPException</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>get_task_or_404</span><span class=p>(</span><span class=n>task_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>task</span> <span class=o>=</span> <span class=n>find_task</span><span class=p>(</span><span class=n>task_id</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>task</span> <span class=ow>is</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>raise</span> <span class=n>HTTPException</span><span class=p>(</span><span class=n>status_code</span><span class=o>=</span><span class=mi>404</span><span class=p>,</span> <span class=n>detail</span><span class=o>=</span><span class=s2>&#34;task not found&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>task</span>
+</span></span></code></pre></td></tr></table></div></div><p>常见错误码：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>400：参数不合法或状态流转不允许。
+</span></span><span class=line><span class=cl>401：未登录。
+</span></span><span class=line><span class=cl>403：无权限。
+</span></span><span class=line><span class=cl>404：资源不存在。
+</span></span><span class=line><span class=cl>409：重复任务或状态冲突。
+</span></span><span class=line><span class=cl>429：管理接口被限流。
+</span></span><span class=line><span class=cl>500：服务内部错误。
+</span></span></code></pre></td></tr></table></div></div><p>状态冲突可以用 409。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务已经 dead，不能直接 retry。
+</span></span><span class=line><span class=cl>任务已经 running，不能重复入队。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十五鉴权和权限控制>十五、鉴权和权限控制</h2><p>管理平台必须有鉴权。</p><p>至少要区分：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>只读用户。
+</span></span><span class=line><span class=cl>任务操作用户。
+</span></span><span class=line><span class=cl>数据源管理员。
+</span></span><span class=line><span class=cl>系统管理员。
+</span></span></code></pre></td></tr></table></div></div><p>示例依赖：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>fastapi</span> <span class=kn>import</span> <span class=n>Depends</span><span class=p>,</span> <span class=n>HTTPException</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>CurrentUser</span><span class=p>(</span><span class=n>BaseModel</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>user_id</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>role</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>require_admin</span><span class=p>(</span><span class=n>user</span><span class=p>:</span> <span class=n>CurrentUser</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_current_user</span><span class=p>))</span> <span class=o>-&gt;</span> <span class=n>CurrentUser</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=n>user</span><span class=o>.</span><span class=n>role</span> <span class=o>!=</span> <span class=s2>&#34;admin&#34;</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=k>raise</span> <span class=n>HTTPException</span><span class=p>(</span><span class=n>status_code</span><span class=o>=</span><span class=mi>403</span><span class=p>,</span> <span class=n>detail</span><span class=o>=</span><span class=s2>&#34;permission denied&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=n>user</span>
+</span></span></code></pre></td></tr></table></div></div><p>在敏感操作上使用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=nd>@router.post</span><span class=p>(</span><span class=s2>&#34;/</span><span class=si>{source_id}</span><span class=s2>/pause&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>pause_source</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>source_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>user</span><span class=p>:</span> <span class=n>CurrentUser</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>require_admin</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=p>:</span> <span class=n>SourceService</span> <span class=o>=</span> <span class=n>Depends</span><span class=p>(</span><span class=n>get_source_service</span><span class=p>),</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=nb>dict</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>service</span><span class=o>.</span><span class=n>pause_source</span><span class=p>(</span><span class=n>source_id</span><span class=p>,</span> <span class=n>operator</span><span class=o>=</span><span class=n>user</span><span class=o>.</span><span class=n>user_id</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;source_id&#34;</span><span class=p>:</span> <span class=n>source_id</span><span class=p>,</span> <span class=s2>&#34;status&#34;</span><span class=p>:</span> <span class=s2>&#34;paused&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>敏感操作包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>暂停数据源。
+</span></span><span class=line><span class=cl>恢复数据源。
+</span></span><span class=line><span class=cl>批量重试。
+</span></span><span class=line><span class=cl>修改频率上限。
+</span></span><span class=line><span class=cl>处理人工复核。
+</span></span><span class=line><span class=cl>删除任务。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十六审计日志>十六、审计日志</h2><p>管理平台所有重要操作都要审计。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=k>def</span> <span class=nf>audit</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>    <span class=n>operator</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>action</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>resource_type</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>resource_id</span><span class=p>:</span> <span class=nb>str</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=n>detail</span><span class=p>:</span> <span class=nb>dict</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>)</span> <span class=o>-&gt;</span> <span class=kc>None</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>    <span class=n>save_audit_log</span><span class=p>(</span>
+</span></span><span class=line><span class=cl>        <span class=n>operator</span><span class=o>=</span><span class=n>operator</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>action</span><span class=o>=</span><span class=n>action</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>resource_type</span><span class=o>=</span><span class=n>resource_type</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>resource_id</span><span class=o>=</span><span class=n>resource_id</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=n>detail</span><span class=o>=</span><span class=n>detail</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>)</span>
+</span></span></code></pre></td></tr></table></div></div><p>需要审计的动作：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>创建任务。
+</span></span><span class=line><span class=cl>暂停任务。
+</span></span><span class=line><span class=cl>重试任务。
+</span></span><span class=line><span class=cl>取消任务。
+</span></span><span class=line><span class=cl>创建数据源。
+</span></span><span class=line><span class=cl>修改数据源频率。
+</span></span><span class=line><span class=cl>暂停数据源。
+</span></span><span class=line><span class=cl>恢复数据源。
+</span></span><span class=line><span class=cl>处理复核。
+</span></span><span class=line><span class=cl>修改解析规则。
+</span></span></code></pre></td></tr></table></div></div><p>审计日志回答的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>谁在什么时候对什么资源做了什么操作。
+</span></span></code></pre></td></tr></table></div></div><p>这是工程系统非常重要的能力。</p><h2 id=十七接口设计常见坑点>十七、接口设计常见坑点</h2><h3 id=1-api-直接执行爬虫>1. API 直接执行爬虫</h3><p>错误做法：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>POST /api/crawl
+</span></span><span class=line><span class=cl>接口里直接请求页面、解析、入库，直到完成才返回。
+</span></span></code></pre></td></tr></table></div></div><p>问题：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>请求容易超时。
+</span></span><span class=line><span class=cl>无法排队。
+</span></span><span class=line><span class=cl>无法限流。
+</span></span><span class=line><span class=cl>无法恢复。
+</span></span><span class=line><span class=cl>无法观察中间状态。
+</span></span></code></pre></td></tr></table></div></div><p>更好做法：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>API 创建任务并返回 task_id。
+</span></span><span class=line><span class=cl>Worker 异步执行。
+</span></span><span class=line><span class=cl>前端轮询或订阅任务状态。
+</span></span></code></pre></td></tr></table></div></div><h3 id=2-没有分页>2. 没有分页</h3><p>结果和任务列表必须分页。</p><p>否则大数据量会拖垮接口。</p><h3 id=3-没有状态流转校验>3. 没有状态流转校验</h3><p>任何状态都能 retry 或 pause，会导致状态混乱。</p><h3 id=4-缺少审计日志>4. 缺少审计日志</h3><p>管理平台操作不可追溯。</p><h3 id=5-暴露敏感信息>5. 暴露敏感信息</h3><p>日志、结果、失败样本中可能包含 Token、Cookie、账号信息。</p><p>接口返回前要脱敏。</p><h3 id=6-管理接口没有权限控制>6. 管理接口没有权限控制</h3><p>暂停数据源、批量重试、修改频率都属于高风险操作。</p><p>必须鉴权。</p><h3 id=7-swagger-文档没有-schema>7. Swagger 文档没有 Schema</h3><p>如果不用 Pydantic 明确定义请求响应，接口文档会变得混乱。</p><p>FastAPI 的优势也发挥不出来。</p><h2 id=十八面试表达>十八、面试表达</h2><p>如果面试官问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>FastAPI 在爬虫系统里做什么？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>FastAPI 适合作为管理平台接口层，负责任务创建、状态查询、结果分页、数据源配置、人工复核、日志和指标展示。它不直接执行耗时爬虫，而是写任务表、推送队列，由 Worker 异步执行。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务创建接口怎么设计？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>POST /api/tasks 接收 source_id、url、priority，用 Pydantic 校验基础参数，服务层检查数据源授权范围，规范化 URL，计算 url_hash，写入任务表并推送 Redis 队列，最后返回 task_id 和初始状态。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>如何设计任务操作接口？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会提供 pause、retry、cancel、manual_review 等动作接口，但每个动作都要做状态流转校验和权限校验。比如 dead 任务不能随意恢复，验证码和权限异常任务不能直接自动重试，敏感操作要写审计日志。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>管理平台如何体现可观测性？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会提供日志查询、任务状态统计、队列长度、重试队列长度、死信数量、Worker 心跳、数据源失败率、解析失败率和人工复核数量等指标接口。这些指标可以展示在后台，也可以接 Prometheus 和告警系统。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>接口安全怎么做？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>管理平台要有鉴权和权限控制，区分只读用户、任务操作用户、数据源管理员和系统管理员。暂停数据源、批量重试、修改频率、处理复核等敏感操作必须授权并写审计日志。接口返回日志和失败样本时要脱敏 Cookie、Token、账号等敏感信息。</p></blockquote><h2 id=十九总结>十九、总结</h2><p>本文整理了 FastAPI 管理平台接口设计。</p><p>核心结论包括：</p><ul><li>FastAPI 适合作为爬虫管理平台，不应该直接执行耗时爬虫。</li><li>管理平台接口应围绕任务、数据源、结果、复核、日志、指标和 Worker 状态设计。</li><li><code>POST /api/tasks</code> 创建任务后返回 task_id，实际执行交给 Worker。</li><li>任务列表和结果列表必须分页，并支持状态、数据源、失败类型等过滤。</li><li>任务操作接口要做状态流转校验，不能无条件 retry、pause 或 cancel。</li><li>数据源接口要体现授权范围、允许路径、频率上限和启停状态。</li><li>人工复核接口是处理验证码、权限异常、低置信度和数据质量问题的安全阀。</li><li>日志接口要结构化，避免输出敏感信息。</li><li>指标接口要覆盖任务状态、队列积压、Worker 心跳、失败率和复核数量。</li><li>管理平台必须有鉴权、权限控制和审计日志。</li><li>FastAPI 的 Pydantic Schema 可以同时作为校验层和接口文档契约。</li></ul><p>下一篇扩展篇，我们进入扩展篇收尾：</p><blockquote><p>LLM 与 Agent 数据采集接口设计，包括 Schema 抽取、JSON 校验、置信度、人工复核、Agent 诊断、动作枚举和审计日志。</p></blockquote></section><footer class=article-footer><section class=article-tags><a href=/tags/python/>Python</a>
+<a href=/tags/fastapi/>FastAPI</a>
+<a href=/tags/%E7%88%AC%E8%99%AB/>爬虫</a>
+<a href=/tags/%E5%90%8E%E7%AB%AF%E6%8E%A5%E5%8F%A3/>后端接口</a>
+<a href=/tags/%E4%BB%BB%E5%8A%A1%E7%AE%A1%E7%90%86/>任务管理</a>
+<a href=/tags/api/>API</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/fastapi-crawler-management-platform/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 24：FastAPI 构建爬虫管理平台</h2></div></a></article><article><a href=/p/crawler-llm-agent-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 36：LLM 与 Agent 数据采集接口设计</h2></div></a></article><article><a href=/p/crawler-storage-task-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 34：存储、队列与任务状态常用接口</h2></div></a></article><article><a href=/p/crawler-browser-automation-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 33：浏览器自动化常用 API 速查</h2></div></a></article><article><a href=/p/crawler-http-client-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 31：HTTP 客户端常用 API 速查</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

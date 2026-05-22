@@ -1,0 +1,816 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇文章里，我们用 FastAPI 构建了一个爬虫管理平台。\n核心结论是：\n1 2 3 FastAPI 适合作为管理接口层。 它负责任务创建、状态查询、数据源配置、结果查询和人工复核。 真正的采集任务应交给队列和 Worker 异步执行。 有了接口和 Worker 之后，下一步就是部署。\n很多爬虫项目写到本地能跑就结束了。\n但面试和真实工程更关心：\n1 2 3 4 5 6 7 如何部署到 Linux 服务器？ 如何管理 Python 依赖？ 如何启动 API、Worker、MySQL、Redis？ 如何保存日志？ 如何定时执行？ 如何重启恢复？ 如何用 Docker 交付？ 本文讨论：\n如何把一个 Python 爬虫系统部署到 Linux 与 Docker 环境中，包括虚拟环境、配置管理、Dockerfile、docker-compose、MySQL / Redis、日志、定时任务和守护进程。\n"><title>大模型时代的数据采集工程 25：Docker 与 Linux 部署爬虫系统</title><link rel=canonical href=https://tkdwbiao.github.io/p/docker-linux-deploy-crawler-system/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="大模型时代的数据采集工程 25：Docker 与 Linux 部署爬虫系统"><meta property='og:description' content="上一篇文章里，我们用 FastAPI 构建了一个爬虫管理平台。\n核心结论是：\n1 2 3 FastAPI 适合作为管理接口层。 它负责任务创建、状态查询、数据源配置、结果查询和人工复核。 真正的采集任务应交给队列和 Worker 异步执行。 有了接口和 Worker 之后，下一步就是部署。\n很多爬虫项目写到本地能跑就结束了。\n但面试和真实工程更关心：\n1 2 3 4 5 6 7 如何部署到 Linux 服务器？ 如何管理 Python 依赖？ 如何启动 API、Worker、MySQL、Redis？ 如何保存日志？ 如何定时执行？ 如何重启恢复？ 如何用 Docker 交付？ 本文讨论：\n如何把一个 Python 爬虫系统部署到 Linux 与 Docker 环境中，包括虚拟环境、配置管理、Dockerfile、docker-compose、MySQL / Redis、日志、定时任务和守护进程。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/docker-linux-deploy-crawler-system/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='Python'><meta property='article:tag' content='爬虫'><meta property='article:tag' content='Docker'><meta property='article:tag' content='Linux'><meta property='article:tag' content='部署'><meta property='article:tag' content='运维'><meta property='article:published_time' content='2026-01-28T10:00:00+08:00'><meta property='article:modified_time' content='2026-01-28T10:00:00+08:00'><meta name=twitter:title content="大模型时代的数据采集工程 25：Docker 与 Linux 部署爬虫系统"><meta name=twitter:description content="上一篇文章里，我们用 FastAPI 构建了一个爬虫管理平台。\n核心结论是：\n1 2 3 FastAPI 适合作为管理接口层。 它负责任务创建、状态查询、数据源配置、结果查询和人工复核。 真正的采集任务应交给队列和 Worker 异步执行。 有了接口和 Worker 之后，下一步就是部署。\n很多爬虫项目写到本地能跑就结束了。\n但面试和真实工程更关心：\n1 2 3 4 5 6 7 如何部署到 Linux 服务器？ 如何管理 Python 依赖？ 如何启动 API、Worker、MySQL、Redis？ 如何保存日志？ 如何定时执行？ 如何重启恢复？ 如何用 Docker 交付？ 本文讨论：\n如何把一个 Python 爬虫系统部署到 Linux 与 Docker 环境中，包括虚拟环境、配置管理、Dockerfile、docker-compose、MySQL / Redis、日志、定时任务和守护进程。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一前言>一、前言</a></li><li><a href=#二部署前要明确系统组成>二、部署前要明确系统组成</a></li><li><a href=#三linux-基础目录规划>三、Linux 基础目录规划</a></li><li><a href=#四python-虚拟环境>四、Python 虚拟环境</a></li><li><a href=#五配置管理>五、配置管理</a></li><li><a href=#六启动-fastapi>六、启动 FastAPI</a></li><li><a href=#七启动-worker>七、启动 Worker</a></li><li><a href=#八用-systemd-守护进程>八、用 systemd 守护进程</a></li><li><a href=#九日志管理>九、日志管理</a></li><li><a href=#十定时任务>十、定时任务</a></li><li><a href=#十一dockerfile>十一、Dockerfile</a></li><li><a href=#十二docker-compose-编排>十二、docker-compose 编排</a></li><li><a href=#十三mysql-与-redis-部署注意事项>十三、MySQL 与 Redis 部署注意事项</a></li><li><a href=#十四数据卷和文件存储>十四、数据卷和文件存储</a></li><li><a href=#十五健康检查>十五、健康检查</a></li><li><a href=#十六部署流程>十六、部署流程</a></li><li><a href=#十七监控与告警>十七、监控与告警</a></li><li><a href=#十八安全与合规部署>十八、安全与合规部署</a></li><li><a href=#十九llm--agent-在运维中的作用>十九、LLM / Agent 在运维中的作用</a></li><li><a href=#二十常见错误写法>二十、常见错误写法</a><ol><li><a href=#1-把配置写死在代码里>1. 把配置写死在代码里</a></li><li><a href=#2-不固定依赖版本>2. 不固定依赖版本</a></li><li><a href=#3-容器里保存重要数据>3. 容器里保存重要数据</a></li><li><a href=#4-没有进程守护>4. 没有进程守护</a></li><li><a href=#5-没有日志和监控>5. 没有日志和监控</a></li><li><a href=#6-生产环境开启调试模式>6. 生产环境开启调试模式</a></li><li><a href=#7-redis-和-mysql-暴露公网>7. Redis 和 MySQL 暴露公网</a></li><li><a href=#8-不验证部署结果>8. 不验证部署结果</a></li></ol></li><li><a href=#二十一面试表达>二十一、面试表达</a></li><li><a href=#二十二总结>二十二、总结</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/%E7%88%AC%E8%99%AB%E7%B3%BB%E5%88%97/ style=background-color:#efcfbe;color:#3d1f0f>爬虫系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/docker-linux-deploy-crawler-system/>大模型时代的数据采集工程 25：Docker 与 Linux 部署爬虫系统</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-01-28T10:00:00+08:00>2026-01-28 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 12 分钟</time></div></footer></div></header><section class=article-content><p>上一篇文章里，我们用 FastAPI 构建了一个爬虫管理平台。</p><p>核心结论是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>FastAPI 适合作为管理接口层。
+</span></span><span class=line><span class=cl>它负责任务创建、状态查询、数据源配置、结果查询和人工复核。
+</span></span><span class=line><span class=cl>真正的采集任务应交给队列和 Worker 异步执行。
+</span></span></code></pre></td></tr></table></div></div><p>有了接口和 Worker 之后，下一步就是部署。</p><p>很多爬虫项目写到本地能跑就结束了。</p><p>但面试和真实工程更关心：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>如何部署到 Linux 服务器？
+</span></span><span class=line><span class=cl>如何管理 Python 依赖？
+</span></span><span class=line><span class=cl>如何启动 API、Worker、MySQL、Redis？
+</span></span><span class=line><span class=cl>如何保存日志？
+</span></span><span class=line><span class=cl>如何定时执行？
+</span></span><span class=line><span class=cl>如何重启恢复？
+</span></span><span class=line><span class=cl>如何用 Docker 交付？
+</span></span></code></pre></td></tr></table></div></div><p>本文讨论：</p><blockquote><p>如何把一个 Python 爬虫系统部署到 Linux 与 Docker 环境中，包括虚拟环境、配置管理、Dockerfile、docker-compose、MySQL / Redis、日志、定时任务和守护进程。</p></blockquote><h2 id=一前言>一、前言</h2><p>一个数据采集系统从本地脚本走向工程部署，通常会经历三个阶段。</p><p>第一阶段：本地脚本。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>python main.py
+</span></span></code></pre></td></tr></table></div></div><p>第二阶段：服务器运行。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Linux + venv + systemd + cron
+</span></span></code></pre></td></tr></table></div></div><p>第三阶段：容器化部署。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Docker + docker-compose + MySQL + Redis + API + Worker
+</span></span></code></pre></td></tr></table></div></div><p>不同阶段解决的问题不同。</p><p>本地脚本解决的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>功能能不能跑通。
+</span></span></code></pre></td></tr></table></div></div><p>Linux 部署解决的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>能不能稳定运行。
+</span></span></code></pre></td></tr></table></div></div><p>Docker 部署解决的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>环境能不能一致交付。
+</span></span></code></pre></td></tr></table></div></div><p>很多项目的问题不是代码不会写，而是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>换一台机器就跑不起来。
+</span></span><span class=line><span class=cl>依赖版本不一致。
+</span></span><span class=line><span class=cl>配置写死在代码里。
+</span></span><span class=line><span class=cl>日志找不到。
+</span></span><span class=line><span class=cl>进程挂了没人知道。
+</span></span><span class=line><span class=cl>重启后任务状态混乱。
+</span></span></code></pre></td></tr></table></div></div><p>所以部署不是最后一步的小事。</p><p>它是工程化能力的重要组成部分。</p><h2 id=二部署前要明确系统组成>二、部署前要明确系统组成</h2><p>在部署之前，要先明确爬虫系统有哪些进程和依赖。</p><p>一个典型系统可能包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>FastAPI 管理接口。
+</span></span><span class=line><span class=cl>Crawler Worker。
+</span></span><span class=line><span class=cl>Scheduler 调度器。
+</span></span><span class=line><span class=cl>MySQL 数据库。
+</span></span><span class=line><span class=cl>Redis 队列和缓存。
+</span></span><span class=line><span class=cl>日志目录。
+</span></span><span class=line><span class=cl>配置文件。
+</span></span><span class=line><span class=cl>静态文件或截图目录。
+</span></span></code></pre></td></tr></table></div></div><p>可以画成这样：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户 / 前端
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>FastAPI API
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>MySQL：任务、结果、配置、审计
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Redis：队列、限流、锁、短期状态
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>Scheduler / Worker
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>目标数据源
+</span></span></code></pre></td></tr></table></div></div><p>部署时要回答：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>每个进程如何启动？
+</span></span><span class=line><span class=cl>进程挂了谁拉起？
+</span></span><span class=line><span class=cl>配置从哪里读取？
+</span></span><span class=line><span class=cl>日志写到哪里？
+</span></span><span class=line><span class=cl>数据库如何初始化？
+</span></span><span class=line><span class=cl>Redis 数据是否需要持久化？
+</span></span><span class=line><span class=cl>任务状态是否能恢复？
+</span></span></code></pre></td></tr></table></div></div><p>这些问题回答清楚，部署方案才完整。</p><h2 id=三linux-基础目录规划>三、Linux 基础目录规划</h2><p>如果不用 Docker，直接在 Linux 服务器部署，可以先规划目录。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>/opt/crawler-system/
+</span></span><span class=line><span class=cl>  app/
+</span></span><span class=line><span class=cl>  venv/
+</span></span><span class=line><span class=cl>  logs/
+</span></span><span class=line><span class=cl>  data/
+</span></span><span class=line><span class=cl>  config/
+</span></span><span class=line><span class=cl>  scripts/
+</span></span></code></pre></td></tr></table></div></div><p>含义：</p><div class=table-wrapper><table><thead><tr><th>目录</th><th>用途</th></tr></thead><tbody><tr><td>app</td><td>项目代码</td></tr><tr><td>venv</td><td>Python 虚拟环境</td></tr><tr><td>logs</td><td>API、Worker、Scheduler 日志</td></tr><tr><td>data</td><td>下载文件、截图、临时数据</td></tr><tr><td>config</td><td>配置文件或环境变量模板</td></tr><tr><td>scripts</td><td>启动、停止、迁移脚本</td></tr></tbody></table></div><p>不要把所有东西堆在一个目录。</p><p>也不要把日志写到当前工作目录里。</p><p>更好的做法是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>代码、配置、日志、数据分开。
+</span></span></code></pre></td></tr></table></div></div><p>这样排查问题和迁移环境都会更清晰。</p><h2 id=四python-虚拟环境>四、Python 虚拟环境</h2><p>在 Linux 上运行 Python 项目，不建议直接使用系统 Python 安装依赖。</p><p>更稳妥的是使用虚拟环境。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-bash data-lang=bash><span class=line><span class=cl>python3 -m venv venv
+</span></span><span class=line><span class=cl><span class=nb>source</span> venv/bin/activate
+</span></span><span class=line><span class=cl>pip install -r requirements.txt
+</span></span></code></pre></td></tr></table></div></div><p><code>requirements.txt</code> 应该固定依赖版本。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>fastapi==0.115.0
+</span></span><span class=line><span class=cl>uvicorn[standard]==0.30.6
+</span></span><span class=line><span class=cl>pydantic==2.8.2
+</span></span><span class=line><span class=cl>sqlalchemy==2.0.32
+</span></span><span class=line><span class=cl>pymysql==1.1.1
+</span></span><span class=line><span class=cl>redis==5.0.8
+</span></span><span class=line><span class=cl>httpx==0.27.0
+</span></span><span class=line><span class=cl>beautifulsoup4==4.12.3
+</span></span><span class=line><span class=cl>lxml==5.2.2
+</span></span></code></pre></td></tr></table></div></div><p>固定版本的好处是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>本地、测试、生产依赖一致。
+</span></span><span class=line><span class=cl>避免依赖升级导致线上突然异常。
+</span></span><span class=line><span class=cl>便于问题复现。
+</span></span></code></pre></td></tr></table></div></div><p>面试中可以这样表达：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>我不会只说 pip install，而会用 requirements.txt 或 pyproject.toml 管理依赖版本，保证部署环境可复现。
+</span></span></code></pre></td></tr></table></div></div><h2 id=五配置管理>五、配置管理</h2><p>配置不要写死在代码里。</p><p>常见配置包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>数据库连接。
+</span></span><span class=line><span class=cl>Redis 地址。
+</span></span><span class=line><span class=cl>日志级别。
+</span></span><span class=line><span class=cl>队列名称。
+</span></span><span class=line><span class=cl>Worker 并发数。
+</span></span><span class=line><span class=cl>数据源限流参数。
+</span></span><span class=line><span class=cl>API 鉴权密钥。
+</span></span></code></pre></td></tr></table></div></div><p>更合理的方式是使用环境变量。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>MYSQL_HOST=127.0.0.1
+</span></span><span class=line><span class=cl>MYSQL_PORT=3306
+</span></span><span class=line><span class=cl>MYSQL_USER=crawler
+</span></span><span class=line><span class=cl>MYSQL_PASSWORD=change-me
+</span></span><span class=line><span class=cl>MYSQL_DATABASE=crawler_db
+</span></span><span class=line><span class=cl>REDIS_URL=redis://127.0.0.1:6379/0
+</span></span><span class=line><span class=cl>LOG_LEVEL=INFO
+</span></span></code></pre></td></tr></table></div></div><p>Python 中可以用 Pydantic Settings 管理：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>pydantic_settings</span> <span class=kn>import</span> <span class=n>BaseSettings</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>class</span> <span class=nc>Settings</span><span class=p>(</span><span class=n>BaseSettings</span><span class=p>):</span>
+</span></span><span class=line><span class=cl>    <span class=n>mysql_host</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>mysql_port</span><span class=p>:</span> <span class=nb>int</span> <span class=o>=</span> <span class=mi>3306</span>
+</span></span><span class=line><span class=cl>    <span class=n>mysql_user</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>mysql_password</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>mysql_database</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>redis_url</span><span class=p>:</span> <span class=nb>str</span>
+</span></span><span class=line><span class=cl>    <span class=n>log_level</span><span class=p>:</span> <span class=nb>str</span> <span class=o>=</span> <span class=s2>&#34;INFO&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>class</span> <span class=nc>Config</span><span class=p>:</span>
+</span></span><span class=line><span class=cl>        <span class=n>env_file</span> <span class=o>=</span> <span class=s2>&#34;.env&#34;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>settings</span> <span class=o>=</span> <span class=n>Settings</span><span class=p>()</span>
+</span></span></code></pre></td></tr></table></div></div><p>注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>.env 可以用于本地和测试。
+</span></span><span class=line><span class=cl>生产环境的密钥应由环境变量、密钥管理系统或部署平台注入。
+</span></span><span class=line><span class=cl>不要把真实密码提交到 Git。
+</span></span></code></pre></td></tr></table></div></div><h2 id=六启动-fastapi>六、启动 FastAPI</h2><p>开发环境常用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-bash data-lang=bash><span class=line><span class=cl>uvicorn app.main:app --reload
+</span></span></code></pre></td></tr></table></div></div><p>生产环境不要使用 <code>--reload</code>。</p><p>更常见的是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-bash data-lang=bash><span class=line><span class=cl>uvicorn app.main:app --host 0.0.0.0 --port <span class=m>8000</span>
+</span></span></code></pre></td></tr></table></div></div><p>如果需要多进程，可以使用 Gunicorn 管理 Uvicorn Worker：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-bash data-lang=bash><span class=line><span class=cl>gunicorn app.main:app <span class=se>\
+</span></span></span><span class=line><span class=cl>  -k uvicorn.workers.UvicornWorker <span class=se>\
+</span></span></span><span class=line><span class=cl>  -w <span class=m>4</span> <span class=se>\
+</span></span></span><span class=line><span class=cl>  -b 0.0.0.0:8000
+</span></span></code></pre></td></tr></table></div></div><p>但要注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>API 多进程不等于爬虫 Worker 多进程。
+</span></span><span class=line><span class=cl>API 负责管理接口。
+</span></span><span class=line><span class=cl>采集任务应由独立 Worker 执行。
+</span></span></code></pre></td></tr></table></div></div><p>不要把所有逻辑塞进 API 进程。</p><h2 id=七启动-worker>七、启动 Worker</h2><p>Worker 可以是一个独立命令。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-bash data-lang=bash><span class=line><span class=cl>python -m app.workers.crawler_worker
+</span></span></code></pre></td></tr></table></div></div><p>Worker 负责：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>从 Redis 或数据库领取任务。
+</span></span><span class=line><span class=cl>检查限流和状态。
+</span></span><span class=line><span class=cl>执行抓取。
+</span></span><span class=line><span class=cl>解析和清洗。
+</span></span><span class=line><span class=cl>写入结果。
+</span></span><span class=line><span class=cl>更新任务状态。
+</span></span><span class=line><span class=cl>记录日志。
+</span></span></code></pre></td></tr></table></div></div><p>Worker 启动参数可以通过环境变量控制：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>WORKER_CONCURRENCY=4
+</span></span><span class=line><span class=cl>WORKER_QUEUE=crawl:tasks
+</span></span><span class=line><span class=cl>WORKER_NAME=worker-01
+</span></span></code></pre></td></tr></table></div></div><p>不要靠修改代码来调整 Worker 数量。</p><p>部署时应该通过配置控制。</p><h2 id=八用-systemd-守护进程>八、用 systemd 守护进程</h2><p>如果不用 Docker，可以用 systemd 管理 API 和 Worker。</p><p>FastAPI 服务示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-ini data-lang=ini><span class=line><span class=cl><span class=k>[Unit]</span>
+</span></span><span class=line><span class=cl><span class=na>Description</span><span class=o>=</span><span class=s>Crawler FastAPI Service</span>
+</span></span><span class=line><span class=cl><span class=na>After</span><span class=o>=</span><span class=s>network.target</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Service]</span>
+</span></span><span class=line><span class=cl><span class=na>WorkingDirectory</span><span class=o>=</span><span class=s>/opt/crawler-system/app</span>
+</span></span><span class=line><span class=cl><span class=na>EnvironmentFile</span><span class=o>=</span><span class=s>/opt/crawler-system/config/.env</span>
+</span></span><span class=line><span class=cl><span class=na>ExecStart</span><span class=o>=</span><span class=s>/opt/crawler-system/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000</span>
+</span></span><span class=line><span class=cl><span class=na>Restart</span><span class=o>=</span><span class=s>always</span>
+</span></span><span class=line><span class=cl><span class=na>RestartSec</span><span class=o>=</span><span class=s>5</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Install]</span>
+</span></span><span class=line><span class=cl><span class=na>WantedBy</span><span class=o>=</span><span class=s>multi-user.target</span>
+</span></span></code></pre></td></tr></table></div></div><p>Worker 服务示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-ini data-lang=ini><span class=line><span class=cl><span class=k>[Unit]</span>
+</span></span><span class=line><span class=cl><span class=na>Description</span><span class=o>=</span><span class=s>Crawler Worker Service</span>
+</span></span><span class=line><span class=cl><span class=na>After</span><span class=o>=</span><span class=s>network.target</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Service]</span>
+</span></span><span class=line><span class=cl><span class=na>WorkingDirectory</span><span class=o>=</span><span class=s>/opt/crawler-system/app</span>
+</span></span><span class=line><span class=cl><span class=na>EnvironmentFile</span><span class=o>=</span><span class=s>/opt/crawler-system/config/.env</span>
+</span></span><span class=line><span class=cl><span class=na>ExecStart</span><span class=o>=</span><span class=s>/opt/crawler-system/venv/bin/python -m app.workers.crawler_worker</span>
+</span></span><span class=line><span class=cl><span class=na>Restart</span><span class=o>=</span><span class=s>always</span>
+</span></span><span class=line><span class=cl><span class=na>RestartSec</span><span class=o>=</span><span class=s>5</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>[Install]</span>
+</span></span><span class=line><span class=cl><span class=na>WantedBy</span><span class=o>=</span><span class=s>multi-user.target</span>
+</span></span></code></pre></td></tr></table></div></div><p>常用命令：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-bash data-lang=bash><span class=line><span class=cl>sudo systemctl daemon-reload
+</span></span><span class=line><span class=cl>sudo systemctl <span class=nb>enable</span> crawler-api
+</span></span><span class=line><span class=cl>sudo systemctl start crawler-api
+</span></span><span class=line><span class=cl>sudo systemctl status crawler-api
+</span></span><span class=line><span class=cl>sudo journalctl -u crawler-api -f
+</span></span></code></pre></td></tr></table></div></div><p>systemd 的价值是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>开机自启。
+</span></span><span class=line><span class=cl>进程异常退出后自动重启。
+</span></span><span class=line><span class=cl>统一查看状态和日志。
+</span></span></code></pre></td></tr></table></div></div><h2 id=九日志管理>九、日志管理</h2><p>爬虫系统必须有日志。</p><p>至少要区分：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>API 访问日志。
+</span></span><span class=line><span class=cl>任务执行日志。
+</span></span><span class=line><span class=cl>错误日志。
+</span></span><span class=line><span class=cl>审计日志。
+</span></span></code></pre></td></tr></table></div></div><p>日志中应包含：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>task_id。
+</span></span><span class=line><span class=cl>source_id。
+</span></span><span class=line><span class=cl>url_hash。
+</span></span><span class=line><span class=cl>status。
+</span></span><span class=line><span class=cl>failure_type。
+</span></span><span class=line><span class=cl>retry_count。
+</span></span><span class=line><span class=cl>elapsed_ms。
+</span></span><span class=line><span class=cl>worker_name。
+</span></span><span class=line><span class=cl>trace_id。
+</span></span></code></pre></td></tr></table></div></div><p>不要记录：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>明文密码。
+</span></span><span class=line><span class=cl>完整 Token。
+</span></span><span class=line><span class=cl>敏感 Cookie。
+</span></span><span class=line><span class=cl>手机号和身份证号。
+</span></span><span class=line><span class=cl>完整设备标识。
+</span></span></code></pre></td></tr></table></div></div><p>日志最好使用结构化格式。</p><p>例如 JSON 日志：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;level&#34;</span><span class=p>:</span> <span class=s2>&#34;INFO&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;event&#34;</span><span class=p>:</span> <span class=s2>&#34;task_finished&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;task_id&#34;</span><span class=p>:</span> <span class=s2>&#34;task_001&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;source_id&#34;</span><span class=p>:</span> <span class=s2>&#34;demo&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;status&#34;</span><span class=p>:</span> <span class=s2>&#34;succeeded&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;elapsed_ms&#34;</span><span class=p>:</span> <span class=mi>836</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>结构化日志便于后续接入 ELK、Loki 或其他日志系统。</p><h2 id=十定时任务>十、定时任务</h2><p>很多爬虫任务不是实时触发，而是定时运行。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>每天凌晨抓取一次。
+</span></span><span class=line><span class=cl>每小时刷新列表页。
+</span></span><span class=line><span class=cl>每 10 分钟检查新增内容。
+</span></span><span class=line><span class=cl>每周生成数据质量报告。
+</span></span></code></pre></td></tr></table></div></div><p>Linux 上可以使用 cron。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-fallback data-lang=fallback><span class=line><span class=cl>*/10 * * * * cd /opt/crawler-system/app &amp;&amp; /opt/crawler-system/venv/bin/python -m app.scripts.enqueue_incremental_tasks &gt;&gt; /opt/crawler-system/logs/cron.log 2&gt;&amp;1
+</span></span></code></pre></td></tr></table></div></div><p>但复杂系统中，更建议使用调度器服务。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Scheduler 进程定期生成任务。
+</span></span><span class=line><span class=cl>任务写入 MySQL。
+</span></span><span class=line><span class=cl>任务推送到 Redis。
+</span></span><span class=line><span class=cl>Worker 异步消费。
+</span></span></code></pre></td></tr></table></div></div><p>这样比 cron 直接执行爬虫更可控。</p><p>cron 适合触发轻量脚本。</p><p>不适合承载复杂任务状态。</p><h2 id=十一dockerfile>十一、Dockerfile</h2><p>Docker 可以让部署环境更一致。</p><p>一个简单 Dockerfile：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-dockerfile data-lang=dockerfile><span class=line><span class=cl><span class=k>FROM</span><span class=w> </span><span class=s>python:3.11-slim</span><span class=err>
+</span></span></span><span class=line><span class=cl><span class=err>
+</span></span></span><span class=line><span class=cl><span class=k>WORKDIR</span><span class=w> </span><span class=s>/app</span><span class=err>
+</span></span></span><span class=line><span class=cl><span class=err>
+</span></span></span><span class=line><span class=cl><span class=k>ENV</span> <span class=nv>PYTHONDONTWRITEBYTECODE</span><span class=o>=</span><span class=m>1</span>
+</span></span><span class=line><span class=cl><span class=k>ENV</span> <span class=nv>PYTHONUNBUFFERED</span><span class=o>=</span><span class=m>1</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>COPY</span> requirements.txt .<span class=err>
+</span></span></span><span class=line><span class=cl><span class=k>RUN</span> pip install --no-cache-dir -r requirements.txt<span class=err>
+</span></span></span><span class=line><span class=cl><span class=err>
+</span></span></span><span class=line><span class=cl><span class=k>COPY</span> . .<span class=err>
+</span></span></span><span class=line><span class=cl><span class=err>
+</span></span></span><span class=line><span class=cl><span class=k>CMD</span> <span class=p>[</span><span class=s2>&#34;uvicorn&#34;</span><span class=p>,</span> <span class=s2>&#34;app.main:app&#34;</span><span class=p>,</span> <span class=s2>&#34;--host&#34;</span><span class=p>,</span> <span class=s2>&#34;0.0.0.0&#34;</span><span class=p>,</span> <span class=s2>&#34;--port&#34;</span><span class=p>,</span> <span class=s2>&#34;8000&#34;</span><span class=p>]</span><span class=err>
+</span></span></span></code></pre></td></tr></table></div></div><p>几个细节：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>使用 slim 镜像减小体积。
+</span></span><span class=line><span class=cl>先复制 requirements.txt，利用 Docker 缓存。
+</span></span><span class=line><span class=cl>PYTHONUNBUFFERED 让日志及时输出。
+</span></span><span class=line><span class=cl>不要把 .env、缓存文件、日志目录复制进镜像。
+</span></span></code></pre></td></tr></table></div></div><p>需要 <code>.dockerignore</code>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>.git
+</span></span><span class=line><span class=cl>__pycache__
+</span></span><span class=line><span class=cl>*.pyc
+</span></span><span class=line><span class=cl>.env
+</span></span><span class=line><span class=cl>logs/
+</span></span><span class=line><span class=cl>data/
+</span></span><span class=line><span class=cl>.venv/
+</span></span><span class=line><span class=cl>venv/
+</span></span></code></pre></td></tr></table></div></div><p>镜像里放代码和依赖。</p><p>配置和数据由运行环境注入。</p><h2 id=十二docker-compose-编排>十二、docker-compose 编排</h2><p>爬虫系统通常不止一个容器。</p><p>可以用 docker-compose 管理：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span><span class=lnt>46
+</span><span class=lnt>47
+</span><span class=lnt>48
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-yaml data-lang=yaml><span class=line><span class=cl><span class=nt>services</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span><span class=nt>api</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>build</span><span class=p>:</span><span class=w> </span><span class=l>.</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>command</span><span class=p>:</span><span class=w> </span><span class=l>uvicorn app.main:app --host 0.0.0.0 --port 8000</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>ports</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span>- <span class=s2>&#34;8000:8000&#34;</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>env_file</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span>- <span class=l>.env</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>depends_on</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span>- <span class=l>mysql</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span>- <span class=l>redis</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span><span class=nt>worker</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>build</span><span class=p>:</span><span class=w> </span><span class=l>.</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>command</span><span class=p>:</span><span class=w> </span><span class=l>python -m app.workers.crawler_worker</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>env_file</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span>- <span class=l>.env</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>depends_on</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span>- <span class=l>mysql</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span>- <span class=l>redis</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span><span class=nt>scheduler</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>build</span><span class=p>:</span><span class=w> </span><span class=l>.</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>command</span><span class=p>:</span><span class=w> </span><span class=l>python -m app.workers.scheduler</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>env_file</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span>- <span class=l>.env</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>depends_on</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span>- <span class=l>mysql</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span>- <span class=l>redis</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span><span class=nt>redis</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>image</span><span class=p>:</span><span class=w> </span><span class=l>redis:7</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>volumes</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span>- <span class=l>redis_data:/data</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span><span class=nt>mysql</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>image</span><span class=p>:</span><span class=w> </span><span class=l>mysql:8</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>environment</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span><span class=nt>MYSQL_ROOT_PASSWORD</span><span class=p>:</span><span class=w> </span><span class=l>root-password</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span><span class=nt>MYSQL_DATABASE</span><span class=p>:</span><span class=w> </span><span class=l>crawler_db</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span><span class=nt>MYSQL_USER</span><span class=p>:</span><span class=w> </span><span class=l>crawler</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span><span class=nt>MYSQL_PASSWORD</span><span class=p>:</span><span class=w> </span><span class=l>crawler-password</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>volumes</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span>- <span class=l>mysql_data:/var/lib/mysql</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>
+</span></span></span><span class=line><span class=cl><span class=nt>volumes</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span><span class=nt>mysql_data</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span><span class=nt>redis_data</span><span class=p>:</span><span class=w>
+</span></span></span></code></pre></td></tr></table></div></div><p>这只是示例。</p><p>真实生产环境中，密码不应写在 compose 文件里。</p><p>可以通过：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>环境变量。
+</span></span><span class=line><span class=cl>.env 文件。
+</span></span><span class=line><span class=cl>CI/CD 密钥。
+</span></span><span class=line><span class=cl>云平台密钥管理。
+</span></span></code></pre></td></tr></table></div></div><p>来注入。</p><h2 id=十三mysql-与-redis-部署注意事项>十三、MySQL 与 Redis 部署注意事项</h2><p>MySQL 要注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>数据卷持久化。
+</span></span><span class=line><span class=cl>字符集使用 utf8mb4。
+</span></span><span class=line><span class=cl>定期备份。
+</span></span><span class=line><span class=cl>慢查询监控。
+</span></span><span class=line><span class=cl>连接数限制。
+</span></span><span class=line><span class=cl>索引设计。
+</span></span></code></pre></td></tr></table></div></div><p>Redis 要注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>是否需要持久化。
+</span></span><span class=line><span class=cl>内存上限。
+</span></span><span class=line><span class=cl>淘汰策略。
+</span></span><span class=line><span class=cl>队列积压监控。
+</span></span><span class=line><span class=cl>是否需要密码。
+</span></span><span class=line><span class=cl>不要暴露到公网。
+</span></span></code></pre></td></tr></table></div></div><p>开发环境可以用 compose 一起启动 MySQL 和 Redis。</p><p>生产环境中，也可以使用云数据库和云 Redis。</p><p>面试中可以这样表达：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>开发测试用 docker-compose 快速拉起依赖，生产环境根据可靠性要求选择托管数据库或独立部署，并做好备份、权限和监控。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十四数据卷和文件存储>十四、数据卷和文件存储</h2><p>爬虫系统可能产生：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>HTML 快照。
+</span></span><span class=line><span class=cl>截图。
+</span></span><span class=line><span class=cl>下载文件。
+</span></span><span class=line><span class=cl>错误样本。
+</span></span><span class=line><span class=cl>日志。
+</span></span><span class=line><span class=cl>临时缓存。
+</span></span></code></pre></td></tr></table></div></div><p>Docker 容器本身是临时的。</p><p>如果重要数据只写在容器内部，容器删除后数据会丢失。</p><p>所以需要 volume：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-yaml data-lang=yaml><span class=line><span class=cl><span class=nt>volumes</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span>- <span class=l>./logs:/app/logs</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span>- <span class=l>./data:/app/data</span><span class=w>
+</span></span></span></code></pre></td></tr></table></div></div><p>但要注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>日志和数据目录要控制大小。
+</span></span><span class=line><span class=cl>敏感样本要脱敏。
+</span></span><span class=line><span class=cl>定期清理临时文件。
+</span></span><span class=line><span class=cl>重要文件应上传对象存储或持久化存储。
+</span></span></code></pre></td></tr></table></div></div><p>不要让截图、HTML 快照无限增长。</p><p>否则磁盘会成为新的故障点。</p><h2 id=十五健康检查>十五、健康检查</h2><p>部署后要能判断服务是否健康。</p><p>FastAPI 可以提供：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>GET /health
+</span></span></code></pre></td></tr></table></div></div><p>返回：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span><span class=nt>&#34;status&#34;</span><span class=p>:</span> <span class=s2>&#34;ok&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>更完整的健康检查可以包含：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>API 是否正常。
+</span></span><span class=line><span class=cl>MySQL 是否可连接。
+</span></span><span class=line><span class=cl>Redis 是否可连接。
+</span></span><span class=line><span class=cl>队列是否积压过高。
+</span></span><span class=line><span class=cl>Worker 最近是否有心跳。
+</span></span></code></pre></td></tr></table></div></div><p>示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-python data-lang=python><span class=line><span class=cl><span class=kn>from</span> <span class=nn>fastapi</span> <span class=kn>import</span> <span class=n>APIRouter</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>router</span> <span class=o>=</span> <span class=n>APIRouter</span><span class=p>()</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nd>@router.get</span><span class=p>(</span><span class=s2>&#34;/health&#34;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl><span class=k>def</span> <span class=nf>health_check</span><span class=p>():</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span><span class=s2>&#34;status&#34;</span><span class=p>:</span> <span class=s2>&#34;ok&#34;</span><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>生产环境可以让负载均衡或监控系统定期访问健康检查接口。</p><p>Worker 也可以定期写心跳：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>worker:&lt;worker_name&gt;:heartbeat
+</span></span></code></pre></td></tr></table></div></div><p>用于判断 Worker 是否还活着。</p><h2 id=十六部署流程>十六、部署流程</h2><p>一个简单部署流程可以是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>1. 拉取代码。
+</span></span><span class=line><span class=cl>2. 准备 .env 配置。
+</span></span><span class=line><span class=cl>3. 构建 Docker 镜像。
+</span></span><span class=line><span class=cl>4. 启动 MySQL 和 Redis。
+</span></span><span class=line><span class=cl>5. 执行数据库迁移。
+</span></span><span class=line><span class=cl>6. 启动 API、Worker、Scheduler。
+</span></span><span class=line><span class=cl>7. 检查 health 接口。
+</span></span><span class=line><span class=cl>8. 查看日志。
+</span></span><span class=line><span class=cl>9. 创建测试任务。
+</span></span><span class=line><span class=cl>10. 确认任务状态和结果。
+</span></span></code></pre></td></tr></table></div></div><p>对应命令可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-bash data-lang=bash><span class=line><span class=cl>docker compose build
+</span></span><span class=line><span class=cl>docker compose up -d mysql redis
+</span></span><span class=line><span class=cl>docker compose run --rm api python -m app.db.migrate
+</span></span><span class=line><span class=cl>docker compose up -d api worker scheduler
+</span></span><span class=line><span class=cl>docker compose logs -f api
+</span></span></code></pre></td></tr></table></div></div><p>部署不是只执行 <code>up -d</code>。</p><p>部署后验证同样重要。</p><p>至少要验证：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>API 能访问。
+</span></span><span class=line><span class=cl>数据库能连接。
+</span></span><span class=line><span class=cl>Redis 能连接。
+</span></span><span class=line><span class=cl>任务能创建。
+</span></span><span class=line><span class=cl>Worker 能消费。
+</span></span><span class=line><span class=cl>状态能更新。
+</span></span><span class=line><span class=cl>日志能查看。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十七监控与告警>十七、监控与告警</h2><p>部署后还需要监控。</p><p>基础指标包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>CPU。
+</span></span><span class=line><span class=cl>内存。
+</span></span><span class=line><span class=cl>磁盘。
+</span></span><span class=line><span class=cl>网络。
+</span></span><span class=line><span class=cl>容器重启次数。
+</span></span><span class=line><span class=cl>API 响应时间。
+</span></span><span class=line><span class=cl>任务队列长度。
+</span></span><span class=line><span class=cl>Worker 心跳。
+</span></span><span class=line><span class=cl>任务成功率。
+</span></span><span class=line><span class=cl>任务失败率。
+</span></span><span class=line><span class=cl>MySQL 连接数。
+</span></span><span class=line><span class=cl>Redis 内存使用。
+</span></span></code></pre></td></tr></table></div></div><p>告警场景包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>API 不可用。
+</span></span><span class=line><span class=cl>Worker 长时间无心跳。
+</span></span><span class=line><span class=cl>队列积压持续升高。
+</span></span><span class=line><span class=cl>任务失败率异常。
+</span></span><span class=line><span class=cl>磁盘空间不足。
+</span></span><span class=line><span class=cl>数据库连接失败。
+</span></span><span class=line><span class=cl>Redis 内存接近上限。
+</span></span></code></pre></td></tr></table></div></div><p>对于爬虫系统，还要特别关注：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>某个数据源 403 / 429 增加。
+</span></span><span class=line><span class=cl>解析失败率突然升高。
+</span></span><span class=line><span class=cl>人工复核积压。
+</span></span><span class=line><span class=cl>日志中敏感字段泄露。
+</span></span></code></pre></td></tr></table></div></div><p>监控是稳定运行的基础。</p><p>没有监控的部署只是“跑起来”，不是“运行良好”。</p><h2 id=十八安全与合规部署>十八、安全与合规部署</h2><p>部署环境还要注意安全。</p><p>基本要求包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不要把数据库和 Redis 暴露到公网。
+</span></span><span class=line><span class=cl>API 加鉴权。
+</span></span><span class=line><span class=cl>管理后台限制访问来源。
+</span></span><span class=line><span class=cl>密钥不提交 Git。
+</span></span><span class=line><span class=cl>日志脱敏。
+</span></span><span class=line><span class=cl>最小权限运行。
+</span></span><span class=line><span class=cl>定期更新依赖。
+</span></span><span class=line><span class=cl>备份重要数据。
+</span></span></code></pre></td></tr></table></div></div><p>对于数据采集系统，还要增加：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>数据源访问范围配置。
+</span></span><span class=line><span class=cl>频率上限配置。
+</span></span><span class=line><span class=cl>人工复核入口。
+</span></span><span class=line><span class=cl>敏感数据脱敏。
+</span></span><span class=line><span class=cl>异常任务暂停。
+</span></span><span class=line><span class=cl>操作审计日志。
+</span></span></code></pre></td></tr></table></div></div><p>Docker 不会自动带来安全。</p><p>容器只是运行方式。</p><p>安全仍然来自：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>配置。
+</span></span><span class=line><span class=cl>权限。
+</span></span><span class=line><span class=cl>网络隔离。
+</span></span><span class=line><span class=cl>密钥管理。
+</span></span><span class=line><span class=cl>日志审计。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十九llm--agent-在运维中的作用>十九、LLM / Agent 在运维中的作用</h2><p>LLM / Agent 可以辅助运维，但不能替代监控系统。</p><p>适合用途包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>总结错误日志。
+</span></span><span class=line><span class=cl>分析任务失败趋势。
+</span></span><span class=line><span class=cl>根据监控指标生成排查建议。
+</span></span><span class=line><span class=cl>生成部署检查清单。
+</span></span><span class=line><span class=cl>辅助撰写故障复盘。
+</span></span><span class=line><span class=cl>识别日志中可能泄露的敏感字段。
+</span></span></code></pre></td></tr></table></div></div><p>例如安全提示词：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你是数据采集系统的运维诊断助手。
+</span></span><span class=line><span class=cl>请根据 API 日志、Worker 日志、任务状态和监控指标分析故障原因。
+</span></span><span class=line><span class=cl>只允许建议重启服务、检查配置、降低频率、暂停数据源、扩容 Worker、检查数据库或人工复核。
+</span></span><span class=line><span class=cl>不要提供绕过访问控制、验证码、风控、封禁或频率限制的方案。
+</span></span></code></pre></td></tr></table></div></div><p>Agent 的定位是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>帮助人更快理解系统状态。
+</span></span></code></pre></td></tr></table></div></div><p>不是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>自动突破外部限制。
+</span></span></code></pre></td></tr></table></div></div><h2 id=二十常见错误写法>二十、常见错误写法</h2><h3 id=1-把配置写死在代码里>1. 把配置写死在代码里</h3><p>数据库密码、Redis 地址、API 密钥都不应该写死。</p><h3 id=2-不固定依赖版本>2. 不固定依赖版本</h3><p>依赖自动升级可能导致线上行为变化。</p><h3 id=3-容器里保存重要数据>3. 容器里保存重要数据</h3><p>容器删除后数据会丢失。</p><p>重要数据要放 volume、数据库或对象存储。</p><h3 id=4-没有进程守护>4. 没有进程守护</h3><p>手动 SSH 上去运行 <code>python main.py</code>，断开后进程可能退出。</p><h3 id=5-没有日志和监控>5. 没有日志和监控</h3><p>系统挂了不知道，失败原因也无法复盘。</p><h3 id=6-生产环境开启调试模式>6. 生产环境开启调试模式</h3><p>FastAPI 的 <code>--reload</code> 适合开发，不适合生产。</p><h3 id=7-redis-和-mysql-暴露公网>7. Redis 和 MySQL 暴露公网</h3><p>数据库和缓存应放在内网，做好访问控制。</p><h3 id=8-不验证部署结果>8. 不验证部署结果</h3><p>容器启动不代表业务可用。</p><p>要验证 API、队列、Worker、数据库和任务闭环。</p><h2 id=二十一面试表达>二十一、面试表达</h2><p>如果面试官问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你的爬虫系统怎么部署？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会先区分 API、Worker、Scheduler、MySQL、Redis 和日志目录。开发环境可以用 docker-compose 一键拉起依赖；生产环境会用 Docker 镜像部署 API 和 Worker，通过环境变量注入配置，MySQL 保存任务和结果，Redis 做队列、限流和短期状态。部署后会检查 health 接口、Worker 心跳、队列消费和日志。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>为什么要用 Docker？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>Docker 的价值是保证运行环境一致，把 Python 版本、系统依赖和项目依赖打包到镜像里，减少“本地能跑、服务器跑不了”的问题。配合 docker-compose，可以把 API、Worker、Scheduler、MySQL 和 Redis 编排起来，方便测试和交付。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>不用 Docker 怎么部署？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>可以在 Linux 上使用虚拟环境安装依赖，用 systemd 管理 FastAPI 和 Worker 进程，配置 Restart=always 实现异常重启，用 cron 或独立 Scheduler 触发定时任务，用 journalctl 或日志文件排查问题。关键是配置、日志、数据和代码分离，并保证进程可守护、任务可恢复。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>部署爬虫系统要关注哪些稳定性问题？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我会关注进程是否自动重启、队列是否积压、Worker 是否有心跳、数据库和 Redis 是否可用、日志是否完整、磁盘是否会被截图或 HTML 快照打满、任务失败率是否异常，以及触发 403、429、验证码或风控时是否会暂停而不是继续重试。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>配置和密钥怎么管理？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>配置通过环境变量或部署平台注入，本地可以用 .env，但真实密钥不提交 Git。数据库密码、Redis 密码、API Token 等敏感信息应由密钥管理系统或 CI/CD 注入，日志中也要避免打印明文密钥、Cookie、Token 和个人敏感信息。</p></blockquote><h2 id=二十二总结>二十二、总结</h2><p>本文讲了 Docker 与 Linux 部署爬虫系统。</p><p>核心结论包括：</p><ul><li>部署是爬虫系统工程化的重要环节，不只是把脚本复制到服务器。</li><li>部署前要明确系统组成：FastAPI、Worker、Scheduler、MySQL、Redis、日志、配置和数据目录。</li><li>Linux 直接部署时，应规划代码、虚拟环境、日志、数据和配置目录。</li><li>Python 项目应使用虚拟环境和固定版本依赖，保证环境可复现。</li><li>配置应通过环境变量或配置文件管理，真实密钥不要提交 Git。</li><li>FastAPI 生产环境不要使用 <code>--reload</code>，重任务应交给 Worker。</li><li>systemd 可以用于守护 API 和 Worker，实现开机自启和异常重启。</li><li>日志要结构化、可检索，并避免记录敏感信息。</li><li>cron 适合轻量定时触发，复杂任务更适合独立 Scheduler。</li><li>Dockerfile 用于构建一致运行环境，<code>.dockerignore</code> 用于排除无关和敏感文件。</li><li>docker-compose 可以编排 API、Worker、Scheduler、MySQL 和 Redis。</li><li>MySQL 和 Redis 要注意持久化、访问控制、备份和监控。</li><li>容器内部不是可靠持久化位置，日志、数据和数据库文件要使用 volume 或外部存储。</li><li>健康检查、Worker 心跳、队列积压和任务成功率是部署后验证的重要指标。</li><li>安全部署要关注鉴权、密钥管理、网络隔离、日志脱敏和操作审计。</li><li>LLM / Agent 可以辅助日志分析和故障复盘，但不能替代监控和合规边界。</li><li>面试表达要从“我会运行脚本”升级为“我能部署、监控、运维一个可恢复的数据采集系统”。</li></ul><p>下一篇文章，我们会进入大模型增强的数据抽取：</p><blockquote><p>LLM 赋能爬虫数据抽取。</p></blockquote><p>我们会讨论传统 XPath / CSS Selector 的局限，以及如何用 Prompt、Schema、JSON 约束、置信度和人工复核，把大模型接入数据抽取流程。</p></section><footer class=article-footer><section class=article-tags><a href=/tags/python/>Python</a>
+<a href=/tags/%E7%88%AC%E8%99%AB/>爬虫</a>
+<a href=/tags/docker/>Docker</a>
+<a href=/tags/linux/>Linux</a>
+<a href=/tags/%E9%83%A8%E7%BD%B2/>部署</a>
+<a href=/tags/%E8%BF%90%E7%BB%B4/>运维</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/crawler-llm-agent-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 36：LLM 与 Agent 数据采集接口设计</h2></div></a></article><article><a href=/p/crawler-service-platform-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 35：FastAPI 管理平台接口设计</h2></div></a></article><article><a href=/p/crawler-storage-task-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 34：存储、队列与任务状态常用接口</h2></div></a></article><article><a href=/p/crawler-browser-automation-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 33：浏览器自动化常用 API 速查</h2></div></a></article><article><a href=/p/crawler-parser-common-apis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 32：网页解析常用 API 速查</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>
