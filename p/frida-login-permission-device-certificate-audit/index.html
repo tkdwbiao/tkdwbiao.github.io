@@ -1,0 +1,904 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="前面第 38 篇，我们已经写过 Frida Android 授权调试的详细教程。\n那一篇解决的是：Frida 怎么装、怎么连设备、怎么 attach / spawn、怎么 hook 一个自有测试方法、怎么打印参数和返回值。\n这一篇继续往工程场景里走：\n1 2 3 4 5 6 7 8 9 App 登录流程怎么观察？ 权限校验在哪里发生？ 设备校验通常会读取哪些信息？ 证书校验、网络安全配置和首次请求保存的 XML / 证书怎么排查？ 如何寻找需要 hook 的接口？ 常用 hook 脚本模板怎么写？ Frida 调用堆栈怎么打印？ Frida 有哪两种运行模式？ Frida 检测、代理检测通常是什么机制？ 但必须先说边界：\n本文只讨论自有 App、授权测试、移动端安全审计和防御诊断中的观察方法。不提供绕过登录、绕过权限、绕过设备校验、绕过证书校验、绕过 Frida 检测、绕过代理检测或破解真实业务接口的脚本。文中的 Hook 代码只用于打印日志、观察调用栈和理解流程，不用于修改返回值或规避安全控制。\nFrida 的价值不是“绕过规则”。\n它的价值是让我们看清楚：一个移动端请求是如何从 UI 行为，经过登录态、权限判断、设备信息、签名参数、证书校验，最后走到网络层的。\n"><title>大模型时代的数据采集工程 41：Frida 登录、权限、设备与证书校验的授权调试方法</title><link rel=canonical href=https://tkdwbiao.github.io/p/frida-login-permission-device-certificate-audit/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="大模型时代的数据采集工程 41：Frida 登录、权限、设备与证书校验的授权调试方法"><meta property='og:description' content="前面第 38 篇，我们已经写过 Frida Android 授权调试的详细教程。\n那一篇解决的是：Frida 怎么装、怎么连设备、怎么 attach / spawn、怎么 hook 一个自有测试方法、怎么打印参数和返回值。\n这一篇继续往工程场景里走：\n1 2 3 4 5 6 7 8 9 App 登录流程怎么观察？ 权限校验在哪里发生？ 设备校验通常会读取哪些信息？ 证书校验、网络安全配置和首次请求保存的 XML / 证书怎么排查？ 如何寻找需要 hook 的接口？ 常用 hook 脚本模板怎么写？ Frida 调用堆栈怎么打印？ Frida 有哪两种运行模式？ Frida 检测、代理检测通常是什么机制？ 但必须先说边界：\n本文只讨论自有 App、授权测试、移动端安全审计和防御诊断中的观察方法。不提供绕过登录、绕过权限、绕过设备校验、绕过证书校验、绕过 Frida 检测、绕过代理检测或破解真实业务接口的脚本。文中的 Hook 代码只用于打印日志、观察调用栈和理解流程，不用于修改返回值或规避安全控制。\nFrida 的价值不是“绕过规则”。\n它的价值是让我们看清楚：一个移动端请求是如何从 UI 行为，经过登录态、权限判断、设备信息、签名参数、证书校验，最后走到网络层的。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/frida-login-permission-device-certificate-audit/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='Frida'><meta property='article:tag' content='Android'><meta property='article:tag' content='Hook'><meta property='article:tag' content='移动端安全'><meta property='article:tag' content='登录校验'><meta property='article:tag' content='证书校验'><meta property='article:tag' content='App 调试'><meta property='article:tag' content='合规'><meta property='article:published_time' content='2026-03-01T10:00:00+08:00'><meta property='article:modified_time' content='2026-03-01T10:00:00+08:00'><meta name=twitter:title content="大模型时代的数据采集工程 41：Frida 登录、权限、设备与证书校验的授权调试方法"><meta name=twitter:description content="前面第 38 篇，我们已经写过 Frida Android 授权调试的详细教程。\n那一篇解决的是：Frida 怎么装、怎么连设备、怎么 attach / spawn、怎么 hook 一个自有测试方法、怎么打印参数和返回值。\n这一篇继续往工程场景里走：\n1 2 3 4 5 6 7 8 9 App 登录流程怎么观察？ 权限校验在哪里发生？ 设备校验通常会读取哪些信息？ 证书校验、网络安全配置和首次请求保存的 XML / 证书怎么排查？ 如何寻找需要 hook 的接口？ 常用 hook 脚本模板怎么写？ Frida 调用堆栈怎么打印？ Frida 有哪两种运行模式？ Frida 检测、代理检测通常是什么机制？ 但必须先说边界：\n本文只讨论自有 App、授权测试、移动端安全审计和防御诊断中的观察方法。不提供绕过登录、绕过权限、绕过设备校验、绕过证书校验、绕过 Frida 检测、绕过代理检测或破解真实业务接口的脚本。文中的 Hook 代码只用于打印日志、观察调用栈和理解流程，不用于修改返回值或规避安全控制。\nFrida 的价值不是“绕过规则”。\n它的价值是让我们看清楚：一个移动端请求是如何从 UI 行为，经过登录态、权限判断、设备信息、签名参数、证书校验，最后走到网络层的。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一为什么登录权限设备和证书校验要一起看>一、为什么登录、权限、设备和证书校验要一起看</a></li><li><a href=#二frida-的两种常用运行模式>二、Frida 的两种常用运行模式</a><ol><li><a href=#21-attach-模式>2.1 attach 模式</a></li><li><a href=#22-spawn-模式>2.2 spawn 模式</a></li><li><a href=#23-选择建议>2.3 选择建议</a></li></ol></li><li><a href=#三如何寻找需要-hook-的接口>三、如何寻找需要 Hook 的接口</a><ol><li><a href=#31-从业务动作找入口>3.1 从业务动作找入口</a></li><li><a href=#32-从静态线索找类名>3.2 从静态线索找类名</a></li><li><a href=#33-从日志和网络请求倒推>3.3 从日志和网络请求倒推</a></li><li><a href=#34-从系统库向业务层回溯>3.4 从系统库向业务层回溯</a></li></ol></li><li><a href=#四常用-hook-脚本模板只观察不绕过>四、常用 Hook 脚本模板：只观察，不绕过</a><ol><li><a href=#41-hook-普通-java-方法>4.1 Hook 普通 Java 方法</a></li><li><a href=#42-hook-重载方法>4.2 Hook 重载方法</a></li><li><a href=#43-hook-构造函数>4.3 Hook 构造函数</a></li><li><a href=#44-hook-返回对象并打印字段>4.4 Hook 返回对象并打印字段</a></li><li><a href=#45-hook-sharedpreferences-观察首次请求保存内容>4.5 Hook SharedPreferences 观察首次请求保存内容</a></li><li><a href=#46-hook-okhttp-请求构造链路>4.6 Hook OkHttp 请求构造链路</a></li><li><a href=#47-hook-自有证书配置加载点>4.7 Hook 自有证书配置加载点</a></li></ol></li><li><a href=#五frida-调用堆栈看清谁调用了谁>五、Frida 调用堆栈：看清谁调用了谁</a><ol><li><a href=#51-java-层打印调用栈>5.1 Java 层打印调用栈</a></li><li><a href=#52-读调用栈的方法>5.2 读调用栈的方法</a></li><li><a href=#53-调用栈分析模板>5.3 调用栈分析模板</a></li></ol></li><li><a href=#六登录流程的授权调试思路>六、登录流程的授权调试思路</a><ol><li><a href=#61-观察登录入口>6.1 观察登录入口</a></li><li><a href=#62-观察-token-保存>6.2 观察 token 保存</a></li><li><a href=#63-观察-token-刷新>6.3 观察 token 刷新</a></li></ol></li><li><a href=#七权限校验的授权调试思路>七、权限校验的授权调试思路</a><ol><li><a href=#71-常见权限类名>7.1 常见权限类名</a></li><li><a href=#72-观察权限判断>7.2 观察权限判断</a></li></ol></li><li><a href=#八设备校验的授权调试思路>八、设备校验的授权调试思路</a><ol><li><a href=#81-观察自有设备信息聚合类>8.1 观察自有设备信息聚合类</a></li><li><a href=#82-观察系统-api-读取>8.2 观察系统 API 读取</a></li><li><a href=#83-设备校验的审计问题>8.3 设备校验的审计问题</a></li></ol></li><li><a href=#九证书校验xml-配置和首次请求观察>九、证书校验、XML 配置和首次请求观察</a><ol><li><a href=#91-network_security_configxml-是什么>9.1 network_security_config.xml 是什么</a></li><li><a href=#92-首次请求保存的-xml--配置>9.2 首次请求保存的 XML / 配置</a></li><li><a href=#93-观察证书相关初始化>9.3 观察证书相关初始化</a></li><li><a href=#94-证书校验的审计问题>9.4 证书校验的审计问题</a></li></ol></li><li><a href=#十frida-检测和代理检测机制>十、Frida 检测和代理检测机制</a><ol><li><a href=#101-frida-检测常见思路>10.1 Frida 检测常见思路</a></li><li><a href=#102-代理检测常见思路>10.2 代理检测常见思路</a></li><li><a href=#103-审计中应该怎么写>10.3 审计中应该怎么写</a></li></ol></li><li><a href=#十一把-frida-观察结果整理成流程图>十一、把 Frida 观察结果整理成流程图</a></li><li><a href=#十二llm--agent-如何辅助-frida-日志分析>十二、LLM / Agent 如何辅助 Frida 日志分析</a></li><li><a href=#十三常见问题>十三、常见问题</a><ol><li><a href=#q1frida-调试登录流程是不是就是绕过登录>Q1：Frida 调试登录流程，是不是就是绕过登录？</a></li><li><a href=#q2证书校验可以-hook-吗>Q2：证书校验可以 Hook 吗？</a></li><li><a href=#q3为什么要关注首次请求保存的-xml>Q3：为什么要关注首次请求保存的 XML？</a></li><li><a href=#q4frida-检测和代理检测是不是坏东西>Q4：Frida 检测和代理检测是不是“坏东西”？</a></li><li><a href=#q5面试中怎么讲-frida>Q5：面试中怎么讲 Frida？</a></li></ol></li><li><a href=#十四面试表达>十四、面试表达</a></li><li><a href=#十五总结>十五、总结</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/%E7%88%AC%E8%99%AB%E7%B3%BB%E5%88%97/ style=background-color:#efcfbe;color:#3d1f0f>爬虫系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/frida-login-permission-device-certificate-audit/>大模型时代的数据采集工程 41：Frida 登录、权限、设备与证书校验的授权调试方法</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-03-01T10:00:00+08:00>2026-03-01 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 16 分钟</time></div></footer></div></header><section class=article-content><p>前面第 38 篇，我们已经写过 Frida Android 授权调试的详细教程。</p><p>那一篇解决的是：Frida 怎么装、怎么连设备、怎么 attach / spawn、怎么 hook 一个自有测试方法、怎么打印参数和返回值。</p><p>这一篇继续往工程场景里走：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>App 登录流程怎么观察？
+</span></span><span class=line><span class=cl>权限校验在哪里发生？
+</span></span><span class=line><span class=cl>设备校验通常会读取哪些信息？
+</span></span><span class=line><span class=cl>证书校验、网络安全配置和首次请求保存的 XML / 证书怎么排查？
+</span></span><span class=line><span class=cl>如何寻找需要 hook 的接口？
+</span></span><span class=line><span class=cl>常用 hook 脚本模板怎么写？
+</span></span><span class=line><span class=cl>Frida 调用堆栈怎么打印？
+</span></span><span class=line><span class=cl>Frida 有哪两种运行模式？
+</span></span><span class=line><span class=cl>Frida 检测、代理检测通常是什么机制？
+</span></span></code></pre></td></tr></table></div></div><p>但必须先说边界：</p><blockquote><p>本文只讨论自有 App、授权测试、移动端安全审计和防御诊断中的观察方法。不提供绕过登录、绕过权限、绕过设备校验、绕过证书校验、绕过 Frida 检测、绕过代理检测或破解真实业务接口的脚本。文中的 Hook 代码只用于打印日志、观察调用栈和理解流程，不用于修改返回值或规避安全控制。</p></blockquote><p>Frida 的价值不是“绕过规则”。</p><p>它的价值是让我们看清楚：一个移动端请求是如何从 UI 行为，经过登录态、权限判断、设备信息、签名参数、证书校验，最后走到网络层的。</p><h2 id=一为什么登录权限设备和证书校验要一起看>一、为什么登录、权限、设备和证书校验要一起看</h2><p>移动端 App 的一个接口请求，通常不是简单的：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>点击按钮 → 发送 HTTP 请求
+</span></span></code></pre></td></tr></table></div></div><p>更真实的链路是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>点击按钮
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>检查是否登录
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>检查 token 是否过期
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>检查用户权限 / 角色 / 功能开关
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>读取设备信息 / App 版本 / 渠道 / 环境
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>组装请求参数
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>生成签名 / nonce / timestamp
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>走网络库
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>触发 TLS / 证书 / 代理相关校验
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>发送请求
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>解析响应
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>更新本地缓存 / XML / SharedPreferences / 数据库
+</span></span></code></pre></td></tr></table></div></div><p>所以在授权调试时，如果只盯着一个 HTTP 请求，很容易看不到全貌。</p><p>从工程视角看，我们更应该把它拆成四层：</p><div class=table-wrapper><table><thead><tr><th>层级</th><th>关注点</th><th>常见位置</th></tr></thead><tbody><tr><td>登录态</td><td>token、session、refresh、账号状态</td><td><code>LoginManager</code>、<code>AuthService</code>、<code>SessionStore</code></td></tr><tr><td>权限校验</td><td>角色、会员状态、功能开关、接口权限</td><td><code>PermissionManager</code>、<code>FeatureGate</code>、<code>AccessControl</code></td></tr><tr><td>设备校验</td><td>设备 ID、系统版本、App 版本、渠道、环境状态</td><td><code>DeviceInfo</code>、<code>RiskManager</code>、<code>EnvironmentChecker</code></td></tr><tr><td>网络与证书</td><td>OkHttp、Retrofit、TrustManager、Network Security Config</td><td><code>ApiClient</code>、<code>HttpClientFactory</code>、<code>CertificatePinner</code></td></tr></tbody></table></div><p>Frida 在这里的角色，是帮助我们观察这些层之间的调用关系。</p><h2 id=二frida-的两种常用运行模式>二、Frida 的两种常用运行模式</h2><p>Android 调试里，Frida 最常见的两种模式是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>attach 模式：App 已经启动，Frida 附加到正在运行的进程。
+</span></span><span class=line><span class=cl>spawn 模式：Frida 先启动目标 App，并在启动早期注入脚本。
+</span></span></code></pre></td></tr></table></div></div><h3 id=21-attach-模式>2.1 attach 模式</h3><p>attach 适合 App 已经打开、你想观察某个按钮点击或某个页面行为的场景。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-bash data-lang=bash><span class=line><span class=cl>frida -U -n com.example.demo -l audit.js
+</span></span></code></pre></td></tr></table></div></div><p>含义：</p><div class=table-wrapper><table><thead><tr><th>参数</th><th>说明</th></tr></thead><tbody><tr><td><code>-U</code></td><td>连接 USB 设备</td></tr><tr><td><code>-n</code></td><td>通过进程名附加</td></tr><tr><td><code>-l</code></td><td>加载 JavaScript 脚本</td></tr></tbody></table></div><p>attach 的优点：</p><ul><li>使用简单。</li><li>适合观察页面操作、按钮点击、请求触发。</li><li>不需要重新启动 App。</li></ul><p>attach 的局限：</p><ul><li>App 启动早期逻辑可能已经执行完了。</li><li>如果目标方法只在启动阶段调用，attach 后可能观察不到。</li><li>某些初始化、证书加载、配置读取逻辑可能错过。</li></ul><h3 id=22-spawn-模式>2.2 spawn 模式</h3><p>spawn 适合观察 App 启动阶段逻辑，例如登录态恢复、配置加载、首次请求、证书初始化等。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-bash data-lang=bash><span class=line><span class=cl>frida -U -f com.example.demo -l audit.js
+</span></span></code></pre></td></tr></table></div></div><p>含义：</p><div class=table-wrapper><table><thead><tr><th>参数</th><th>说明</th></tr></thead><tbody><tr><td><code>-f</code></td><td>启动目标 App 并注入脚本</td></tr><tr><td><code>-U</code></td><td>连接 USB 设备</td></tr><tr><td><code>-l</code></td><td>加载脚本</td></tr></tbody></table></div><p>spawn 的优点：</p><ul><li>能观察启动早期逻辑。</li><li>适合看首次请求、初始化配置、证书加载。</li><li>适合定位“App 一打开就请求了什么”。</li></ul><p>spawn 的注意点：</p><ul><li>有些 App 启动时依赖复杂，日志会很多。</li><li>需要区分初始化噪声和真正业务逻辑。</li><li>公开文章不应把 spawn 用作规避检测或绕过安全控制的入口。</li></ul><h3 id=23-选择建议>2.3 选择建议</h3><div class=table-wrapper><table><thead><tr><th>场景</th><th>推荐模式</th></tr></thead><tbody><tr><td>观察点击登录按钮后的方法调用</td><td>attach</td></tr><tr><td>观察 App 启动时读取本地登录态</td><td>spawn</td></tr><tr><td>观察首次请求前加载的配置</td><td>spawn</td></tr><tr><td>观察某个页面的权限判断</td><td>attach</td></tr><tr><td>排查 token 刷新逻辑</td><td>attach / spawn 都可能需要</td></tr><tr><td>观察证书、网络配置初始化</td><td>spawn 更容易看到</td></tr></tbody></table></div><h2 id=三如何寻找需要-hook-的接口>三、如何寻找需要 Hook 的接口</h2><p>Frida 调试最难的不是写脚本，而是找到应该观察的位置。</p><p>不要一上来就问“hook 哪个方法”。</p><p>更好的思路是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>从业务动作出发
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>找到日志、网络请求、类名、方法名线索
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>从宽到窄逐步收敛
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>只观察，不修改
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>用调用栈确认上下游关系
+</span></span></code></pre></td></tr></table></div></div><h3 id=31-从业务动作找入口>3.1 从业务动作找入口</h3><p>例如你要分析自有 App 的登录流程，可以按动作拆解：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>输入手机号 / 用户名
+</span></span><span class=line><span class=cl>输入密码 / 验证码
+</span></span><span class=line><span class=cl>点击登录按钮
+</span></span><span class=line><span class=cl>显示 loading
+</span></span><span class=line><span class=cl>发起登录请求
+</span></span><span class=line><span class=cl>保存 token
+</span></span><span class=line><span class=cl>跳转首页
+</span></span></code></pre></td></tr></table></div></div><p>每个动作都可能对应一组类：</p><div class=table-wrapper><table><thead><tr><th>动作</th><th>可能类名关键词</th></tr></thead><tbody><tr><td>登录按钮</td><td><code>LoginActivity</code>、<code>LoginFragment</code>、<code>LoginViewModel</code></td></tr><tr><td>登录请求</td><td><code>AuthApi</code>、<code>LoginService</code>、<code>UserRepository</code></td></tr><tr><td>保存 token</td><td><code>TokenStore</code>、<code>SessionManager</code>、<code>SharedPreferences</code></td></tr><tr><td>权限判断</td><td><code>PermissionManager</code>、<code>FeatureGate</code></td></tr><tr><td>设备信息</td><td><code>DeviceInfo</code>、<code>RiskManager</code>、<code>EnvChecker</code></td></tr><tr><td>网络请求</td><td><code>OkHttpClient</code>、<code>Retrofit</code>、<code>Interceptor</code></td></tr></tbody></table></div><h3 id=32-从静态线索找类名>3.2 从静态线索找类名</h3><p>在授权测试中，可以先从 APK 结构和反编译结果里找关键词：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>login
+</span></span><span class=line><span class=cl>auth
+</span></span><span class=line><span class=cl>token
+</span></span><span class=line><span class=cl>session
+</span></span><span class=line><span class=cl>permission
+</span></span><span class=line><span class=cl>role
+</span></span><span class=line><span class=cl>device
+</span></span><span class=line><span class=cl>risk
+</span></span><span class=line><span class=cl>sign
+</span></span><span class=line><span class=cl>cert
+</span></span><span class=line><span class=cl>ssl
+</span></span><span class=line><span class=cl>trust
+</span></span><span class=line><span class=cl>proxy
+</span></span><span class=line><span class=cl>network
+</span></span><span class=line><span class=cl>okhttp
+</span></span><span class=line><span class=cl>retrofit
+</span></span></code></pre></td></tr></table></div></div><p>这些关键词不是为了“破解”，而是为了建立调用地图。</p><p>一个好的分析笔记应该长这样：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>登录页面：LoginActivity
+</span></span><span class=line><span class=cl>登录 ViewModel：LoginViewModel
+</span></span><span class=line><span class=cl>登录请求接口：AuthApi.login
+</span></span><span class=line><span class=cl>token 保存：SessionStore.saveToken
+</span></span><span class=line><span class=cl>权限判断：PermissionManager.hasPermission
+</span></span><span class=line><span class=cl>设备信息：DeviceInfoProvider.buildHeaders
+</span></span><span class=line><span class=cl>网络客户端：ApiClient.createOkHttpClient
+</span></span><span class=line><span class=cl>证书配置：NetworkConfigLoader.load
+</span></span></code></pre></td></tr></table></div></div><h3 id=33-从日志和网络请求倒推>3.3 从日志和网络请求倒推</h3><p>如果自有 App 有日志，可以先打开调试日志：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Login request start
+</span></span><span class=line><span class=cl>Auth token expired
+</span></span><span class=line><span class=cl>Refresh token success
+</span></span><span class=line><span class=cl>Permission denied: vip_only
+</span></span><span class=line><span class=cl>Device risk level: low
+</span></span><span class=line><span class=cl>Network config loaded
+</span></span></code></pre></td></tr></table></div></div><p>这些日志通常能反推出类名和方法名。</p><p>网络请求也能给线索：</p><div class=table-wrapper><table><thead><tr><th>请求特征</th><th>可能对应模块</th></tr></thead><tbody><tr><td><code>/login</code>、<code>/auth</code></td><td>登录模块</td></tr><tr><td><code>/refresh_token</code></td><td>token 刷新模块</td></tr><tr><td><code>/permission/check</code></td><td>权限模块</td></tr><tr><td><code>/device/register</code></td><td>设备注册模块</td></tr><tr><td><code>/config/init</code></td><td>初始化配置</td></tr><tr><td>请求头里有 <code>device-id</code>、<code>app-version</code></td><td>设备信息模块</td></tr><tr><td>请求失败为 TLS / SSL 错误</td><td>证书 / 代理 / 网络配置模块</td></tr></tbody></table></div><h3 id=34-从系统库向业务层回溯>3.4 从系统库向业务层回溯</h3><p>找不到业务类时，可以先观察通用库，再通过调用栈反推业务层。</p><p>常见观察点：</p><div class=table-wrapper><table><thead><tr><th>观察点</th><th>用途</th></tr></thead><tbody><tr><td><code>SharedPreferences</code></td><td>看 token、配置、首次请求结果是否落本地</td></tr><tr><td><code>SQLiteDatabase</code></td><td>看本地数据库读写</td></tr><tr><td><code>OkHttp Interceptor</code></td><td>看请求构造链路</td></tr><tr><td><code>Retrofit</code> 接口</td><td>看业务 API 调用</td></tr><tr><td><code>android.util.Log</code></td><td>看内部日志</td></tr><tr><td><code>TrustManager</code> / <code>SSLContext</code></td><td>看证书相关初始化</td></tr></tbody></table></div><p>注意：这里只建议观察和记录，不建议修改返回值。</p><h2 id=四常用-hook-脚本模板只观察不绕过>四、常用 Hook 脚本模板：只观察，不绕过</h2><p>下面的脚本都以自有测试包 <code>com.example.demo</code> 为例。</p><h3 id=41-hook-普通-java-方法>4.1 Hook 普通 Java 方法</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>UserService</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;com.example.demo.UserService&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>UserService</span><span class=p>.</span><span class=nx>login</span><span class=p>.</span><span class=nx>overload</span><span class=p>(</span><span class=s1>&#39;java.lang.String&#39;</span><span class=p>,</span> <span class=s1>&#39;java.lang.String&#39;</span><span class=p>).</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>username</span><span class=p>,</span> <span class=nx>password</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[UserService.login] username = &#39;</span> <span class=o>+</span> <span class=nx>username</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>result</span> <span class=o>=</span> <span class=k>this</span><span class=p>.</span><span class=nx>login</span><span class=p>(</span><span class=nx>username</span><span class=p>,</span> <span class=nx>password</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[UserService.login] result = &#39;</span> <span class=o>+</span> <span class=nx>result</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=nx>result</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个脚本做了三件事：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>打印登录入参。
+</span></span><span class=line><span class=cl>调用原始方法。
+</span></span><span class=line><span class=cl>打印原始返回值。
+</span></span></code></pre></td></tr></table></div></div><p>它没有修改登录结果，也没有绕过认证。</p><h3 id=42-hook-重载方法>4.2 Hook 重载方法</h3><p>Java / Kotlin 里经常有方法重载，Frida 需要指定参数类型。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>PermissionManager</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;com.example.demo.PermissionManager&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>PermissionManager</span><span class=p>.</span><span class=nx>hasPermission</span>
+</span></span><span class=line><span class=cl>    <span class=p>.</span><span class=nx>overload</span><span class=p>(</span><span class=s1>&#39;java.lang.String&#39;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=p>.</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>permissionName</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[hasPermission] permission = &#39;</span> <span class=o>+</span> <span class=nx>permissionName</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=kr>const</span> <span class=nx>result</span> <span class=o>=</span> <span class=k>this</span><span class=p>.</span><span class=nx>hasPermission</span><span class=p>(</span><span class=nx>permissionName</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[hasPermission] result = &#39;</span> <span class=o>+</span> <span class=nx>result</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=k>return</span> <span class=nx>result</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>PermissionManager</span><span class=p>.</span><span class=nx>hasPermission</span>
+</span></span><span class=line><span class=cl>    <span class=p>.</span><span class=nx>overload</span><span class=p>(</span><span class=s1>&#39;java.lang.String&#39;</span><span class=p>,</span> <span class=s1>&#39;java.lang.String&#39;</span><span class=p>)</span>
+</span></span><span class=line><span class=cl>    <span class=p>.</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>userId</span><span class=p>,</span> <span class=nx>permissionName</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[hasPermission] userId = &#39;</span> <span class=o>+</span> <span class=nx>userId</span> <span class=o>+</span> <span class=s1>&#39;, permission = &#39;</span> <span class=o>+</span> <span class=nx>permissionName</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=kr>const</span> <span class=nx>result</span> <span class=o>=</span> <span class=k>this</span><span class=p>.</span><span class=nx>hasPermission</span><span class=p>(</span><span class=nx>userId</span><span class=p>,</span> <span class=nx>permissionName</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[hasPermission] result = &#39;</span> <span class=o>+</span> <span class=nx>result</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=k>return</span> <span class=nx>result</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=43-hook-构造函数>4.3 Hook 构造函数</h3><p>有些设备信息、网络客户端、证书配置会在构造函数里初始化。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>DeviceInfo</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;com.example.demo.DeviceInfo&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>DeviceInfo</span><span class=p>.</span><span class=nx>$init</span><span class=p>.</span><span class=nx>overload</span><span class=p>(</span><span class=s1>&#39;android.content.Context&#39;</span><span class=p>).</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>context</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[DeviceInfo.&lt;init&gt;] created&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>this</span><span class=p>.</span><span class=nx>$init</span><span class=p>(</span><span class=nx>context</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=44-hook-返回对象并打印字段>4.4 Hook 返回对象并打印字段</h3><p>如果返回值是对象，可以打印它的 <code>toString()</code>，也可以在自有测试类上读取公开字段或调用 getter。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>SessionStore</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;com.example.demo.SessionStore&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>SessionStore</span><span class=p>.</span><span class=nx>getCurrentSession</span><span class=p>.</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>session</span> <span class=o>=</span> <span class=k>this</span><span class=p>.</span><span class=nx>getCurrentSession</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[getCurrentSession] session = &#39;</span> <span class=o>+</span> <span class=nx>session</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=p>(</span><span class=nx>session</span> <span class=o>!==</span> <span class=kc>null</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=k>try</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[getCurrentSession] userId = &#39;</span> <span class=o>+</span> <span class=nx>session</span><span class=p>.</span><span class=nx>getUserId</span><span class=p>());</span>
+</span></span><span class=line><span class=cl>        <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[getCurrentSession] expiresAt = &#39;</span> <span class=o>+</span> <span class=nx>session</span><span class=p>.</span><span class=nx>getExpiresAt</span><span class=p>());</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span> <span class=k>catch</span> <span class=p>(</span><span class=nx>e</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[getCurrentSession] read fields failed: &#39;</span> <span class=o>+</span> <span class=nx>e</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=nx>session</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=45-hook-sharedpreferences-观察首次请求保存内容>4.5 Hook SharedPreferences 观察首次请求保存内容</h3><p>很多 App 会在首次启动时请求远端配置，然后保存到 <code>SharedPreferences</code> 或 XML 文件里。</p><p>Android 的 <code>SharedPreferences</code> 最终通常对应：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>/data/data/&lt;package&gt;/shared_prefs/*.xml
+</span></span></code></pre></td></tr></table></div></div><p>在授权设备上，我们可以观察保存行为：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>EditorImpl</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;android.app.SharedPreferencesImpl$EditorImpl&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>EditorImpl</span><span class=p>.</span><span class=nx>putString</span><span class=p>.</span><span class=nx>overload</span><span class=p>(</span><span class=s1>&#39;java.lang.String&#39;</span><span class=p>,</span> <span class=s1>&#39;java.lang.String&#39;</span><span class=p>).</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>key</span><span class=p>,</span> <span class=nx>value</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[SharedPreferences.putString] &#39;</span> <span class=o>+</span> <span class=nx>key</span> <span class=o>+</span> <span class=s1>&#39; = &#39;</span> <span class=o>+</span> <span class=nx>value</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>this</span><span class=p>.</span><span class=nx>putString</span><span class=p>(</span><span class=nx>key</span><span class=p>,</span> <span class=nx>value</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>EditorImpl</span><span class=p>.</span><span class=nx>putBoolean</span><span class=p>.</span><span class=nx>overload</span><span class=p>(</span><span class=s1>&#39;java.lang.String&#39;</span><span class=p>,</span> <span class=s1>&#39;boolean&#39;</span><span class=p>).</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>key</span><span class=p>,</span> <span class=nx>value</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[SharedPreferences.putBoolean] &#39;</span> <span class=o>+</span> <span class=nx>key</span> <span class=o>+</span> <span class=s1>&#39; = &#39;</span> <span class=o>+</span> <span class=nx>value</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>this</span><span class=p>.</span><span class=nx>putBoolean</span><span class=p>(</span><span class=nx>key</span><span class=p>,</span> <span class=nx>value</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>EditorImpl</span><span class=p>.</span><span class=nx>apply</span><span class=p>.</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[SharedPreferences.apply] called&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>this</span><span class=p>.</span><span class=nx>apply</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>适合观察：</p><div class=table-wrapper><table><thead><tr><th>保存内容</th><th>说明</th></tr></thead><tbody><tr><td><code>token</code> / <code>refresh_token</code></td><td>登录态缓存</td></tr><tr><td><code>device_id</code></td><td>设备标识</td></tr><tr><td><code>first_launch</code></td><td>首次启动标记</td></tr><tr><td><code>remote_config</code></td><td>远端配置</td></tr><tr><td><code>cert_version</code></td><td>证书或网络配置版本</td></tr><tr><td><code>proxy_enabled</code></td><td>代理开关或诊断状态</td></tr></tbody></table></div><p>注意：不要在文章或日志里泄露真实 token、手机号、身份证、设备号等敏感信息。写审计报告时要脱敏。</p><h3 id=46-hook-okhttp-请求构造链路>4.6 Hook OkHttp 请求构造链路</h3><p>OkHttp 是 Android 常见网络库。授权测试中，可以观察请求对象，但不要记录敏感数据明文。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>RequestBuilder</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;okhttp3.Request$Builder&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>RequestBuilder</span><span class=p>.</span><span class=nx>url</span><span class=p>.</span><span class=nx>overload</span><span class=p>(</span><span class=s1>&#39;java.lang.String&#39;</span><span class=p>).</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>url</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[OkHttp Request.url] &#39;</span> <span class=o>+</span> <span class=nx>url</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>this</span><span class=p>.</span><span class=nx>url</span><span class=p>(</span><span class=nx>url</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>RequestBuilder</span><span class=p>.</span><span class=nx>addHeader</span><span class=p>.</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>name</span><span class=p>,</span> <span class=nx>value</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>safeValue</span> <span class=o>=</span> <span class=nb>String</span><span class=p>(</span><span class=nx>value</span><span class=p>).</span><span class=nx>length</span> <span class=o>&gt;</span> <span class=mi>80</span> <span class=o>?</span> <span class=nb>String</span><span class=p>(</span><span class=nx>value</span><span class=p>).</span><span class=nx>slice</span><span class=p>(</span><span class=mi>0</span><span class=p>,</span> <span class=mi>80</span><span class=p>)</span> <span class=o>+</span> <span class=s1>&#39;...&#39;</span> <span class=o>:</span> <span class=nx>value</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[OkHttp addHeader] &#39;</span> <span class=o>+</span> <span class=nx>name</span> <span class=o>+</span> <span class=s1>&#39; = &#39;</span> <span class=o>+</span> <span class=nx>safeValue</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>this</span><span class=p>.</span><span class=nx>addHeader</span><span class=p>(</span><span class=nx>name</span><span class=p>,</span> <span class=nx>value</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>这类脚本适合回答：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>登录请求前加了哪些 header？
+</span></span><span class=line><span class=cl>设备信息是在业务层加的，还是 interceptor 里加的？
+</span></span><span class=line><span class=cl>token 是每个接口都带，还是只有部分接口带？
+</span></span></code></pre></td></tr></table></div></div><h3 id=47-hook-自有证书配置加载点>4.7 Hook 自有证书配置加载点</h3><p>如果你的 App 有自定义证书配置加载类，例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>com.example.demo.network.NetworkSecurityConfigLoader
+</span></span></code></pre></td></tr></table></div></div><p>可以观察它什么时候被调用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>Loader</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;com.example.demo.network.NetworkSecurityConfigLoader&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>Loader</span><span class=p>.</span><span class=nx>load</span><span class=p>.</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[NetworkSecurityConfigLoader.load] called&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=nx>printStack</span><span class=p>(</span><span class=s1>&#39;NetworkSecurityConfigLoader.load&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>this</span><span class=p>.</span><span class=nx>load</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里的目标是定位配置来源，不是绕过证书校验。</p><h2 id=五frida-调用堆栈看清谁调用了谁>五、Frida 调用堆栈：看清谁调用了谁</h2><p>Hook 到一个方法之后，最有价值的信息往往不是参数，而是调用栈。</p><p>调用栈能告诉你：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>这个方法是谁调用的？
+</span></span><span class=line><span class=cl>它处在登录流程、权限流程还是网络流程？
+</span></span><span class=line><span class=cl>它是启动时调用，还是点击按钮后调用？
+</span></span><span class=line><span class=cl>它是业务层调用，还是底层库调用？
+</span></span></code></pre></td></tr></table></div></div><h3 id=51-java-层打印调用栈>5.1 Java 层打印调用栈</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=kd>function</span> <span class=nx>printStack</span><span class=p>(</span><span class=nx>tag</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>Log</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;android.util.Log&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>Throwable</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;java.lang.Throwable&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;\n========== stack: &#39;</span> <span class=o>+</span> <span class=nx>tag</span> <span class=o>+</span> <span class=s1>&#39; ==========&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>Log</span><span class=p>.</span><span class=nx>getStackTraceString</span><span class=p>(</span><span class=nx>Throwable</span><span class=p>.</span><span class=nx>$new</span><span class=p>()));</span>
+</span></span><span class=line><span class=cl>  <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;========== end stack ==========&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>配合 Hook 使用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>AuthService</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;com.example.demo.AuthService&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>AuthService</span><span class=p>.</span><span class=nx>refreshToken</span><span class=p>.</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[AuthService.refreshToken] called&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=nx>printStack</span><span class=p>(</span><span class=s1>&#39;AuthService.refreshToken&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>this</span><span class=p>.</span><span class=nx>refreshToken</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=52-读调用栈的方法>5.2 读调用栈的方法</h3><p>调用栈通常从上往下看：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>java.lang.Throwable
+</span></span><span class=line><span class=cl>android.util.Log.getStackTraceString
+</span></span><span class=line><span class=cl>当前 Hook 方法
+</span></span><span class=line><span class=cl>上层业务方法
+</span></span><span class=line><span class=cl>ViewModel / Repository
+</span></span><span class=line><span class=cl>Activity / Fragment
+</span></span><span class=line><span class=cl>系统回调
+</span></span></code></pre></td></tr></table></div></div><p>我们关心的不是 <code>Throwable</code> 或 <code>Log</code>，而是中间的业务层：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LoginViewModel.submitLogin
+</span></span><span class=line><span class=cl>UserRepository.login
+</span></span><span class=line><span class=cl>AuthService.login
+</span></span><span class=line><span class=cl>ApiClient.createRequest
+</span></span></code></pre></td></tr></table></div></div><p>这能帮助我们画出登录流程图。</p><h3 id=53-调用栈分析模板>5.3 调用栈分析模板</h3><p>写分析记录时，可以用这种格式：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>观察点：AuthService.login
+</span></span><span class=line><span class=cl>触发动作：点击登录按钮
+</span></span><span class=line><span class=cl>关键入参：username 已脱敏，password 未记录
+</span></span><span class=line><span class=cl>关键返回：LoginResult(success=true, userId=***)
+</span></span><span class=line><span class=cl>调用链：
+</span></span><span class=line><span class=cl>  LoginActivity.onClick
+</span></span><span class=line><span class=cl>  LoginViewModel.submit
+</span></span><span class=line><span class=cl>  UserRepository.login
+</span></span><span class=line><span class=cl>  AuthService.login
+</span></span><span class=line><span class=cl>  ApiClient.post
+</span></span><span class=line><span class=cl>结论：登录请求由 ViewModel 触发，token 保存发生在 UserRepository 层。
+</span></span></code></pre></td></tr></table></div></div><p>这比“我 hook 到了 login 方法”更有工程价值。</p><h2 id=六登录流程的授权调试思路>六、登录流程的授权调试思路</h2><p>登录流程一般包含：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>输入校验
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>登录请求
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>服务端返回 token / user info
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>本地保存登录态
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>跳转首页
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>后续接口携带 token
+</span></span></code></pre></td></tr></table></div></div><h3 id=61-观察登录入口>6.1 观察登录入口</h3><p>可观察类名：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>LoginActivity
+</span></span><span class=line><span class=cl>LoginFragment
+</span></span><span class=line><span class=cl>LoginViewModel
+</span></span><span class=line><span class=cl>AuthRepository
+</span></span><span class=line><span class=cl>AuthService
+</span></span><span class=line><span class=cl>UserService
+</span></span></code></pre></td></tr></table></div></div><p>示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>LoginViewModel</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;com.example.demo.LoginViewModel&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>LoginViewModel</span><span class=p>.</span><span class=nx>submitLogin</span><span class=p>.</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[LoginViewModel.submitLogin] called&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=nx>printStack</span><span class=p>(</span><span class=s1>&#39;submitLogin&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>this</span><span class=p>.</span><span class=nx>submitLogin</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=62-观察-token-保存>6.2 观察 token 保存</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>SessionStore</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;com.example.demo.SessionStore&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>SessionStore</span><span class=p>.</span><span class=nx>saveToken</span><span class=p>.</span><span class=nx>overload</span><span class=p>(</span><span class=s1>&#39;java.lang.String&#39;</span><span class=p>).</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>token</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>masked</span> <span class=o>=</span> <span class=nx>token</span> <span class=o>?</span> <span class=nx>token</span><span class=p>.</span><span class=nx>substring</span><span class=p>(</span><span class=mi>0</span><span class=p>,</span> <span class=mi>8</span><span class=p>)</span> <span class=o>+</span> <span class=s1>&#39;***&#39;</span> <span class=o>:</span> <span class=s1>&#39;null&#39;</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[SessionStore.saveToken] token = &#39;</span> <span class=o>+</span> <span class=nx>masked</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>this</span><span class=p>.</span><span class=nx>saveToken</span><span class=p>(</span><span class=nx>token</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里刻意只打印 token 前缀，避免日志泄露敏感信息。</p><h3 id=63-观察-token-刷新>6.3 观察 token 刷新</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>AuthService</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;com.example.demo.AuthService&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>AuthService</span><span class=p>.</span><span class=nx>refreshToken</span><span class=p>.</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[AuthService.refreshToken] called&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=nx>printStack</span><span class=p>(</span><span class=s1>&#39;refreshToken&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>this</span><span class=p>.</span><span class=nx>refreshToken</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>通过这个观察点，可以回答：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>token 是启动时刷新，还是 401 后刷新？
+</span></span><span class=line><span class=cl>刷新失败后是否清理登录态？
+</span></span><span class=line><span class=cl>刷新成功后是否覆盖本地 token？
+</span></span></code></pre></td></tr></table></div></div><h2 id=七权限校验的授权调试思路>七、权限校验的授权调试思路</h2><p>权限校验不一定只在服务端。</p><p>很多 App 会在客户端做一层前置判断：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户是否登录？
+</span></span><span class=line><span class=cl>是否会员？
+</span></span><span class=line><span class=cl>是否有角色权限？
+</span></span><span class=line><span class=cl>功能开关是否打开？
+</span></span><span class=line><span class=cl>地区 / 渠道 / App 版本是否支持？
+</span></span></code></pre></td></tr></table></div></div><h3 id=71-常见权限类名>7.1 常见权限类名</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>PermissionManager
+</span></span><span class=line><span class=cl>AccessControl
+</span></span><span class=line><span class=cl>FeatureGate
+</span></span><span class=line><span class=cl>RoleManager
+</span></span><span class=line><span class=cl>VipManager
+</span></span><span class=line><span class=cl>EntitlementService
+</span></span></code></pre></td></tr></table></div></div><h3 id=72-观察权限判断>7.2 观察权限判断</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>FeatureGate</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;com.example.demo.FeatureGate&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>FeatureGate</span><span class=p>.</span><span class=nx>isEnabled</span><span class=p>.</span><span class=nx>overload</span><span class=p>(</span><span class=s1>&#39;java.lang.String&#39;</span><span class=p>).</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>featureName</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>result</span> <span class=o>=</span> <span class=k>this</span><span class=p>.</span><span class=nx>isEnabled</span><span class=p>(</span><span class=nx>featureName</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[FeatureGate.isEnabled] &#39;</span> <span class=o>+</span> <span class=nx>featureName</span> <span class=o>+</span> <span class=s1>&#39; =&gt; &#39;</span> <span class=o>+</span> <span class=nx>result</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=nx>result</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>分析目标：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>权限失败发生在客户端还是服务端？
+</span></span><span class=line><span class=cl>客户端只是隐藏按钮，还是阻止请求？
+</span></span><span class=line><span class=cl>服务端是否仍然做强校验？
+</span></span><span class=line><span class=cl>权限失败是否有清晰错误码？
+</span></span></code></pre></td></tr></table></div></div><p>安全审计时，重点不是“怎么绕过客户端权限”，而是验证：</p><blockquote><p>即使客户端显示异常，服务端也必须做最终权限校验。</p></blockquote><h2 id=八设备校验的授权调试思路>八、设备校验的授权调试思路</h2><p>设备校验通常用于风控、统计、灰度和兼容性判断。</p><p>常见字段：</p><div class=table-wrapper><table><thead><tr><th>字段</th><th>来源</th></tr></thead><tbody><tr><td>Android ID</td><td><code>Settings.Secure.ANDROID_ID</code></td></tr><tr><td>App 版本</td><td><code>PackageInfo.versionName</code> / <code>versionCode</code></td></tr><tr><td>系统版本</td><td><code>Build.VERSION.SDK_INT</code></td></tr><tr><td>设备型号</td><td><code>Build.MODEL</code></td></tr><tr><td>厂商</td><td><code>Build.MANUFACTURER</code></td></tr><tr><td>渠道</td><td>manifest / assets / remote config</td></tr><tr><td>网络状态</td><td><code>ConnectivityManager</code></td></tr><tr><td>安装来源</td><td>PackageManager</td></tr></tbody></table></div><h3 id=81-观察自有设备信息聚合类>8.1 观察自有设备信息聚合类</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>DeviceInfoProvider</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;com.example.demo.DeviceInfoProvider&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>DeviceInfoProvider</span><span class=p>.</span><span class=nx>buildDeviceHeaders</span><span class=p>.</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>headers</span> <span class=o>=</span> <span class=k>this</span><span class=p>.</span><span class=nx>buildDeviceHeaders</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[buildDeviceHeaders] &#39;</span> <span class=o>+</span> <span class=nx>headers</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=nx>printStack</span><span class=p>(</span><span class=s1>&#39;buildDeviceHeaders&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=nx>headers</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=82-观察系统-api-读取>8.2 观察系统 API 读取</h3><p>只观察读取行为，不修改返回值：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>Build</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;android.os.Build&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[Build.MODEL] &#39;</span> <span class=o>+</span> <span class=nx>Build</span><span class=p>.</span><span class=nx>MODEL</span><span class=p>.</span><span class=nx>value</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[Build.MANUFACTURER] &#39;</span> <span class=o>+</span> <span class=nx>Build</span><span class=p>.</span><span class=nx>MANUFACTURER</span><span class=p>.</span><span class=nx>value</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>Version</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;android.os.Build$VERSION&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[Build.VERSION.SDK_INT] &#39;</span> <span class=o>+</span> <span class=nx>Version</span><span class=p>.</span><span class=nx>SDK_INT</span><span class=p>.</span><span class=nx>value</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=83-设备校验的审计问题>8.3 设备校验的审计问题</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>设备 ID 是否可重置？
+</span></span><span class=line><span class=cl>是否收集了过多设备信息？
+</span></span><span class=line><span class=cl>是否有隐私合规提示？
+</span></span><span class=line><span class=cl>是否对敏感设备字段做了脱敏？
+</span></span><span class=line><span class=cl>设备校验失败时是否有友好提示？
+</span></span><span class=line><span class=cl>服务端是否依赖单一设备字段做安全判断？
+</span></span></code></pre></td></tr></table></div></div><p>这比“如何伪造设备信息”更适合公开文章，也更符合安全审计的目标。</p><h2 id=九证书校验xml-配置和首次请求观察>九、证书校验、XML 配置和首次请求观察</h2><p>Android 网络安全通常涉及三类内容：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>系统信任证书。
+</span></span><span class=line><span class=cl>App 自带证书。
+</span></span><span class=line><span class=cl>network_security_config.xml。
+</span></span><span class=line><span class=cl>网络库里的证书校验逻辑。
+</span></span></code></pre></td></tr></table></div></div><h3 id=91-network_security_configxml-是什么>9.1 network_security_config.xml 是什么</h3><p>Android 7.0 以后，App 可以通过 <code>network_security_config.xml</code> 配置网络安全策略，例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-xml data-lang=xml><span class=line><span class=cl><span class=nt>&lt;network-security-config&gt;</span>
+</span></span><span class=line><span class=cl>    <span class=nt>&lt;domain-config</span> <span class=na>cleartextTrafficPermitted=</span><span class=s>&#34;false&#34;</span><span class=nt>&gt;</span>
+</span></span><span class=line><span class=cl>        <span class=nt>&lt;domain</span> <span class=na>includeSubdomains=</span><span class=s>&#34;true&#34;</span><span class=nt>&gt;</span>api.example.com<span class=nt>&lt;/domain&gt;</span>
+</span></span><span class=line><span class=cl>        <span class=nt>&lt;trust-anchors&gt;</span>
+</span></span><span class=line><span class=cl>            <span class=nt>&lt;certificates</span> <span class=na>src=</span><span class=s>&#34;system&#34;</span> <span class=nt>/&gt;</span>
+</span></span><span class=line><span class=cl>        <span class=nt>&lt;/trust-anchors&gt;</span>
+</span></span><span class=line><span class=cl>    <span class=nt>&lt;/domain-config&gt;</span>
+</span></span><span class=line><span class=cl><span class=nt>&lt;/network-security-config&gt;</span>
+</span></span></code></pre></td></tr></table></div></div><p>常见观察点：</p><div class=table-wrapper><table><thead><tr><th>配置</th><th>含义</th></tr></thead><tbody><tr><td><code>cleartextTrafficPermitted</code></td><td>是否允许明文 HTTP</td></tr><tr><td><code>domain-config</code></td><td>针对特定域名配置安全策略</td></tr><tr><td><code>trust-anchors</code></td><td>信任系统证书、自带证书或调试证书</td></tr><tr><td><code>pin-set</code></td><td>证书固定配置</td></tr><tr><td><code>debug-overrides</code></td><td>debug 构建下的额外信任配置</td></tr></tbody></table></div><p>在授权审计中，我们关注：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>生产包是否错误允许 HTTP？
+</span></span><span class=line><span class=cl>debug-only 配置是否误进生产包？
+</span></span><span class=line><span class=cl>证书配置是否过期？
+</span></span><span class=line><span class=cl>域名范围是否过宽？
+</span></span></code></pre></td></tr></table></div></div><h3 id=92-首次请求保存的-xml--配置>9.2 首次请求保存的 XML / 配置</h3><p>有些 App 第一次启动时会请求远端配置，然后保存到本地：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>shared_prefs/remote_config.xml
+</span></span><span class=line><span class=cl>shared_prefs/network_config.xml
+</span></span><span class=line><span class=cl>shared_prefs/security_config.xml
+</span></span><span class=line><span class=cl>files/certs/
+</span></span><span class=line><span class=cl>files/config/
+</span></span><span class=line><span class=cl>databases/config.db
+</span></span></code></pre></td></tr></table></div></div><p>授权观察方法：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>spawn 模式启动 App。
+</span></span><span class=line><span class=cl>Hook SharedPreferences 写入。
+</span></span><span class=line><span class=cl>Hook 自有 ConfigManager / NetworkConfigLoader。
+</span></span><span class=line><span class=cl>观察首次请求 URL 和配置版本。
+</span></span><span class=line><span class=cl>检查本地保存文件名和 key。
+</span></span></code></pre></td></tr></table></div></div><h3 id=93-观察证书相关初始化>9.3 观察证书相关初始化</h3><p>在自有 App 里，如果有这些类名，可以优先观察：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>CertificateManager
+</span></span><span class=line><span class=cl>CertificateStore
+</span></span><span class=line><span class=cl>NetworkSecurityConfigLoader
+</span></span><span class=line><span class=cl>TrustManagerFactory
+</span></span><span class=line><span class=cl>SslSocketFactoryProvider
+</span></span><span class=line><span class=cl>ApiClientFactory
+</span></span></code></pre></td></tr></table></div></div><p>示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-javascript data-lang=javascript><span class=line><span class=cl><span class=nx>Java</span><span class=p>.</span><span class=nx>perform</span><span class=p>(</span><span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>CertManager</span> <span class=o>=</span> <span class=nx>Java</span><span class=p>.</span><span class=nx>use</span><span class=p>(</span><span class=s1>&#39;com.example.demo.security.CertificateManager&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>CertManager</span><span class=p>.</span><span class=nx>loadCertificates</span><span class=p>.</span><span class=nx>implementation</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s1>&#39;[CertificateManager.loadCertificates] called&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=nx>printStack</span><span class=p>(</span><span class=s1>&#39;loadCertificates&#39;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>this</span><span class=p>.</span><span class=nx>loadCertificates</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里的目标是审计证书从哪里加载、什么时候加载、是否有异常，不是绕过证书校验。</p><h3 id=94-证书校验的审计问题>9.4 证书校验的审计问题</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>是否禁止明文 HTTP？
+</span></span><span class=line><span class=cl>是否有 debug 配置进入 release 包？
+</span></span><span class=line><span class=cl>证书过期后是否有可观测日志？
+</span></span><span class=line><span class=cl>证书更新是否支持灰度和回滚？
+</span></span><span class=line><span class=cl>证书失败是否给用户明确提示？
+</span></span><span class=line><span class=cl>是否把证书、公钥、配置版本纳入发布流程？
+</span></span></code></pre></td></tr></table></div></div><h2 id=十frida-检测和代理检测机制>十、Frida 检测和代理检测机制</h2><p>很多 App 会检测调试环境、代理环境或 Hook 工具。</p><p>公开文章可以讲机制和防御目的，但不应该提供绕过脚本。</p><h3 id=101-frida-检测常见思路>10.1 Frida 检测常见思路</h3><div class=table-wrapper><table><thead><tr><th>检测点</th><th>说明</th></tr></thead><tbody><tr><td>进程 / 端口</td><td>检查是否存在异常调试进程或默认端口</td></tr><tr><td>so / 模块</td><td>检查进程内是否加载可疑模块</td></tr><tr><td>线程名</td><td>检查异常线程名称</td></tr><tr><td>文件路径</td><td>检查常见工具文件路径</td></tr><tr><td>Java 方法完整性</td><td>检查关键方法是否被替换</td></tr><tr><td>Native 函数完整性</td><td>检查 PLT / GOT / inline patch 痕迹</td></tr><tr><td>ptrace 状态</td><td>检查是否被调试器附加</td></tr></tbody></table></div><p>这些检测的安全目的：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>保护账号安全。
+</span></span><span class=line><span class=cl>防止恶意自动化。
+</span></span><span class=line><span class=cl>保护支付、登录、风控和隐私数据。
+</span></span><span class=line><span class=cl>降低接口滥用和数据泄露风险。
+</span></span></code></pre></td></tr></table></div></div><h3 id=102-代理检测常见思路>10.2 代理检测常见思路</h3><div class=table-wrapper><table><thead><tr><th>检测点</th><th>说明</th></tr></thead><tbody><tr><td>系统代理</td><td>检查 Wi-Fi / 系统代理配置</td></tr><tr><td>VPN / TUN</td><td>检查是否存在 VPN 网络接口</td></tr><tr><td>证书信任链</td><td>检查证书链是否异常</td></tr><tr><td>DNS / IP</td><td>检查解析结果与预期是否一致</td></tr><tr><td>TLS 指纹</td><td>检查客户端 TLS 行为是否异常</td></tr><tr><td>请求延迟</td><td>检查代理导致的异常延迟</td></tr></tbody></table></div><p>代理检测不一定是“反调试”，也可能是为了：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>提醒用户网络环境异常。
+</span></span><span class=line><span class=cl>保护登录态和隐私数据。
+</span></span><span class=line><span class=cl>避免中间人攻击。
+</span></span><span class=line><span class=cl>满足金融、支付、医疗等行业合规要求。
+</span></span></code></pre></td></tr></table></div></div><h3 id=103-审计中应该怎么写>10.3 审计中应该怎么写</h3><p>合规审计报告不应该写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>如何绕过 Frida 检测。
+</span></span><span class=line><span class=cl>如何绕过代理检测。
+</span></span><span class=line><span class=cl>如何关闭证书校验。
+</span></span></code></pre></td></tr></table></div></div><p>应该写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>检测逻辑是否误伤正常用户？
+</span></span><span class=line><span class=cl>错误提示是否清晰？
+</span></span><span class=line><span class=cl>检测失败是否影响核心业务？
+</span></span><span class=line><span class=cl>检测是否有日志和可观测性？
+</span></span><span class=line><span class=cl>安全策略是否只在高风险场景启用？
+</span></span><span class=line><span class=cl>是否有客服 / 风控 / 运维定位入口？
+</span></span></code></pre></td></tr></table></div></div><h2 id=十一把-frida-观察结果整理成流程图>十一、把 Frida 观察结果整理成流程图</h2><p>移动端分析最怕“日志很多，但结论很少”。</p><p>建议把观察结果整理成流程：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>用户点击登录按钮
+</span></span><span class=line><span class=cl>  ↓ LoginViewModel.submitLogin
+</span></span><span class=line><span class=cl>  ↓ AuthRepository.login
+</span></span><span class=line><span class=cl>  ↓ AuthService.login
+</span></span><span class=line><span class=cl>  ↓ DeviceInfoProvider.buildDeviceHeaders
+</span></span><span class=line><span class=cl>  ↓ PermissionManager.checkLoginAllowed
+</span></span><span class=line><span class=cl>  ↓ ApiClient.createRequest
+</span></span><span class=line><span class=cl>  ↓ OkHttp Request.Builder.url / addHeader
+</span></span><span class=line><span class=cl>  ↓ SessionStore.saveToken
+</span></span><span class=line><span class=cl>  ↓ MainActivity.start
+</span></span></code></pre></td></tr></table></div></div><p>再整理成表格：</p><div class=table-wrapper><table><thead><tr><th>阶段</th><th>方法</th><th>观察结果</th><th>结论</th></tr></thead><tbody><tr><td>登录入口</td><td><code>LoginViewModel.submitLogin</code></td><td>点击按钮触发</td><td>UI 层正常</td></tr><tr><td>设备信息</td><td><code>DeviceInfoProvider.buildDeviceHeaders</code></td><td>请求前生成 header</td><td>设备字段在业务层注入</td></tr><tr><td>权限判断</td><td><code>PermissionManager.checkLoginAllowed</code></td><td>登录前判断账号状态</td><td>客户端有前置提示</td></tr><tr><td>网络请求</td><td><code>Request.Builder.url</code></td><td>构造登录 URL</td><td>进入 OkHttp</td></tr><tr><td>保存登录态</td><td><code>SessionStore.saveToken</code></td><td>登录成功后写入</td><td>token 本地缓存</td></tr></tbody></table></div><p>这样写，面试官能看出你不是只会“跑工具”，而是能把移动端链路讲清楚。</p><h2 id=十二llm--agent-如何辅助-frida-日志分析>十二、LLM / Agent 如何辅助 Frida 日志分析</h2><p>Frida 日志通常很长，人工看容易漏。</p><p>可以把 LLM / Agent 用在安全边界内：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>对日志脱敏。
+</span></span><span class=line><span class=cl>从日志中提取方法调用链。
+</span></span><span class=line><span class=cl>识别重复调用和异常调用。
+</span></span><span class=line><span class=cl>把调用栈整理成 Mermaid 流程图。
+</span></span><span class=line><span class=cl>把 SharedPreferences key 分类为登录态、配置、设备、实验开关。
+</span></span><span class=line><span class=cl>生成审计报告初稿。
+</span></span></code></pre></td></tr></table></div></div><p>例如让 Agent 做这些任务：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>输入：脱敏后的 Frida 日志。
+</span></span><span class=line><span class=cl>输出：
+</span></span><span class=line><span class=cl>1. 触发动作。
+</span></span><span class=line><span class=cl>2. 关键方法调用链。
+</span></span><span class=line><span class=cl>3. 请求构造点。
+</span></span><span class=line><span class=cl>4. 本地保存点。
+</span></span><span class=line><span class=cl>5. 可疑异常点。
+</span></span><span class=line><span class=cl>6. 需要人工确认的问题。
+</span></span></code></pre></td></tr></table></div></div><p>注意：不要把真实 token、手机号、身份证、设备号、企业内部域名等敏感数据直接发给外部模型。</p><h2 id=十三常见问题>十三、常见问题</h2><h3 id=q1frida-调试登录流程是不是就是绕过登录>Q1：Frida 调试登录流程，是不是就是绕过登录？</h3><p>不是。授权调试的目标是观察登录流程、定位错误、验证安全设计，而不是修改登录结果。公开文章和审计报告都不应提供绕过登录的脚本。</p><h3 id=q2证书校验可以-hook-吗>Q2：证书校验可以 Hook 吗？</h3><p>在自有 App 的安全审计中，可以观察证书配置加载、初始化时机、失败日志和配置版本。但不应提供绕过证书校验或关闭证书校验的可复用代码。</p><h3 id=q3为什么要关注首次请求保存的-xml>Q3：为什么要关注首次请求保存的 XML？</h3><p>因为很多 App 第一次启动会请求远端配置、证书版本、功能开关、实验配置，并保存到 <code>SharedPreferences</code> 或本地文件。观察这些写入点可以帮助判断初始化链路是否正常。</p><h3 id=q4frida-检测和代理检测是不是坏东西>Q4：Frida 检测和代理检测是不是“坏东西”？</h3><p>不是。它们通常是安全防护的一部分，用于保护账号、支付、隐私和接口安全。审计时应关注误伤、可观测性、用户提示和风险分级，而不是绕过。</p><h3 id=q5面试中怎么讲-frida>Q5：面试中怎么讲 Frida？</h3><p>不要说“我会 hook 绕过某某”。更好的表达是：</p><blockquote><p>我会在授权环境中使用 Frida 做动态观察，结合调用栈、网络日志和本地存储，梳理登录态、权限判断、设备信息和网络请求的调用链，并把结果整理成可审计、可复现的流程图。</p></blockquote><h2 id=十四面试表达>十四、面试表达</h2><p>可以这样总结这篇文章的能力点：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>我理解 Frida 在 App 分析中的定位：它是动态观察工具，不是绕过工具。
+</span></span><span class=line><span class=cl>我能区分 attach 和 spawn，知道什么时候需要观察启动早期逻辑。
+</span></span><span class=line><span class=cl>我能从登录、权限、设备、证书、网络库几个层面拆解 App 请求链路。
+</span></span><span class=line><span class=cl>我能通过 Hook 参数、返回值和调用栈，定位业务方法和网络构造点。
+</span></span><span class=line><span class=cl>我知道 SharedPreferences、XML、远端配置和证书配置在首次请求中的作用。
+</span></span><span class=line><span class=cl>我理解 Frida 检测和代理检测的安全目的，也知道公开表达要强调合规边界。
+</span></span></code></pre></td></tr></table></div></div><p>对于爬虫工程师来说，这类能力的价值不是“破解 App”，而是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>理解移动端数据链路。
+</span></span><span class=line><span class=cl>定位授权采集中的客户端问题。
+</span></span><span class=line><span class=cl>和 App、安全、后端团队沟通接口行为。
+</span></span><span class=line><span class=cl>把移动端分析纳入合规的数据采集工程。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十五总结>十五、总结</h2><p>这一篇我们把 Frida 从“会 Hook 一个方法”，推进到了更完整的移动端链路分析：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Frida attach / spawn 两种模式。
+</span></span><span class=line><span class=cl>如何寻找需要 Hook 的接口。
+</span></span><span class=line><span class=cl>登录流程的观察方法。
+</span></span><span class=line><span class=cl>权限校验的观察方法。
+</span></span><span class=line><span class=cl>设备校验的观察方法。
+</span></span><span class=line><span class=cl>证书校验、XML 配置和首次请求的观察方法。
+</span></span><span class=line><span class=cl>常用 Hook 模板。
+</span></span><span class=line><span class=cl>调用堆栈打印。
+</span></span><span class=line><span class=cl>Frida 检测和代理检测机制。
+</span></span><span class=line><span class=cl>LLM / Agent 辅助日志分析。
+</span></span></code></pre></td></tr></table></div></div><p>边界再强调一次：</p><blockquote><p>授权调试的目标是观察、定位、审计和改进系统，不是绕过登录、绕过权限、绕过证书、绕过检测。</p></blockquote><p>到这里，爬虫系列已经从 Web、浏览器自动化、验证码、Frida、WebDriver 检测，逐步扩展到更完整的数据采集工程能力。后续如果继续扩展，可以写“移动端接口日志审计与合规采集平台设计”，把 Frida 日志、网络日志、任务调度和 AI Agent 诊断串成一个完整系统。</p></section><footer class=article-footer><section class=article-tags><a href=/tags/frida/>Frida</a>
+<a href=/tags/android/>Android</a>
+<a href=/tags/hook/>Hook</a>
+<a href=/tags/%E7%A7%BB%E5%8A%A8%E7%AB%AF%E5%AE%89%E5%85%A8/>移动端安全</a>
+<a href=/tags/%E7%99%BB%E5%BD%95%E6%A0%A1%E9%AA%8C/>登录校验</a>
+<a href=/tags/%E8%AF%81%E4%B9%A6%E6%A0%A1%E9%AA%8C/>证书校验</a>
+<a href=/tags/app-%E8%B0%83%E8%AF%95/>App 调试</a>
+<a href=/tags/%E5%90%88%E8%A7%84/>合规</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/frida-android-authorized-debugging-guide/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 38：Frida Android 授权调试详细教程</h2></div></a></article><article><a href=/p/app-crawling-frida-hook-basics/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 18：App 抓包与 Frida Hook 基础认知</h2></div></a></article><article><a href=/p/js-proxy-environment-patching-dumping/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 42：JS Proxy 补环境与吐环境技术深度解析</h2></div></a></article><article><a href=/p/slider-captcha-mechanism-analysis-compliance/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 40：滑块验证码机制分析与合规应对</h2></div></a></article><article><a href=/p/webdriver-detection-compliance-response-guide/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 39：WebDriver 检测机制与合规应对教程</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

@@ -1,0 +1,1209 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content="上一篇，我们构建了一个网页结构化抽取 Skill。\n它的核心是：把网页内容按照 Schema 抽取成稳定 JSON，并通过清洗、缺失处理、证据约束和校验脚本保证结果可靠。\n这一篇，我们继续沿着数据采集工程往下走，构建另一个非常实用的 Skill：爬虫异常诊断 Skill。\n因为真实爬虫项目里，写出脚本只是开始。\n更常见的问题是：\n1 2 3 4 5 6 为什么突然 403？ 为什么大量 429？ 为什么页面返回成功但没有数据？ 为什么选择器昨天还能用，今天失效了？ 为什么任务卡住不动？ 为什么重试越重试越失败？ 如果每次都靠人工翻日志、猜原因、临时问模型，就很容易遗漏证据。\n这一篇我们就把这类问题封装成一个可复用的 Agent Skill。\n"><title>AI Agent Skill 实战笔记 06：实战构建一个爬虫异常诊断 Skill</title><link rel=canonical href=https://tkdwbiao.github.io/p/ai-agent-skill-build-crawler-diagnosis-skill/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="AI Agent Skill 实战笔记 06：实战构建一个爬虫异常诊断 Skill"><meta property='og:description' content="上一篇，我们构建了一个网页结构化抽取 Skill。\n它的核心是：把网页内容按照 Schema 抽取成稳定 JSON，并通过清洗、缺失处理、证据约束和校验脚本保证结果可靠。\n这一篇，我们继续沿着数据采集工程往下走，构建另一个非常实用的 Skill：爬虫异常诊断 Skill。\n因为真实爬虫项目里，写出脚本只是开始。\n更常见的问题是：\n1 2 3 4 5 6 为什么突然 403？ 为什么大量 429？ 为什么页面返回成功但没有数据？ 为什么选择器昨天还能用，今天失效了？ 为什么任务卡住不动？ 为什么重试越重试越失败？ 如果每次都靠人工翻日志、猜原因、临时问模型，就很容易遗漏证据。\n这一篇我们就把这类问题封装成一个可复用的 Agent Skill。\n"><meta property='og:url' content='https://tkdwbiao.github.io/p/ai-agent-skill-build-crawler-diagnosis-skill/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='AI Agent'><meta property='article:tag' content='Skill'><meta property='article:tag' content='LangGraph'><meta property='article:tag' content='LLM'><meta property='article:tag' content='Agent 工程化'><meta property='article:published_time' content='2026-03-11T10:00:00+08:00'><meta property='article:modified_time' content='2026-03-11T10:00:00+08:00'><meta name=twitter:title content="AI Agent Skill 实战笔记 06：实战构建一个爬虫异常诊断 Skill"><meta name=twitter:description content="上一篇，我们构建了一个网页结构化抽取 Skill。\n它的核心是：把网页内容按照 Schema 抽取成稳定 JSON，并通过清洗、缺失处理、证据约束和校验脚本保证结果可靠。\n这一篇，我们继续沿着数据采集工程往下走，构建另一个非常实用的 Skill：爬虫异常诊断 Skill。\n因为真实爬虫项目里，写出脚本只是开始。\n更常见的问题是：\n1 2 3 4 5 6 为什么突然 403？ 为什么大量 429？ 为什么页面返回成功但没有数据？ 为什么选择器昨天还能用，今天失效了？ 为什么任务卡住不动？ 为什么重试越重试越失败？ 如果每次都靠人工翻日志、猜原因、临时问模型，就很容易遗漏证据。\n这一篇我们就把这类问题封装成一个可复用的 Agent Skill。\n"></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一为什么需要爬虫异常诊断-skill>一、为什么需要爬虫异常诊断 Skill</a></li><li><a href=#二这个-skill-的目标>二、这个 Skill 的目标</a></li><li><a href=#三诊断-skill-的输入是什么>三、诊断 Skill 的输入是什么</a></li><li><a href=#四诊断-skill-的输出是什么>四、诊断 Skill 的输出是什么</a></li><li><a href=#五目录结构设计>五、目录结构设计</a></li><li><a href=#六设计-skillmd-的-front-matter>六、设计 SKILL.md 的 front matter</a></li><li><a href=#七定义诊断报告-schema>七、定义诊断报告 Schema</a></li><li><a href=#八常见异常类型如何分类>八、常见异常类型如何分类</a><ol><li><a href=#81-network_error>8.1 network_error</a></li><li><a href=#82-timeout>8.2 timeout</a></li><li><a href=#83-auth_required>8.3 auth_required</a></li><li><a href=#84-rate_limit>8.4 rate_limit</a></li><li><a href=#85-parser_error>8.5 parser_error</a></li><li><a href=#86-empty_result>8.6 empty_result</a></li></ol></li><li><a href=#九定义-workflow诊断执行骨架>九、定义 Workflow：诊断执行骨架</a></li><li><a href=#十定义安全和合规边界>十、定义安全和合规边界</a></li><li><a href=#十一设计-markdown-报告模板>十一、设计 Markdown 报告模板</a></li><li><a href=#十二加入典型示例429-限流>十二、加入典型示例：429 限流</a></li><li><a href=#十三加入典型示例解析为空>十三、加入典型示例：解析为空</a></li><li><a href=#十四加入典型示例登录态失效>十四、加入典型示例：登录态失效</a></li><li><a href=#十五如何发现诊断证据>十五、如何发现诊断证据</a></li><li><a href=#十六诊断优先级怎么排>十六、诊断优先级怎么排</a></li><li><a href=#十七完整-skillmd-示例>十七、完整 SKILL.md 示例</a></li><li><a href=#十八如何接入-langgraph-工作流>十八、如何接入 LangGraph 工作流</a></li><li><a href=#十九工程化思考>十九、工程化思考</a><ol><li><a href=#191-诊断报告可以入库>19.1 诊断报告可以入库</a></li><li><a href=#192-诊断可以反哺监控>19.2 诊断可以反哺监控</a></li><li><a href=#193-诊断可以反哺调度>19.3 诊断可以反哺调度</a></li></ol></li><li><a href=#二十常见问题>二十、常见问题</a><ol><li><a href=#q1诊断-skill-是不是反爬绕过-skill>Q1：诊断 Skill 是不是反爬绕过 Skill？</a></li><li><a href=#q2为什么一定要输出-evidence>Q2：为什么一定要输出 evidence？</a></li><li><a href=#q3所有异常都能自动修复吗>Q3：所有异常都能自动修复吗？</a></li><li><a href=#q4为什么要区分-risk_level>Q4：为什么要区分 risk_level？</a></li></ol></li><li><a href=#二十一面试表达>二十一、面试表达</a></li><li><a href=#二十二总结>二十二、总结</a></li><li><a href=#参考资料>参考资料</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/agent-%E7%B3%BB%E5%88%97/ style=background-color:#beefe2;color:#0f3d32>Agent 系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/ai-agent-skill-build-crawler-diagnosis-skill/>AI Agent Skill 实战笔记 06：实战构建一个爬虫异常诊断 Skill</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-03-11T10:00:00+08:00>2026-03-11 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 15 分钟</time></div></footer></div></header><section class=article-content><p>上一篇，我们构建了一个网页结构化抽取 Skill。</p><p>它的核心是：把网页内容按照 Schema 抽取成稳定 JSON，并通过清洗、缺失处理、证据约束和校验脚本保证结果可靠。</p><p>这一篇，我们继续沿着数据采集工程往下走，构建另一个非常实用的 Skill：<strong>爬虫异常诊断 Skill</strong>。</p><p>因为真实爬虫项目里，写出脚本只是开始。</p><p>更常见的问题是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>为什么突然 403？
+</span></span><span class=line><span class=cl>为什么大量 429？
+</span></span><span class=line><span class=cl>为什么页面返回成功但没有数据？
+</span></span><span class=line><span class=cl>为什么选择器昨天还能用，今天失效了？
+</span></span><span class=line><span class=cl>为什么任务卡住不动？
+</span></span><span class=line><span class=cl>为什么重试越重试越失败？
+</span></span></code></pre></td></tr></table></div></div><p>如果每次都靠人工翻日志、猜原因、临时问模型，就很容易遗漏证据。</p><p>这一篇我们就把这类问题封装成一个可复用的 Agent Skill。</p><h2 id=一为什么需要爬虫异常诊断-skill>一、为什么需要爬虫异常诊断 Skill</h2><p>爬虫异常诊断和普通报错分析不太一样。</p><p>普通代码报错通常有明确异常堆栈：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>TypeError
+</span></span><span class=line><span class=cl>ValueError
+</span></span><span class=line><span class=cl>ConnectionError
+</span></span><span class=line><span class=cl>TimeoutError
+</span></span></code></pre></td></tr></table></div></div><p>但爬虫异常往往是多因素叠加：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>HTTP 状态码异常。
+</span></span><span class=line><span class=cl>响应头变化。
+</span></span><span class=line><span class=cl>页面结构变化。
+</span></span><span class=line><span class=cl>登录态失效。
+</span></span><span class=line><span class=cl>任务频率过高。
+</span></span><span class=line><span class=cl>队列堆积。
+</span></span><span class=line><span class=cl>代理或网络不稳定。
+</span></span><span class=line><span class=cl>目标系统临时不可用。
+</span></span><span class=line><span class=cl>解析规则失效。
+</span></span></code></pre></td></tr></table></div></div><p>更麻烦的是，有些异常不是“程序崩了”，而是“程序看起来成功了，但数据是空的”。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>HTTP 200
+</span></span><span class=line><span class=cl>响应体也有 HTML
+</span></span><span class=line><span class=cl>但正文区域为空
+</span></span><span class=line><span class=cl>列表页没有目标节点
+</span></span><span class=line><span class=cl>字段抽取全部是 null
+</span></span></code></pre></td></tr></table></div></div><p>这类问题如果没有稳定诊断流程，很容易只得到一句：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>可能被反爬了。
+</span></span></code></pre></td></tr></table></div></div><p>但这句话没有工程价值。</p><p>真正有价值的诊断应该回答：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>异常类型是什么？
+</span></span><span class=line><span class=cl>证据是什么？
+</span></span><span class=line><span class=cl>可能原因有哪些？
+</span></span><span class=line><span class=cl>优先排查什么？
+</span></span><span class=line><span class=cl>应该采取什么合规动作？
+</span></span><span class=line><span class=cl>风险等级如何？
+</span></span><span class=line><span class=cl>是否需要人工介入？
+</span></span></code></pre></td></tr></table></div></div><p>这就是爬虫异常诊断 Skill 的意义。</p><p>它不是为了帮助绕过第三方限制，而是为了在授权、合规、自有系统或内部审计场景下，把问题分析变得结构化、可复核、可追踪。</p><h2 id=二这个-skill-的目标>二、这个 Skill 的目标</h2><p>这个 Skill 可以命名为：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>crawler-diagnosis-skill
+</span></span></code></pre></td></tr></table></div></div><p>它的目标是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>根据 HTTP 状态码、响应头、响应片段、错误日志、任务状态、重试记录和抽取结果，输出结构化的爬虫异常诊断报告，说明证据、可能原因、建议动作、风险等级和是否需要人工复核。
+</span></span></code></pre></td></tr></table></div></div><p>它要处理的不是单一错误，而是一类诊断任务。</p><p>至少包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>1. 识别异常类型。
+</span></span><span class=line><span class=cl>2. 整理可用证据。
+</span></span><span class=line><span class=cl>3. 区分网络、协议、权限、频率、页面结构、解析规则、任务调度等问题。
+</span></span><span class=line><span class=cl>4. 给出合规、温和、可审计的建议动作。
+</span></span><span class=line><span class=cl>5. 避免直接给出绕过第三方限制的方案。
+</span></span><span class=line><span class=cl>6. 输出稳定的诊断报告 JSON 或 Markdown。
+</span></span><span class=line><span class=cl>7. 支持后续接入 LangGraph 工作流。
+</span></span></code></pre></td></tr></table></div></div><p>也就是说，它不是一个“万能反爬助手”。</p><p>它应该是一个：</p><blockquote><p>面向授权采集、自有系统测试、内部稳定性排查和合规数据处理的异常诊断能力包。</p></blockquote><h2 id=三诊断-skill-的输入是什么>三、诊断 Skill 的输入是什么</h2><p>爬虫异常诊断最重要的是证据。</p><p>没有证据的诊断，就是猜测。</p><p>所以 Skill 要明确输入。</p><p>可以在 <code>SKILL.md</code> 里写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-markdown data-lang=markdown><span class=line><span class=cl><span class=gu>## Inputs
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>-</span> HTTP status code.
+</span></span><span class=line><span class=cl><span class=k>-</span> Request URL or URL pattern, if safe to include.
+</span></span><span class=line><span class=cl><span class=k>-</span> Request method.
+</span></span><span class=line><span class=cl><span class=k>-</span> Response headers.
+</span></span><span class=line><span class=cl><span class=k>-</span> Response body snippet.
+</span></span><span class=line><span class=cl><span class=k>-</span> Error logs or exception stack.
+</span></span><span class=line><span class=cl><span class=k>-</span> Retry count and retry interval.
+</span></span><span class=line><span class=cl><span class=k>-</span> Task status and queue information.
+</span></span><span class=line><span class=cl><span class=k>-</span> Parser result, such as extracted item count or missing fields.
+</span></span><span class=line><span class=cl><span class=k>-</span> Expected behavior and actual behavior.
+</span></span></code></pre></td></tr></table></div></div><p>例如一次异常诊断输入可以是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;status_code&#34;</span><span class=p>:</span> <span class=mi>429</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;method&#34;</span><span class=p>:</span> <span class=s2>&#34;GET&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;url_pattern&#34;</span><span class=p>:</span> <span class=s2>&#34;https://example.com/articles?page=*&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;response_headers&#34;</span><span class=p>:</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nt>&#34;retry-after&#34;</span><span class=p>:</span> <span class=s2>&#34;60&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=nt>&#34;content-type&#34;</span><span class=p>:</span> <span class=s2>&#34;text/html&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;response_snippet&#34;</span><span class=p>:</span> <span class=s2>&#34;Too many requests&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;retry_count&#34;</span><span class=p>:</span> <span class=mi>5</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;retry_interval_seconds&#34;</span><span class=p>:</span> <span class=mi>1</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;task_status&#34;</span><span class=p>:</span> <span class=s2>&#34;failed&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;expected&#34;</span><span class=p>:</span> <span class=s2>&#34;return article list&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;actual&#34;</span><span class=p>:</span> <span class=s2>&#34;all retries returned 429&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这类输入足够支持一个结构化判断。</p><p>但如果用户只说：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>爬虫挂了，帮我看看。
+</span></span></code></pre></td></tr></table></div></div><p>Skill 应该先提醒需要哪些证据，而不是直接猜原因。</p><h2 id=四诊断-skill-的输出是什么>四、诊断 Skill 的输出是什么</h2><p>输出最好是结构化报告。</p><p>例如：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;error_type&#34;</span><span class=p>:</span> <span class=s2>&#34;rate_limit&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;risk_level&#34;</span><span class=p>:</span> <span class=s2>&#34;medium&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;evidence&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;HTTP status code is 429&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Response header contains retry-after: 60&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Retry interval is 1 second&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;All 5 retries returned the same status&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;possible_causes&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Request frequency is higher than the service allows&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Retry policy does not respect retry-after header&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Multiple tasks may be hitting the same endpoint concurrently&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;recommended_actions&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Reduce request rate within authorized limits&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Respect retry-after before retrying&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Add exponential backoff and jitter&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Review task scheduling and concurrency settings&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;needs_manual_review&#34;</span><span class=p>:</span> <span class=kc>false</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个输出比“可能被限流了”好很多。</p><p>因为它包含：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>错误类型。
+</span></span><span class=line><span class=cl>风险等级。
+</span></span><span class=line><span class=cl>证据。
+</span></span><span class=line><span class=cl>可能原因。
+</span></span><span class=line><span class=cl>建议动作。
+</span></span><span class=line><span class=cl>是否需要人工复核。
+</span></span></code></pre></td></tr></table></div></div><p>这就是 Skill 化的价值：</p><blockquote><p>把模糊经验变成可复用、可审计、可持续改进的诊断格式。</p></blockquote><h2 id=五目录结构设计>五、目录结构设计</h2><p>一个爬虫异常诊断 Skill 可以设计成：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>crawler-diagnosis-skill/
+</span></span><span class=line><span class=cl>├── SKILL.md
+</span></span><span class=line><span class=cl>├── schemas/
+</span></span><span class=line><span class=cl>│   └── diagnosis_report_schema.json
+</span></span><span class=line><span class=cl>├── examples/
+</span></span><span class=line><span class=cl>│   ├── timeout_input.json
+</span></span><span class=line><span class=cl>│   ├── timeout_report.json
+</span></span><span class=line><span class=cl>│   ├── rate_limit_input.json
+</span></span><span class=line><span class=cl>│   ├── rate_limit_report.json
+</span></span><span class=line><span class=cl>│   ├── parser_empty_input.json
+</span></span><span class=line><span class=cl>│   └── parser_empty_report.json
+</span></span><span class=line><span class=cl>├── templates/
+</span></span><span class=line><span class=cl>│   └── diagnosis_report_template.md
+</span></span><span class=line><span class=cl>├── scripts/
+</span></span><span class=line><span class=cl>│   └── validate_report.py
+</span></span><span class=line><span class=cl>└── README.md
+</span></span></code></pre></td></tr></table></div></div><p>每个目录的职责是：</p><div class=table-wrapper><table><thead><tr><th>文件 / 目录</th><th>作用</th></tr></thead><tbody><tr><td><code>SKILL.md</code></td><td>定义诊断流程、输入输出、规则边界</td></tr><tr><td><code>schemas/</code></td><td>约束诊断报告字段</td></tr><tr><td><code>examples/</code></td><td>提供典型异常输入和报告样例</td></tr><tr><td><code>templates/</code></td><td>存放 Markdown 报告模板</td></tr><tr><td><code>scripts/</code></td><td>校验诊断报告结构</td></tr><tr><td><code>README.md</code></td><td>给人看的维护说明</td></tr></tbody></table></div><p>如果只是个人使用，可以先只写 <code>SKILL.md</code>。</p><p>但如果要把这个 Skill 接入自动化平台，就应该加 Schema、示例和校验脚本。</p><h2 id=六设计-skillmd-的-front-matter>六、设计 SKILL.md 的 front matter</h2><p><code>SKILL.md</code> 的 front matter 可以这样写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-yaml data-lang=yaml><span class=line><span class=cl><span class=nn>---</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=nt>name</span><span class=p>:</span><span class=w> </span><span class=l>crawler-diagnosis-skill</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=nt>description</span><span class=p>:</span><span class=w> </span><span class=l>Use this skill when diagnosing crawler failures from HTTP status codes, response headers, response snippets, error logs, retry records, parser results, and task states, especially when the output should be a structured, evidence-based, compliance-oriented diagnosis report.</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=nn>---</span><span class=w>
+</span></span></span></code></pre></td></tr></table></div></div><p>这个描述里有几个关键信息：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>crawler failures：说明任务类型。
+</span></span><span class=line><span class=cl>HTTP status codes / headers / logs：说明输入证据。
+</span></span><span class=line><span class=cl>structured report：说明输出格式。
+</span></span><span class=line><span class=cl>evidence-based：强调基于证据。
+</span></span><span class=line><span class=cl>compliance-oriented：强调合规边界。
+</span></span></code></pre></td></tr></table></div></div><p>这比：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Use this skill for crawler problems.
+</span></span></code></pre></td></tr></table></div></div><p>清楚得多。</p><p>Skill 的 description 本质上是路由规则，不是广告语。</p><h2 id=七定义诊断报告-schema>七、定义诊断报告 Schema</h2><p><code>schemas/diagnosis_report_schema.json</code> 可以这样设计：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span><span class=lnt>46
+</span><span class=lnt>47
+</span><span class=lnt>48
+</span><span class=lnt>49
+</span><span class=lnt>50
+</span><span class=lnt>51
+</span><span class=lnt>52
+</span><span class=lnt>53
+</span><span class=lnt>54
+</span><span class=lnt>55
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;type&#34;</span><span class=p>:</span> <span class=s2>&#34;object&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;required&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;error_type&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;risk_level&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;evidence&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;possible_causes&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;recommended_actions&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;needs_manual_review&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;properties&#34;</span><span class=p>:</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nt>&#34;error_type&#34;</span><span class=p>:</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=nt>&#34;type&#34;</span><span class=p>:</span> <span class=s2>&#34;string&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=nt>&#34;enum&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;network_error&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;timeout&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;dns_error&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;http_error&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;auth_required&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;rate_limit&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;server_error&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;parser_error&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;empty_result&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;schema_mismatch&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;task_scheduling_error&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;unknown&#34;</span>
+</span></span><span class=line><span class=cl>      <span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl>    <span class=nt>&#34;risk_level&#34;</span><span class=p>:</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=nt>&#34;type&#34;</span><span class=p>:</span> <span class=s2>&#34;string&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=nt>&#34;enum&#34;</span><span class=p>:</span> <span class=p>[</span><span class=s2>&#34;low&#34;</span><span class=p>,</span> <span class=s2>&#34;medium&#34;</span><span class=p>,</span> <span class=s2>&#34;high&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl>    <span class=nt>&#34;evidence&#34;</span><span class=p>:</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=nt>&#34;type&#34;</span><span class=p>:</span> <span class=s2>&#34;array&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=nt>&#34;items&#34;</span><span class=p>:</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=nt>&#34;type&#34;</span><span class=p>:</span> <span class=s2>&#34;string&#34;</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl>    <span class=nt>&#34;possible_causes&#34;</span><span class=p>:</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=nt>&#34;type&#34;</span><span class=p>:</span> <span class=s2>&#34;array&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=nt>&#34;items&#34;</span><span class=p>:</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=nt>&#34;type&#34;</span><span class=p>:</span> <span class=s2>&#34;string&#34;</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl>    <span class=nt>&#34;recommended_actions&#34;</span><span class=p>:</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=nt>&#34;type&#34;</span><span class=p>:</span> <span class=s2>&#34;array&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=nt>&#34;items&#34;</span><span class=p>:</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=nt>&#34;type&#34;</span><span class=p>:</span> <span class=s2>&#34;string&#34;</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl>    <span class=nt>&#34;needs_manual_review&#34;</span><span class=p>:</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=nt>&#34;type&#34;</span><span class=p>:</span> <span class=s2>&#34;boolean&#34;</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>  <span class=p>}</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>Schema 的作用是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>固定报告结构。
+</span></span><span class=line><span class=cl>固定错误类型枚举。
+</span></span><span class=line><span class=cl>固定风险等级。
+</span></span><span class=line><span class=cl>保证 evidence / causes / actions 都是数组。
+</span></span><span class=line><span class=cl>保证人工复核字段存在。
+</span></span></code></pre></td></tr></table></div></div><p>这样后续系统就可以根据 <code>error_type</code> 做统计，根据 <code>risk_level</code> 做告警，根据 <code>needs_manual_review</code> 决定是否进入人工队列。</p><h2 id=八常见异常类型如何分类>八、常见异常类型如何分类</h2><p>诊断 Skill 需要有一套稳定分类。</p><p>可以先定义这些类型。</p><h3 id=81-network_error>8.1 network_error</h3><p>网络错误通常包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>连接失败。
+</span></span><span class=line><span class=cl>连接被重置。
+</span></span><span class=line><span class=cl>网络不可达。
+</span></span><span class=line><span class=cl>代理连接失败。
+</span></span><span class=line><span class=cl>TLS 握手失败。
+</span></span></code></pre></td></tr></table></div></div><p>建议动作偏工程排查：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>检查网络连通性。
+</span></span><span class=line><span class=cl>检查 DNS。
+</span></span><span class=line><span class=cl>检查代理服务健康状态。
+</span></span><span class=line><span class=cl>检查超时设置。
+</span></span><span class=line><span class=cl>检查目标服务是否可达。
+</span></span></code></pre></td></tr></table></div></div><h3 id=82-timeout>8.2 timeout</h3><p>超时可能出现在多个阶段：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>连接超时。
+</span></span><span class=line><span class=cl>读取超时。
+</span></span><span class=line><span class=cl>页面加载超时。
+</span></span><span class=line><span class=cl>浏览器等待超时。
+</span></span></code></pre></td></tr></table></div></div><p>诊断时要看：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>timeout 参数是多少。
+</span></span><span class=line><span class=cl>是否偶发。
+</span></span><span class=line><span class=cl>是否集中在某个域名或接口。
+</span></span><span class=line><span class=cl>响应体是否很大。
+</span></span><span class=line><span class=cl>并发是否过高。
+</span></span></code></pre></td></tr></table></div></div><h3 id=83-auth_required>8.3 auth_required</h3><p>如果返回 401、登录页、权限提示，就可能是认证问题。</p><p>但这里要注意边界。</p><p>建议动作应该是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>检查授权凭证是否配置。
+</span></span><span class=line><span class=cl>检查登录态是否过期。
+</span></span><span class=line><span class=cl>检查访问范围是否在授权内。
+</span></span><span class=line><span class=cl>联系系统管理员确认权限。
+</span></span></code></pre></td></tr></table></div></div><p>不应该输出绕过登录、绕过权限、盗用凭证之类内容。</p><h3 id=84-rate_limit>8.4 rate_limit</h3><p>429、<code>Retry-After</code>、频繁失败、短时间大量请求，都可能指向限流。</p><p>合规建议应该是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>降低请求频率。
+</span></span><span class=line><span class=cl>尊重 Retry-After。
+</span></span><span class=line><span class=cl>增加退避重试。
+</span></span><span class=line><span class=cl>控制并发。
+</span></span><span class=line><span class=cl>加入任务调度和速率预算。
+</span></span></code></pre></td></tr></table></div></div><p>而不是“如何绕过限流”。</p><h3 id=85-parser_error>8.5 parser_error</h3><p>解析错误通常表现为：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>选择器找不到节点。
+</span></span><span class=line><span class=cl>字段为空。
+</span></span><span class=line><span class=cl>JSONPath / XPath 失效。
+</span></span><span class=line><span class=cl>页面结构变化。
+</span></span><span class=line><span class=cl>接口字段变更。
+</span></span></code></pre></td></tr></table></div></div><p>诊断重点是对比：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>当前响应片段。
+</span></span><span class=line><span class=cl>历史正常响应片段。
+</span></span><span class=line><span class=cl>选择器规则。
+</span></span><span class=line><span class=cl>抽取字段缺失情况。
+</span></span></code></pre></td></tr></table></div></div><h3 id=86-empty_result>8.6 empty_result</h3><p>空结果不一定是异常。</p><p>可能原因包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>真的没有数据。
+</span></span><span class=line><span class=cl>分页越界。
+</span></span><span class=line><span class=cl>筛选条件太窄。
+</span></span><span class=line><span class=cl>页面返回了提示页。
+</span></span><span class=line><span class=cl>正文区域异步加载但未等待。
+</span></span><span class=line><span class=cl>解析规则没有命中。
+</span></span></code></pre></td></tr></table></div></div><p>所以 Skill 不能直接说“被反爬”。</p><p>它应该列证据，再给可能原因。</p><h2 id=九定义-workflow诊断执行骨架>九、定义 Workflow：诊断执行骨架</h2><p><code>SKILL.md</code> 里可以写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-markdown data-lang=markdown><span class=line><span class=cl><span class=gu>## Workflow
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>1.</span> Collect available evidence:
+</span></span><span class=line><span class=cl>   <span class=k>-</span> HTTP status code.
+</span></span><span class=line><span class=cl>   <span class=k>-</span> Response headers.
+</span></span><span class=line><span class=cl>   <span class=k>-</span> Response snippet.
+</span></span><span class=line><span class=cl>   <span class=k>-</span> Error stack.
+</span></span><span class=line><span class=cl>   <span class=k>-</span> Retry records.
+</span></span><span class=line><span class=cl>   <span class=k>-</span> Task state.
+</span></span><span class=line><span class=cl>   <span class=k>-</span> Parser result.
+</span></span><span class=line><span class=cl><span class=k>2.</span> Identify the primary symptom.
+</span></span><span class=line><span class=cl><span class=k>3.</span> Map the symptom to an error type.
+</span></span><span class=line><span class=cl><span class=k>4.</span> List concrete evidence.
+</span></span><span class=line><span class=cl><span class=k>5.</span> Generate possible causes, ordered by likelihood.
+</span></span><span class=line><span class=cl><span class=k>6.</span> Recommend safe and compliant actions.
+</span></span><span class=line><span class=cl><span class=k>7.</span> Assign risk level.
+</span></span><span class=line><span class=cl><span class=k>8.</span> Decide whether manual review is needed.
+</span></span><span class=line><span class=cl><span class=k>9.</span> Return a structured diagnosis report.
+</span></span></code></pre></td></tr></table></div></div><p>这个 Workflow 可以避免几个常见问题：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>只看状态码，不看响应体。
+</span></span><span class=line><span class=cl>只看错误堆栈，不看任务调度。
+</span></span><span class=line><span class=cl>只看页面为空，就说被反爬。
+</span></span><span class=line><span class=cl>只给建议，不列证据。
+</span></span><span class=line><span class=cl>建议动作不合规。
+</span></span></code></pre></td></tr></table></div></div><p>一个好的诊断 Skill 必须始终坚持：</p><blockquote><p>先证据，后判断；先分类，后建议；先合规，后自动化。</p></blockquote><h2 id=十定义安全和合规边界>十、定义安全和合规边界</h2><p>这个 Skill 涉及爬虫异常，很容易触碰双用途边界。</p><p>所以边界必须写清楚。</p><p>可以在 <code>SKILL.md</code> 里写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-markdown data-lang=markdown><span class=line><span class=cl><span class=gu>## Safety boundaries
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>Allowed:
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>-</span> Diagnose crawler failures in self-owned systems, authorized data collection, internal testing, and defensive auditing.
+</span></span><span class=line><span class=cl><span class=k>-</span> Explain HTTP status codes, headers, retries, timeouts, parser failures, queue issues, and observability practices.
+</span></span><span class=line><span class=cl><span class=k>-</span> Recommend compliant actions such as reducing rate, respecting retry-after, improving monitoring, fixing selectors, and asking for proper authorization.
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>Not allowed:
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>-</span> Do not provide platform-specific bypass steps.
+</span></span><span class=line><span class=cl><span class=k>-</span> Do not provide CAPTCHA bypass, ban evasion, stealth, fingerprint spoofing, or detection evasion instructions.
+</span></span><span class=line><span class=cl><span class=k>-</span> Do not suggest evading rate limits, access controls, login requirements, or paid APIs.
+</span></span><span class=line><span class=cl><span class=k>-</span> Do not provide scripts intended for unauthorized scraping or abuse.
+</span></span></code></pre></td></tr></table></div></div><p>这段边界非常重要。</p><p>因为 Skill 的目标不是“让爬虫无视规则继续跑”。</p><p>它的目标是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>帮助工程团队理解异常、定位问题、修复自有系统、调整合规采集策略、改善可观测性。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十一设计-markdown-报告模板>十一、设计 Markdown 报告模板</h2><p>除了 JSON，很多团队也需要 Markdown 报告。</p><p><code>templates/diagnosis_report_template.md</code> 可以这样写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-markdown data-lang=markdown><span class=line><span class=cl><span class=gh># Crawler Diagnosis Report
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=gu>## Summary
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>-</span> Error type: {{ error_type }}
+</span></span><span class=line><span class=cl><span class=k>-</span> Risk level: {{ risk_level }}
+</span></span><span class=line><span class=cl><span class=k>-</span> Needs manual review: {{ needs_manual_review }}
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=gu>## Evidence
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>{{ evidence_list }}
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=gu>## Possible causes
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>{{ possible_causes_list }}
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=gu>## Recommended actions
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>{{ recommended_actions_list }}
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=gu>## Notes
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>{{ notes }}
+</span></span></code></pre></td></tr></table></div></div><p>Markdown 报告适合发给人看。</p><p>JSON 报告适合给系统处理。</p><p>Skill 可以根据用户要求选择输出格式。</p><p>默认建议：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>程序调用：输出 JSON。
+</span></span><span class=line><span class=cl>人工排查：输出 Markdown。
+</span></span><span class=line><span class=cl>教学解释：JSON + 简短说明。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十二加入典型示例429-限流>十二、加入典型示例：429 限流</h2><p><code>examples/rate_limit_input.json</code>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;status_code&#34;</span><span class=p>:</span> <span class=mi>429</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;response_headers&#34;</span><span class=p>:</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nt>&#34;retry-after&#34;</span><span class=p>:</span> <span class=s2>&#34;60&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;response_snippet&#34;</span><span class=p>:</span> <span class=s2>&#34;Too many requests&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;retry_count&#34;</span><span class=p>:</span> <span class=mi>5</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;retry_interval_seconds&#34;</span><span class=p>:</span> <span class=mi>1</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;task_concurrency&#34;</span><span class=p>:</span> <span class=mi>20</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;expected&#34;</span><span class=p>:</span> <span class=s2>&#34;return article list&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;actual&#34;</span><span class=p>:</span> <span class=s2>&#34;all retries returned 429&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p><code>examples/rate_limit_report.json</code>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;error_type&#34;</span><span class=p>:</span> <span class=s2>&#34;rate_limit&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;risk_level&#34;</span><span class=p>:</span> <span class=s2>&#34;medium&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;evidence&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;HTTP status code is 429&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Response header contains retry-after: 60&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Retry interval is 1 second&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Task concurrency is 20&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;All 5 retries returned 429&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;possible_causes&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Request frequency exceeds the allowed rate for this authorized collection task&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Retry logic does not respect the retry-after header&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Concurrency setting may be too aggressive for the target service&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;recommended_actions&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Reduce concurrency within the authorized rate limit&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Respect retry-after before sending another request&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Use exponential backoff with jitter&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Add rate-limit metrics and alerts&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;needs_manual_review&#34;</span><span class=p>:</span> <span class=kc>false</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个示例有两个关键点。</p><p>第一，它没有给绕过限流的方法。</p><p>第二，它给的是合规工程建议：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>降频。
+</span></span><span class=line><span class=cl>等待。
+</span></span><span class=line><span class=cl>退避。
+</span></span><span class=line><span class=cl>监控。
+</span></span></code></pre></td></tr></table></div></div><p>这才是正确的异常诊断方向。</p><h2 id=十三加入典型示例解析为空>十三、加入典型示例：解析为空</h2><p><code>examples/parser_empty_input.json</code>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;status_code&#34;</span><span class=p>:</span> <span class=mi>200</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;content_type&#34;</span><span class=p>:</span> <span class=s2>&#34;text/html&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;response_snippet&#34;</span><span class=p>:</span> <span class=s2>&#34;&lt;html&gt;&lt;body&gt;&lt;div class=&#39;empty&#39;&gt;No results&lt;/div&gt;&lt;/body&gt;&lt;/html&gt;&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;selector&#34;</span><span class=p>:</span> <span class=s2>&#34;.article-card&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;extracted_count&#34;</span><span class=p>:</span> <span class=mi>0</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;expected&#34;</span><span class=p>:</span> <span class=s2>&#34;extract article cards&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;actual&#34;</span><span class=p>:</span> <span class=s2>&#34;no article cards extracted&#34;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p><code>examples/parser_empty_report.json</code>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;error_type&#34;</span><span class=p>:</span> <span class=s2>&#34;empty_result&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;risk_level&#34;</span><span class=p>:</span> <span class=s2>&#34;low&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;evidence&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;HTTP status code is 200&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Response body contains No results&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Configured selector is .article-card&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Extracted item count is 0&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;possible_causes&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;The query may genuinely have no results&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;The selector may no longer match the page structure&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;The expected content may be loaded by a separate request&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;The response may be a placeholder or empty-state page&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;recommended_actions&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Compare current HTML with a known good sample&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Verify whether .article-card still exists&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Check filters, pagination, and query parameters&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Add an alert for sudden drops in extracted item count&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;needs_manual_review&#34;</span><span class=p>:</span> <span class=kc>true</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个例子说明：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>HTTP 200 不代表抽取成功。
+</span></span><span class=line><span class=cl>抽取为空不一定是访问受限。
+</span></span><span class=line><span class=cl>要结合响应内容、选择器和历史样本判断。
+</span></span></code></pre></td></tr></table></div></div><h2 id=十四加入典型示例登录态失效>十四、加入典型示例：登录态失效</h2><p><code>examples/auth_required_input.json</code>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;status_code&#34;</span><span class=p>:</span> <span class=mi>200</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;response_snippet&#34;</span><span class=p>:</span> <span class=s2>&#34;&lt;title&gt;Login&lt;/title&gt;&lt;form id=&#39;login-form&#39;&gt;...&lt;/form&gt;&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;expected&#34;</span><span class=p>:</span> <span class=s2>&#34;return dashboard data from an internal authorized system&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;actual&#34;</span><span class=p>:</span> <span class=s2>&#34;returned login page&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;session_age_minutes&#34;</span><span class=p>:</span> <span class=mi>180</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p><code>examples/auth_required_report.json</code>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-json data-lang=json><span class=line><span class=cl><span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;error_type&#34;</span><span class=p>:</span> <span class=s2>&#34;auth_required&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;risk_level&#34;</span><span class=p>:</span> <span class=s2>&#34;medium&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;evidence&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;HTTP status code is 200 but response title is Login&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Response contains login-form&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Expected dashboard data but received login page&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Session age is 180 minutes&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;possible_causes&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Authorized session may have expired&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Credential refresh workflow may have failed&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;The account may not have access to this internal page&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;recommended_actions&#34;</span><span class=p>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Verify that the collection task is within the authorized access scope&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Refresh credentials using the approved authentication flow&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Check session expiration policy&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=s2>&#34;Ask the system owner to confirm account permissions&#34;</span>
+</span></span><span class=line><span class=cl>  <span class=p>],</span>
+</span></span><span class=line><span class=cl>  <span class=nt>&#34;needs_manual_review&#34;</span><span class=p>:</span> <span class=kc>true</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里的建议动作都是授权和合规方向。</p><p>不要把 auth 问题变成“绕过登录”的问题。</p><p>这就是 Skill 需要明确边界的原因。</p><h2 id=十五如何发现诊断证据>十五、如何发现诊断证据</h2><p>一个诊断 Skill 不能只靠用户给的字段。</p><p>它还应该指导用户或 Agent 收集证据。</p><p>常见证据包括：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>HTTP status code。
+</span></span><span class=line><span class=cl>响应头。
+</span></span><span class=line><span class=cl>响应体前 500 到 2000 字符。
+</span></span><span class=line><span class=cl>异常堆栈。
+</span></span><span class=line><span class=cl>重试次数。
+</span></span><span class=line><span class=cl>重试间隔。
+</span></span><span class=line><span class=cl>请求耗时。
+</span></span><span class=line><span class=cl>抽取结果数量。
+</span></span><span class=line><span class=cl>字段缺失比例。
+</span></span><span class=line><span class=cl>任务队列状态。
+</span></span><span class=line><span class=cl>历史正常样本。
+</span></span></code></pre></td></tr></table></div></div><p>例如可以在 Skill 里写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-markdown data-lang=markdown><span class=line><span class=cl><span class=gu>## Evidence collection
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>If the input is insufficient, ask for:
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>-</span> Status code and response headers.
+</span></span><span class=line><span class=cl><span class=k>-</span> A short response body snippet.
+</span></span><span class=line><span class=cl><span class=k>-</span> Error stack trace.
+</span></span><span class=line><span class=cl><span class=k>-</span> Retry count and interval.
+</span></span><span class=line><span class=cl><span class=k>-</span> Extracted item count.
+</span></span><span class=line><span class=cl><span class=k>-</span> Expected vs actual behavior.
+</span></span></code></pre></td></tr></table></div></div><p>这能避免 Agent 在证据不足时胡乱判断。</p><h2 id=十六诊断优先级怎么排>十六、诊断优先级怎么排</h2><p>同一个现象可能有多个原因。</p><p>例如“抽取结果为空”可能是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>真的没数据。
+</span></span><span class=line><span class=cl>选择器失效。
+</span></span><span class=line><span class=cl>异步内容没加载。
+</span></span><span class=line><span class=cl>返回了空状态页。
+</span></span><span class=line><span class=cl>权限不足。
+</span></span><span class=line><span class=cl>请求参数错误。
+</span></span></code></pre></td></tr></table></div></div><p>诊断 Skill 应该按证据排序，而不是平均列举。</p><p>可以遵循这个顺序：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>1. 先看明确错误：异常堆栈、HTTP 4xx / 5xx。
+</span></span><span class=line><span class=cl>2. 再看协议证据：headers、content-type、redirect。
+</span></span><span class=line><span class=cl>3. 再看响应内容：登录页、空状态、错误提示。
+</span></span><span class=line><span class=cl>4. 再看解析结果：字段缺失、数量骤降。
+</span></span><span class=line><span class=cl>5. 再看任务状态：并发、重试、队列、超时。
+</span></span><span class=line><span class=cl>6. 最后才做低置信度推测。
+</span></span></code></pre></td></tr></table></div></div><p>这样输出会更像工程诊断，而不是随口猜测。</p><h2 id=十七完整-skillmd-示例>十七、完整 SKILL.md 示例</h2><p>下面是一个完整的爬虫异常诊断 Skill 示例。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span><span class=lnt>46
+</span><span class=lnt>47
+</span><span class=lnt>48
+</span><span class=lnt>49
+</span><span class=lnt>50
+</span><span class=lnt>51
+</span><span class=lnt>52
+</span><span class=lnt>53
+</span><span class=lnt>54
+</span><span class=lnt>55
+</span><span class=lnt>56
+</span><span class=lnt>57
+</span><span class=lnt>58
+</span><span class=lnt>59
+</span><span class=lnt>60
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-markdown data-lang=markdown><span class=line><span class=cl>---
+</span></span><span class=line><span class=cl>name: crawler-diagnosis-skill
+</span></span><span class=line><span class=cl>description: Use this skill when diagnosing crawler failures from HTTP status codes, response headers, response snippets, error logs, retry records, parser results, and task states, especially when the output should be a structured, evidence-based, compliance-oriented diagnosis report.
+</span></span><span class=line><span class=cl>---
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=gh># Crawler Diagnosis Skill
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=gu>## Purpose
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>Diagnose crawler failures in self-owned systems, authorized collection tasks, internal testing, and defensive auditing scenarios.
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=gu>## Inputs
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>-</span> HTTP status code.
+</span></span><span class=line><span class=cl><span class=k>-</span> Response headers.
+</span></span><span class=line><span class=cl><span class=k>-</span> Response body snippet.
+</span></span><span class=line><span class=cl><span class=k>-</span> Error logs or stack trace.
+</span></span><span class=line><span class=cl><span class=k>-</span> Retry count and retry interval.
+</span></span><span class=line><span class=cl><span class=k>-</span> Task state and queue information.
+</span></span><span class=line><span class=cl><span class=k>-</span> Parser result and extracted item count.
+</span></span><span class=line><span class=cl><span class=k>-</span> Expected behavior and actual behavior.
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=gu>## Outputs
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>A structured diagnosis report with:
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>-</span> <span class=sb>`error_type`</span>
+</span></span><span class=line><span class=cl><span class=k>-</span> <span class=sb>`risk_level`</span>
+</span></span><span class=line><span class=cl><span class=k>-</span> <span class=sb>`evidence`</span>
+</span></span><span class=line><span class=cl><span class=k>-</span> <span class=sb>`possible_causes`</span>
+</span></span><span class=line><span class=cl><span class=k>-</span> <span class=sb>`recommended_actions`</span>
+</span></span><span class=line><span class=cl><span class=k>-</span> <span class=sb>`needs_manual_review`</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=gu>## Workflow
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>1.</span> Collect available evidence.
+</span></span><span class=line><span class=cl><span class=k>2.</span> Identify the primary symptom.
+</span></span><span class=line><span class=cl><span class=k>3.</span> Map the symptom to an error type.
+</span></span><span class=line><span class=cl><span class=k>4.</span> List concrete evidence.
+</span></span><span class=line><span class=cl><span class=k>5.</span> Generate possible causes ordered by likelihood.
+</span></span><span class=line><span class=cl><span class=k>6.</span> Recommend safe and compliant actions.
+</span></span><span class=line><span class=cl><span class=k>7.</span> Assign risk level.
+</span></span><span class=line><span class=cl><span class=k>8.</span> Decide whether manual review is needed.
+</span></span><span class=line><span class=cl><span class=k>9.</span> Return a structured diagnosis report.
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=gu>## Rules
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=k>-</span> Always list evidence before conclusions.
+</span></span><span class=line><span class=cl><span class=k>-</span> Do not invent missing logs, headers, or status codes.
+</span></span><span class=line><span class=cl><span class=k>-</span> If evidence is insufficient, ask for the missing diagnostic information.
+</span></span><span class=line><span class=cl><span class=k>-</span> Prefer compliant actions: lower rate, respect retry-after, fix selectors, improve monitoring, ask for authorization.
+</span></span><span class=line><span class=cl><span class=k>-</span> Do not provide bypass, stealth, evasion, CAPTCHA-solving, ban-evasion, or access-control circumvention instructions.
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=gu>## Validation
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>When JSON output is saved, validate it against:
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=s>```text
+</span></span></span><span class=line><span class=cl>schemas/diagnosis_report_schema.json
+</span></span><span class=line><span class=cl><span class=s>```</span>
+</span></span></code></pre></td></tr></table></div></div><p>这个 Skill 已经具备实用价值。</p><p>它能让 Agent 从“泛泛分析”变成“结构化诊断”。</p><h2 id=十八如何接入-langgraph-工作流>十八、如何接入 LangGraph 工作流</h2><p>爬虫异常诊断 Skill 非常适合接入 LangGraph。</p><p>一个典型流程可以是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>START
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>collect_error_context
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>classify_symptom
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>crawler-diagnosis-skill
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>validate_report
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>risk_level == high?
+</span></span><span class=line><span class=cl>  ├── yes → human_review
+</span></span><span class=line><span class=cl>  └── no → recommend_action
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>END
+</span></span></code></pre></td></tr></table></div></div><p>如果放进智能爬虫助手里，可以是：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>采集任务失败
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>读取任务日志
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>读取响应片段
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>读取重试记录
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>诊断 Skill 输出报告
+</span></span><span class=line><span class=cl>  ↓
+</span></span><span class=line><span class=cl>低风险：自动调整调度参数
+</span></span><span class=line><span class=cl>中风险：生成修复建议
+</span></span><span class=line><span class=cl>高风险：进入人工复核
+</span></span></code></pre></td></tr></table></div></div><p>这里要注意：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>自动化动作必须限制在安全范围内。
+</span></span></code></pre></td></tr></table></div></div><p>例如可以自动做：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>降低并发。
+</span></span><span class=line><span class=cl>延长重试间隔。
+</span></span><span class=line><span class=cl>暂停任务。
+</span></span><span class=line><span class=cl>标记人工复核。
+</span></span><span class=line><span class=cl>修复明显的选择器配置。
+</span></span></code></pre></td></tr></table></div></div><p>不应该自动做：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>绕过访问限制。
+</span></span><span class=line><span class=cl>切换身份规避限制。
+</span></span><span class=line><span class=cl>隐藏自动化行为。
+</span></span><span class=line><span class=cl>尝试未授权访问。
+</span></span></code></pre></td></tr></table></div></div><p>这就是 Agent 工作流的安全边界。</p><h2 id=十九工程化思考>十九、工程化思考</h2><p>一个真正有用的诊断 Skill，不只是写报告。</p><p>它还应该服务于系统持续改进。</p><h3 id=191-诊断报告可以入库>19.1 诊断报告可以入库</h3><p>每次异常诊断都可以保存：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>任务 ID。
+</span></span><span class=line><span class=cl>错误时间。
+</span></span><span class=line><span class=cl>错误类型。
+</span></span><span class=line><span class=cl>风险等级。
+</span></span><span class=line><span class=cl>证据列表。
+</span></span><span class=line><span class=cl>建议动作。
+</span></span><span class=line><span class=cl>是否人工复核。
+</span></span><span class=line><span class=cl>最终处理结果。
+</span></span></code></pre></td></tr></table></div></div><p>这样可以做统计：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>哪类错误最多？
+</span></span><span class=line><span class=cl>哪个站点最不稳定？
+</span></span><span class=line><span class=cl>哪个解析规则最容易失效？
+</span></span><span class=line><span class=cl>哪个任务重试成本最高？
+</span></span></code></pre></td></tr></table></div></div><h3 id=192-诊断可以反哺监控>19.2 诊断可以反哺监控</h3><p>如果经常出现 <code>parser_error</code>，说明要监控字段缺失率。</p><p>如果经常出现 <code>timeout</code>，说明要监控请求耗时分布。</p><p>如果经常出现 <code>rate_limit</code>，说明要监控任务频率和调度预算。</p><p>Skill 的输出可以反向帮助你设计监控指标。</p><h3 id=193-诊断可以反哺调度>19.3 诊断可以反哺调度</h3><p>低风险异常可以自动调整：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>降低并发。
+</span></span><span class=line><span class=cl>增加退避。
+</span></span><span class=line><span class=cl>暂停一段时间。
+</span></span><span class=line><span class=cl>切换到低频任务计划。
+</span></span></code></pre></td></tr></table></div></div><p>高风险异常应该进入人工复核：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>权限异常。
+</span></span><span class=line><span class=cl>大量 4xx。
+</span></span><span class=line><span class=cl>目标系统明确拒绝。
+</span></span><span class=line><span class=cl>疑似超出授权范围。
+</span></span></code></pre></td></tr></table></div></div><p>Agent 的价值不是盲目自动化，而是根据风险级别决定下一步。</p><h2 id=二十常见问题>二十、常见问题</h2><h3 id=q1诊断-skill-是不是反爬绕过-skill>Q1：诊断 Skill 是不是反爬绕过 Skill？</h3><p>不是。</p><p>诊断 Skill 的目标是理解和定位问题，尤其是在自有系统、授权采集、内部审计和合规数据处理场景中。</p><p>它应该提供：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>证据分析。
+</span></span><span class=line><span class=cl>风险判断。
+</span></span><span class=line><span class=cl>合规建议。
+</span></span><span class=line><span class=cl>监控改进。
+</span></span><span class=line><span class=cl>调度优化。
+</span></span><span class=line><span class=cl>人工复核。
+</span></span></code></pre></td></tr></table></div></div><p>不应该提供绕过限制、隐藏行为、规避检测的方案。</p><h3 id=q2为什么一定要输出-evidence>Q2：为什么一定要输出 evidence？</h3><p>因为没有 evidence 的诊断不可复核。</p><p>如果报告只写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>可能是限流。
+</span></span></code></pre></td></tr></table></div></div><p>别人无法判断这个结论靠不靠谱。</p><p>如果报告写：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>HTTP 429。
+</span></span><span class=line><span class=cl>Retry-After: 60。
+</span></span><span class=line><span class=cl>5 次重试间隔只有 1 秒。
+</span></span></code></pre></td></tr></table></div></div><p>结论就有证据支撑。</p><h3 id=q3所有异常都能自动修复吗>Q3：所有异常都能自动修复吗？</h3><p>不能。</p><p>有些可以自动处理：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>临时超时。
+</span></span><span class=line><span class=cl>低风险重试。
+</span></span><span class=line><span class=cl>选择器配置错误。
+</span></span><span class=line><span class=cl>调度频率过高。
+</span></span></code></pre></td></tr></table></div></div><p>有些必须人工确认：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>权限问题。
+</span></span><span class=line><span class=cl>授权范围变化。
+</span></span><span class=line><span class=cl>目标服务明确拒绝。
+</span></span><span class=line><span class=cl>数据质量异常。
+</span></span><span class=line><span class=cl>高风险业务影响。
+</span></span></code></pre></td></tr></table></div></div><h3 id=q4为什么要区分-risk_level>Q4：为什么要区分 risk_level？</h3><p>因为不同风险应该走不同流程。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>low：可以自动重试或修复。
+</span></span><span class=line><span class=cl>medium：生成建议，可能需要人工确认。
+</span></span><span class=line><span class=cl>high：暂停任务，进入人工复核。
+</span></span></code></pre></td></tr></table></div></div><p>这能让 Agent 工作流更可控。</p><h2 id=二十一面试表达>二十一、面试表达</h2><p>如果面试官问：</p><blockquote><p>你如何设计一个爬虫异常诊断 Agent Skill？</p></blockquote><p>可以这样回答：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>我会把它设计成一个基于证据的结构化诊断 Skill，而不是简单让模型猜“是不是被反爬”。
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>它的输入包括 HTTP 状态码、响应头、响应片段、错误堆栈、重试记录、任务状态和抽取结果。Skill 会先收集证据，再识别主要症状，把问题分类为 timeout、rate_limit、auth_required、parser_error、empty_result、task_scheduling_error 等类型，然后输出结构化诊断报告。
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>报告里会包含 error_type、risk_level、evidence、possible_causes、recommended_actions 和 needs_manual_review。建议动作只给合规方向，比如降低频率、尊重 Retry-After、修复选择器、改善监控、确认授权范围，不提供绕过访问控制或规避检测的方案。
+</span></span></code></pre></td></tr></table></div></div><p>如果想强调工程化，可以补充：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>这个 Skill 可以接入 LangGraph 工作流：任务失败后自动收集日志和响应片段，调用诊断 Skill 输出报告，再根据风险等级决定自动降频、重试、暂停任务或进入人工复核。这样诊断结果既能服务当前修复，也能沉淀为监控指标和系统改进依据。
+</span></span></code></pre></td></tr></table></div></div><h2 id=二十二总结>二十二、总结</h2><p>这一篇我们构建了一个爬虫异常诊断 Skill。</p><p>它的核心不是“帮爬虫绕过问题”，而是把异常分析变成一套可复用、可审计、可接入工作流的诊断能力：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>收集证据
+</span></span><span class=line><span class=cl>识别症状
+</span></span><span class=line><span class=cl>分类错误
+</span></span><span class=line><span class=cl>列出依据
+</span></span><span class=line><span class=cl>分析原因
+</span></span><span class=line><span class=cl>给出建议
+</span></span><span class=line><span class=cl>评估风险
+</span></span><span class=line><span class=cl>决定复核
+</span></span><span class=line><span class=cl>沉淀报告
+</span></span></code></pre></td></tr></table></div></div><p>一个好的爬虫异常诊断 Skill 至少要包含：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>清晰的触发描述
+</span></span><span class=line><span class=cl>明确的输入证据
+</span></span><span class=line><span class=cl>结构化输出 Schema
+</span></span><span class=line><span class=cl>错误类型枚举
+</span></span><span class=line><span class=cl>风险等级规则
+</span></span><span class=line><span class=cl>诊断 Workflow
+</span></span><span class=line><span class=cl>正向示例
+</span></span><span class=line><span class=cl>报告模板
+</span></span><span class=line><span class=cl>校验脚本
+</span></span><span class=line><span class=cl>安全和合规边界
+</span></span></code></pre></td></tr></table></div></div><p>这也再次说明了 Skill 的价值：</p><blockquote><p>Skill 不是让 Agent 更“能猜”，而是让 Agent 在固定流程、证据约束、输出结构和安全边界下稳定完成专业任务。</p></blockquote><p>下一篇，我们会进入 Skill 系统设计里非常关键的一环：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Skill Router：如何让 Agent 自动选择合适的技能？
+</span></span></code></pre></td></tr></table></div></div><p>前面我们已经构建了博客写作 Skill、网页抽取 Skill、爬虫诊断 Skill。</p><p>接下来要解决的问题是：当一个 Agent 拥有多个 Skill 时，它如何判断当前任务应该调用哪一个？如果一个任务需要多个 Skill，又应该怎样组合？这就是 Skill Router 要解决的问题。</p><h2 id=参考资料>参考资料</h2><ul><li>Claude Code Skills 文档：<code>https://docs.anthropic.com/en/docs/claude-code/skills</code></li><li>Claude Code 文档索引：<code>https://code.claude.com/docs/en/claude_code_docs_map.md</code></li><li>Claude 平台文档入口：<code>https://platform.claude.com/llms.txt</code></li></ul></section><footer class=article-footer><section class=article-tags><a href=/tags/ai-agent/>AI Agent</a>
+<a href=/tags/skill/>Skill</a>
+<a href=/tags/langgraph/>LangGraph</a>
+<a href=/tags/llm/>LLM</a>
+<a href=/tags/agent-%E5%B7%A5%E7%A8%8B%E5%8C%96/>Agent 工程化</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/ai-agent-skill-series-summary-agent-engineering-abstraction/><div class=article-details><h2 class=article-title>AI Agent Skill 实战笔记 10：Skill 学习总结：Agent 工程化的新抽象</h2></div></a></article><article><a href=/p/ai-agent-skill-based-intelligent-crawling-assistant/><div class=article-details><h2 class=article-title>AI Agent Skill 实战笔记 09：项目实战：基于 Skill 的智能爬虫助手</h2></div></a></article><article><a href=/p/ai-agent-skill-langgraph-multi-skill-workflow/><div class=article-details><h2 class=article-title>AI Agent Skill 实战笔记 08：LangGraph 与 Skill：构建可控的多技能 Agent 工作流</h2></div></a></article><article><a href=/p/ai-agent-skill-router-select-right-skill/><div class=article-details><h2 class=article-title>AI Agent Skill 实战笔记 07：Skill Router：如何让 Agent 自动选择合适的技能？</h2></div></a></article><article><a href=/p/ai-agent-skill-build-webpage-schema-extraction-skill/><div class=article-details><h2 class=article-title>AI Agent Skill 实战笔记 05：实战构建一个网页结构化抽取 Skill</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>

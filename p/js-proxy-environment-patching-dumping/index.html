@@ -1,0 +1,1262 @@
+<!doctype html><html lang=zh-cn dir=ltr><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><meta name=description content='前面第 39 篇我们详细讲了 WebDriver 检测机制，包括 navigator.webdriver、CDP 注入、Canvas/AudioContext 指纹等几十种检测维度。\n那一篇留在浏览器层面：&ldquo;检测到了怎么办&rdquo;。\n这一篇进入 JS 引擎层面——如果 JS 不是在浏览器里运行，而是在一个干净的 Node.js、V8 独立运行环境或自定义沙箱里运行，会发生什么？\n1 2 3 脚本执行 → 访问 navigator → 报错 undefined 脚本执行 → 访问 document → 报错 undefined 脚本执行 → 访问 window → 报错 undefined &ldquo;补环境"就是在非浏览器运行时里，构建一个让 JS 脚本能正常运行的最小浏览器环境。\n&ldquo;吐环境"就是观察一段 JS 脚本到底访问了哪些环境属性。\n这两件事合在一起，是 JS 逆向工程中理解环境检测逻辑的核心技术。\n但必须先说边界：\n本文只讨论 JS 语言机制（Proxy、原型链、属性描述符）在环境模拟和环境诊断中的应用。所有示例用于自有测试组件、安全研究和授权审计。不提供针对特定反爬厂商的环境伪造脚本，不提供可用于未授权采集的完整环境模板，不提供绕过第三方环境检测的生产级代码。\n补环境的价值不是"骗过检测&rdquo;。\n它的价值是：理解一段加密/混淆的 JS 到底检测了什么、为什么这样检测、检测逻辑在代码里的什么位置。\n'><title>大模型时代的数据采集工程 42：JS Proxy 补环境与吐环境技术深度解析</title><link rel=canonical href=https://tkdwbiao.github.io/p/js-proxy-environment-patching-dumping/><link rel=stylesheet href=/scss/style.min.080f7c341f90873d9d1ba5f23c3f411739c25033cf222991f577d5564454fd4e.css><meta property='og:title' content="大模型时代的数据采集工程 42：JS Proxy 补环境与吐环境技术深度解析"><meta property='og:description' content='前面第 39 篇我们详细讲了 WebDriver 检测机制，包括 navigator.webdriver、CDP 注入、Canvas/AudioContext 指纹等几十种检测维度。\n那一篇留在浏览器层面：&ldquo;检测到了怎么办&rdquo;。\n这一篇进入 JS 引擎层面——如果 JS 不是在浏览器里运行，而是在一个干净的 Node.js、V8 独立运行环境或自定义沙箱里运行，会发生什么？\n1 2 3 脚本执行 → 访问 navigator → 报错 undefined 脚本执行 → 访问 document → 报错 undefined 脚本执行 → 访问 window → 报错 undefined &ldquo;补环境"就是在非浏览器运行时里，构建一个让 JS 脚本能正常运行的最小浏览器环境。\n&ldquo;吐环境"就是观察一段 JS 脚本到底访问了哪些环境属性。\n这两件事合在一起，是 JS 逆向工程中理解环境检测逻辑的核心技术。\n但必须先说边界：\n本文只讨论 JS 语言机制（Proxy、原型链、属性描述符）在环境模拟和环境诊断中的应用。所有示例用于自有测试组件、安全研究和授权审计。不提供针对特定反爬厂商的环境伪造脚本，不提供可用于未授权采集的完整环境模板，不提供绕过第三方环境检测的生产级代码。\n补环境的价值不是"骗过检测&rdquo;。\n它的价值是：理解一段加密/混淆的 JS 到底检测了什么、为什么这样检测、检测逻辑在代码里的什么位置。\n'><meta property='og:url' content='https://tkdwbiao.github.io/p/js-proxy-environment-patching-dumping/'><meta property='og:site_name' content='阿彪的秘密空间'><meta property='og:type' content='article'><meta property='article:section' content='Post'><meta property='article:tag' content='JavaScript'><meta property='article:tag' content='Proxy'><meta property='article:tag' content='原型链'><meta property='article:tag' content='补环境'><meta property='article:tag' content='吐环境'><meta property='article:tag' content='环境检测'><meta property='article:tag' content='爬虫'><meta property='article:tag' content='合规'><meta property='article:published_time' content='2026-03-03T10:00:00+08:00'><meta property='article:modified_time' content='2026-03-03T10:00:00+08:00'><meta name=twitter:title content="大模型时代的数据采集工程 42：JS Proxy 补环境与吐环境技术深度解析"><meta name=twitter:description content='前面第 39 篇我们详细讲了 WebDriver 检测机制，包括 navigator.webdriver、CDP 注入、Canvas/AudioContext 指纹等几十种检测维度。\n那一篇留在浏览器层面：&ldquo;检测到了怎么办&rdquo;。\n这一篇进入 JS 引擎层面——如果 JS 不是在浏览器里运行，而是在一个干净的 Node.js、V8 独立运行环境或自定义沙箱里运行，会发生什么？\n1 2 3 脚本执行 → 访问 navigator → 报错 undefined 脚本执行 → 访问 document → 报错 undefined 脚本执行 → 访问 window → 报错 undefined &ldquo;补环境"就是在非浏览器运行时里，构建一个让 JS 脚本能正常运行的最小浏览器环境。\n&ldquo;吐环境"就是观察一段 JS 脚本到底访问了哪些环境属性。\n这两件事合在一起，是 JS 逆向工程中理解环境检测逻辑的核心技术。\n但必须先说边界：\n本文只讨论 JS 语言机制（Proxy、原型链、属性描述符）在环境模拟和环境诊断中的应用。所有示例用于自有测试组件、安全研究和授权审计。不提供针对特定反爬厂商的环境伪造脚本，不提供可用于未授权采集的完整环境模板，不提供绕过第三方环境检测的生产级代码。\n补环境的价值不是"骗过检测&rdquo;。\n它的价值是：理解一段加密/混淆的 JS 到底检测了什么、为什么这样检测、检测逻辑在代码里的什么位置。\n'></head><body class=article-page><script>(function(){const e="StackColorScheme";localStorage.getItem(e)||localStorage.setItem(e,"auto")})()</script><script>(function(){const t="StackColorScheme",e=localStorage.getItem(t),n=window.matchMedia("(prefers-color-scheme: dark)").matches===!0;e=="dark"||e==="auto"&&n?document.documentElement.dataset.scheme="dark":document.documentElement.dataset.scheme="light"})()</script><div class="container main-container flex on-phone--column extended"><aside class="sidebar left-sidebar sticky"><button class="hamburger hamburger--spin" type=button id=toggle-menu aria-label=切换菜单>
+<span class=hamburger-box><span class=hamburger-inner></span></span></button><header><figure class=site-avatar><a href=/><img src=/img/avatar_hu_94142548baeb3ae3.png width=300 height=300 class=site-logo loading=lazy alt=Avatar>
+</a><span class=emoji>👨‍💻</span></figure><div class=site-meta><h1 class=site-name><a href=/>阿彪的秘密空间</a></h1><h2 class=site-description>欢迎来到我的博客~</h2></div></header><ol class=menu-social><li><a href=https://github.com/tkdwbiao target=_blank title=GitHub rel=me><svg class="icon icon-tabler icon-tabler-brand-github" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6.0 00-1.3-3.2 4.2 4.2.0 00-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3.0 00-6.2.0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2.0 00-.1 3.2A4.6 4.6.0 004 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg></a></li><li><a href=https://twitter.com target=_blank title=Twitter rel=me><svg class="icon icon-tabler icon-tabler-brand-twitter" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M22 4.01c-1 .49-1.98.689-3 .99-1.121-1.265-2.783-1.335-4.38-.737S11.977 6.323 12 8v1c-3.245.083-6.135-1.395-8-4 0 0-4.182 7.433 4 11-1.872 1.247-3.739 2.088-6 2 3.308 1.803 6.913 2.423 10.034 1.517 3.58-1.04 6.522-3.723 7.651-7.742a13.84 13.84.0 00.497-3.753C20.18 7.773 21.692 5.25 22 4.009z"/></svg></a></li></ol><ol class=menu id=main-menu><li><a href=/><svg class="icon icon-tabler icon-tabler-home" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><polyline points="5 12 3 12 12 3 21 12 19 12"/><path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/><path d="M9 21v-6a2 2 0 012-2h2a2 2 0 012 2v6"/></svg>
+<span>主页</span></a></li><li><a href=/%E5%85%B3%E4%BA%8E/><svg class="icon icon-tabler icon-tabler-user" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/></svg>
+<span>关于</span></a></li><li><a href=/archives/><svg class="icon icon-tabler icon-tabler-archive" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><rect x="3" y="4" width="18" height="4" rx="2"/><path d="M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+<span>归档</span></a></li><li><a href=/search/><svg class="icon icon-tabler icon-tabler-search" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="10" cy="10" r="7"/><line x1="21" y1="21" x2="15" y2="15"/></svg>
+<span>搜索</span></a></li><li><a href=/%E5%8F%8B%E6%83%85%E9%93%BE%E6%8E%A5/><svg class="icon icon-tabler icon-tabler-link" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M10 14a3.5 3.5.0 005 0l4-4a3.5 3.5.0 00-5-5l-.5.5"/><path d="M14 10a3.5 3.5.0 00-5 0l-4 4a3.5 3.5.0 005 5l.5-.5"/></svg>
+<span>友情链接</span></a></li><li class=menu-bottom-section><ol class=menu><li id=dark-mode-toggle><svg class="icon icon-tabler icon-tabler-toggle-left" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="8" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<svg class="icon icon-tabler icon-tabler-toggle-right" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="16" cy="12" r="2"/><rect x="2" y="6" width="20" height="12" rx="6"/></svg>
+<span>暗色模式</span></li></ol></li></ol></aside><aside class="sidebar right-sidebar sticky"><section class="widget archives"><div class=widget-icon><svg class="icon icon-tabler icon-tabler-hash" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/><line x1="11" y1="4" x2="7" y2="20"/><line x1="17" y1="4" x2="13" y2="20"/></svg></div><h2 class="widget-title section-title">目录</h2><div class=widget--toc><nav id=TableOfContents><ol><li><a href=#一什么是浏览器-js-环境>一、什么是浏览器 JS 环境</a></li><li><a href=#二js-proxy环境观察与模拟的核心工具>二、JS Proxy：环境观察与模拟的核心工具</a><ol><li><a href=#21-基础-proxy-示例>2.1 基础 Proxy 示例</a></li><li><a href=#22-全部-proxy-陷阱>2.2 全部 Proxy 陷阱</a></li><li><a href=#23-递归-proxy代理整个对象树>2.3 递归 Proxy：代理整个对象树</a></li></ol></li><li><a href=#三吐环境发现脚本访问了什么>三、吐环境：发现脚本访问了什么</a><ol><li><a href=#31-被动吐环境proxy-日志>3.1 被动吐环境：Proxy 日志</a></li><li><a href=#32-主动遍历forin-和-objectkeys-的区别>3.2 主动遍历：for&mldr;in 和 Object.keys 的区别</a></li><li><a href=#33-属性描述符也要吐>3.3 属性描述符也要吐</a></li></ol></li><li><a href=#四补环境在非浏览器运行时构建最小环境>四、补环境：在非浏览器运行时构建最小环境</a><ol><li><a href=#41-最基本的补法直接赋值>4.1 最基本的补法：直接赋值</a></li><li><a href=#42-为什么需要-objectdefineproperty-补>4.2 为什么需要 Object.defineProperty 补</a></li><li><a href=#43-gettersetter-补法>4.3 getter/setter 补法</a></li><li><a href=#44-方法补法>4.4 方法补法</a></li><li><a href=#45-为什么层层都需要-proxy>4.5 为什么层层都需要 Proxy</a></li><li><a href=#46-补在哪里原型链位置>4.6 补在哪里：原型链位置</a></li></ol></li><li><a href=#五原型链详解补环境的核心难点>五、原型链详解：补环境的核心难点</a><ol><li><a href=#51-__proto__-和-prototype-的区别>5.1 <code>__proto__</code> 和 <code>prototype</code> 的区别</a></li><li><a href=#52-构建完整原型链示例>5.2 构建完整原型链示例</a></li><li><a href=#53-为什么-instance-检查失效会暴露>5.3 为什么 instance 检查失效会暴露</a></li><li><a href=#54-symboltostringtag>5.4 Symbol.toStringTag</a></li></ol></li><li><a href=#六补环境的高级问题>六、补环境的高级问题</a><ol><li><a href=#61-浏览器特性-vs-js-特性>6.1 浏览器特性 vs JS 特性</a></li><li><a href=#62-动态属性每次都不同>6.2 动态属性——每次都不同</a></li><li><a href=#63-原型链遍历陷阱>6.3 原型链遍历陷阱</a></li><li><a href=#64-navigatorplugins-的特殊性>6.4 navigator.plugins 的特殊性</a></li><li><a href=#65-canvaswebgl-指纹的补法思路>6.5 Canvas/WebGL 指纹的补法思路</a></li></ol></li><li><a href=#七如何发现脚本访问了哪些环境属性>七、如何发现脚本访问了哪些环境属性</a><ol><li><a href=#71-低温运行只记录不执行>7.1 低温运行：只记录不执行</a></li><li><a href=#72-分类整理>7.2 分类整理</a></li><li><a href=#73-从-js-代码中提取检测点>7.3 从 JS 代码中提取检测点</a></li></ol></li><li><a href=#八工程化思路把补环境从手写变成框架>八、工程化思路：把补环境从手写变成框架</a><ol><li><a href=#81-分层设计>8.1 分层设计</a></li><li><a href=#82-配置文件而非硬编码>8.2 配置文件而非硬编码</a></li><li><a href=#83-自动差异检测>8.3 自动差异检测</a></li><li><a href=#84-持续更新>8.4 持续更新</a></li></ol></li><li><a href=#九常见问题>九、常见问题</a><ol><li><a href=#q1补环境和-js-逆向-是什么关系>Q1：补环境和 &ldquo;JS 逆向&rdquo; 是什么关系？</a></li><li><a href=#q2proxy-会不会被检测到>Q2：Proxy 会不会被检测到？</a></li><li><a href=#q3可以补一个-万能环境-吗>Q3：可以补一个 &ldquo;万能环境&rdquo; 吗？</a></li><li><a href=#q4为什么要区分自有属性和原型属性>Q4：为什么要区分自有属性和原型属性？</a></li><li><a href=#q5nodejs-和-v8-独立运行环境有什么区别>Q5：Node.js 和 V8 独立运行环境有什么区别？</a></li></ol></li><li><a href=#十面试表达>十、面试表达</a></li><li><a href=#十一总结>十一、总结</a></li><li><a href=#参考资料>参考资料</a></li></ol></nav></div></section></aside><main class="main full-width"><article class=main-article><header class=article-header><div class=article-details><header class=article-category><a href=/categories/%E6%8A%80%E6%9C%AF%E7%AC%94%E8%AE%B0/ style=background-color:#beefe1;color:#0f3d30>技术笔记
+</a><a href=/categories/%E7%88%AC%E8%99%AB%E7%B3%BB%E5%88%97/ style=background-color:#efcfbe;color:#3d1f0f>爬虫系列</a></header><div class=article-title-wrapper><h2 class=article-title><a href=/p/js-proxy-environment-patching-dumping/>大模型时代的数据采集工程 42：JS Proxy 补环境与吐环境技术深度解析</a></h2></div><footer class=article-time><div><svg class="icon icon-tabler icon-tabler-calendar-time" width="56" height="56" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><path d="M11.795 21H5a2 2 0 01-2-2V7a2 2 0 012-2h12a2 2 0 012 2v4"/><circle cx="18" cy="18" r="4"/><path d="M15 3v4"/><path d="M7 3v4"/><path d="M3 11h16"/><path d="M18 16.496V18l1 1"/></svg>
+<time class=article-time--published datetime=2026-03-03T10:00:00+08:00>2026-03-03 10:00</time></div><div><svg class="icon icon-tabler icon-tabler-clock" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+<time class=article-time--reading>阅读时长: 19 分钟</time></div></footer></div></header><section class=article-content><p>前面第 39 篇我们详细讲了 WebDriver 检测机制，包括 <code>navigator.webdriver</code>、CDP 注入、Canvas/AudioContext 指纹等几十种检测维度。</p><p>那一篇留在浏览器层面：&ldquo;检测到了怎么办&rdquo;。</p><p>这一篇进入 JS 引擎层面——如果 JS 不是在浏览器里运行，而是在一个干净的 Node.js、V8 独立运行环境或自定义沙箱里运行，会发生什么？</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>脚本执行 → 访问 navigator → 报错 undefined
+</span></span><span class=line><span class=cl>脚本执行 → 访问 document → 报错 undefined
+</span></span><span class=line><span class=cl>脚本执行 → 访问 window → 报错 undefined
+</span></span></code></pre></td></tr></table></div></div><p>&ldquo;补环境"就是在非浏览器运行时里，构建一个让 JS 脚本能正常运行的最小浏览器环境。</p><p>&ldquo;吐环境"就是观察一段 JS 脚本到底访问了哪些环境属性。</p><p>这两件事合在一起，是 JS 逆向工程中理解环境检测逻辑的核心技术。</p><p>但必须先说边界：</p><blockquote><p>本文只讨论 JS 语言机制（Proxy、原型链、属性描述符）在环境模拟和环境诊断中的应用。所有示例用于自有测试组件、安全研究和授权审计。不提供针对特定反爬厂商的环境伪造脚本，不提供可用于未授权采集的完整环境模板，不提供绕过第三方环境检测的生产级代码。</p></blockquote><p>补环境的价值不是"骗过检测&rdquo;。</p><p>它的价值是：理解一段加密/混淆的 JS 到底检测了什么、为什么这样检测、检测逻辑在代码里的什么位置。</p><h2 id=一什么是浏览器-js-环境>一、什么是浏览器 JS 环境</h2><p>浏览器 JS 环境不是只有 <code>window</code> 这一个对象。</p><p>它是一棵巨大的对象树：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>window
+</span></span><span class=line><span class=cl>├── document
+</span></span><span class=line><span class=cl>│   ├── cookie
+</span></span><span class=line><span class=cl>│   ├── createElement()
+</span></span><span class=line><span class=cl>│   └── documentElement
+</span></span><span class=line><span class=cl>├── navigator
+</span></span><span class=line><span class=cl>│   ├── userAgent
+</span></span><span class=line><span class=cl>│   ├── webdriver
+</span></span><span class=line><span class=cl>│   ├── plugins[]
+</span></span><span class=line><span class=cl>│   │   ├── Plugin(name, description, filename)
+</span></span><span class=line><span class=cl>│   │   └── MimeType[]
+</span></span><span class=line><span class=cl>│   └── hardwareConcurrency
+</span></span><span class=line><span class=cl>├── location
+</span></span><span class=line><span class=cl>│   ├── href
+</span></span><span class=line><span class=cl>│   └── hostname
+</span></span><span class=line><span class=cl>├── screen
+</span></span><span class=line><span class=cl>│   ├── width/height
+</span></span><span class=line><span class=cl>│   └── colorDepth
+</span></span><span class=line><span class=cl>├── history
+</span></span><span class=line><span class=cl>├── localStorage
+</span></span><span class=line><span class=cl>├── sessionStorage
+</span></span><span class=line><span class=cl>├── WebGLRenderingContext
+</span></span><span class=line><span class=cl>├── CanvasRenderingContext2D
+</span></span><span class=line><span class=cl>├── AudioContext
+</span></span><span class=line><span class=cl>├── RTCPeerConnection
+</span></span><span class=line><span class=cl>├── Performance
+</span></span><span class=line><span class=cl>├── CSSStyleDeclaration
+</span></span><span class=line><span class=cl>└── ...数百个其他接口
+</span></span></code></pre></td></tr></table></div></div><p>这棵树的每个节点都有自己的：</p><ul><li>属性（值）。</li><li>方法（函数）。</li><li>原型链（<code>__proto__</code> / <code>prototype</code>）。</li><li>属性描述符（<code>writable</code>、<code>enumerable</code>、<code>configurable</code>）。</li></ul><p>一段 JS 脚本如果不在浏览器里运行，访问这棵树里任何一个节点都会报错。</p><p>而"补环境"的目标不是构建整棵树，而是根据脚本的实际访问路径，构建一棵<strong>最小但足够真实</strong>的子树。</p><h2 id=二js-proxy环境观察与模拟的核心工具>二、JS Proxy：环境观察与模拟的核心工具</h2><p><code>Proxy</code> 是 ES6 引入的元编程 API，可以拦截对对象的基本操作。</p><h3 id=21-基础-proxy-示例>2.1 基础 Proxy 示例</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=kr>const</span> <span class=nx>target</span> <span class=o>=</span> <span class=p>{</span> <span class=nx>name</span><span class=o>:</span> <span class=s2>&#34;original&#34;</span> <span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>proxy</span> <span class=o>=</span> <span class=k>new</span> <span class=nb>Proxy</span><span class=p>(</span><span class=nx>target</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>get</span><span class=p>(</span><span class=nx>obj</span><span class=p>,</span> <span class=nx>prop</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=sb>`[GET] .</span><span class=si>${</span><span class=nb>String</span><span class=p>(</span><span class=nx>prop</span><span class=p>)</span><span class=si>}</span><span class=sb>`</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=nx>obj</span><span class=p>[</span><span class=nx>prop</span><span class=p>];</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl>  <span class=nx>set</span><span class=p>(</span><span class=nx>obj</span><span class=p>,</span> <span class=nx>prop</span><span class=p>,</span> <span class=nx>value</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=sb>`[SET] .</span><span class=si>${</span><span class=nb>String</span><span class=p>(</span><span class=nx>prop</span><span class=p>)</span><span class=si>}</span><span class=sb> = </span><span class=si>${</span><span class=nx>value</span><span class=si>}</span><span class=sb>`</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=nx>obj</span><span class=p>[</span><span class=nx>prop</span><span class=p>]</span> <span class=o>=</span> <span class=nx>value</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=kc>true</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nx>proxy</span><span class=p>.</span><span class=nx>name</span><span class=p>;</span>        <span class=c1>// [GET] .name  → &#34;original&#34;
+</span></span></span><span class=line><span class=cl><span class=nx>proxy</span><span class=p>.</span><span class=nx>age</span> <span class=o>=</span> <span class=mi>25</span><span class=p>;</span>    <span class=c1>// [SET] .age = 25
+</span></span></span><span class=line><span class=cl><span class=nx>proxy</span><span class=p>.</span><span class=nx>unknown</span><span class=p>;</span>     <span class=c1>// [GET] .unknown → undefined（但被拦截了）
+</span></span></span></code></pre></td></tr></table></div></div><p>关键是：<code>Proxy</code> 不改变原始对象，所有操作都通过拦截器（handler）转发。</p><h3 id=22-全部-proxy-陷阱>2.2 全部 Proxy 陷阱</h3><div class=table-wrapper><table><thead><tr><th>陷阱</th><th>拦截什么</th><th>在补/吐环境中的用途</th></tr></thead><tbody><tr><td><code>get(target, prop, receiver)</code></td><td>读取属性</td><td><strong>最核心</strong>：记录脚本访问了什么</td></tr><tr><td><code>set(target, prop, value, receiver)</code></td><td>写入属性</td><td>观察脚本设置了什么值</td></tr><tr><td><code>has(target, prop)</code></td><td><code>prop in obj</code></td><td>拦截 <code>"webdriver" in navigator</code></td></tr><tr><td><code>construct(target, args, newTarget)</code></td><td><code>new</code> 操作</td><td>模拟构造函数调用</td></tr><tr><td><code>apply(target, thisArg, args)</code></td><td>函数调用</td><td>拦截 <code>atob()</code>、<code>setTimeout()</code> 等</td></tr><tr><td><code>getOwnPropertyDescriptor(target, prop)</code></td><td><code>Object.getOwnPropertyDescriptor()</code></td><td>返回"真实"的属性描述符</td></tr><tr><td><code>defineProperty(target, prop, desc)</code></td><td><code>Object.defineProperty()</code></td><td>拦截属性定义</td></tr><tr><td><code>deleteProperty(target, prop)</code></td><td><code>delete obj[prop]</code></td><td>拦截属性删除</td></tr><tr><td><code>ownKeys(target)</code></td><td><code>Object.keys()</code> / <code>for...in</code></td><td>控制"可见"属性列表</td></tr><tr><td><code>getPrototypeOf(target)</code></td><td><code>Object.getPrototypeOf()</code></td><td>控制原型链暴露</td></tr><tr><td><code>setPrototypeOf(target, proto)</code></td><td><code>Object.setPrototypeOf()</code></td><td>拦截原型修改</td></tr><tr><td><code>preventExtensions(target)</code></td><td><code>Object.preventExtensions()</code></td><td>拦截扩展锁定</td></tr><tr><td><code>isExtensible(target)</code></td><td><code>Object.isExtensible()</code></td><td>控制扩展状态</td></tr></tbody></table></div><p>重点：<strong>检测脚本不会只读属性，它还会调用方法、遍历属性列表、检查 <code>in</code> 操作符、查原型链、调用 <code>toString</code>。</strong> 只拦截 <code>get</code> 是不够的。</p><h3 id=23-递归-proxy代理整个对象树>2.3 递归 Proxy：代理整个对象树</h3><p>一个对象如果用 Proxy 包裹后，访问其子属性返回的应该是 Proxy 包装过的子对象，否则子对象不会被拦截：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=kd>function</span> <span class=nx>createRecursiveProxy</span><span class=p>(</span><span class=nx>label</span><span class=p>,</span> <span class=nx>target</span> <span class=o>=</span> <span class=p>{})</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=k>new</span> <span class=nb>Proxy</span><span class=p>(</span><span class=nx>target</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>get</span><span class=p>(</span><span class=nx>obj</span><span class=p>,</span> <span class=nx>prop</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=kr>const</span> <span class=nx>fullPath</span> <span class=o>=</span> <span class=sb>`</span><span class=si>${</span><span class=nx>label</span><span class=si>}</span><span class=sb>.</span><span class=si>${</span><span class=nb>String</span><span class=p>(</span><span class=nx>prop</span><span class=p>)</span><span class=si>}</span><span class=sb>`</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>      <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=sb>`[GET] </span><span class=si>${</span><span class=nx>fullPath</span><span class=si>}</span><span class=sb>`</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>      <span class=kr>const</span> <span class=nx>value</span> <span class=o>=</span> <span class=nx>obj</span><span class=p>[</span><span class=nx>prop</span><span class=p>];</span>
+</span></span><span class=line><span class=cl>      <span class=k>if</span> <span class=p>(</span><span class=nx>value</span> <span class=o>===</span> <span class=kc>undefined</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=c1>// 如果属性不存在，动态创建一个子 Proxy
+</span></span></span><span class=line><span class=cl>        <span class=c1>// 这样后续访问不会报错，而是继续记录
+</span></span></span><span class=line><span class=cl>        <span class=kr>const</span> <span class=nx>child</span> <span class=o>=</span> <span class=p>{};</span>
+</span></span><span class=line><span class=cl>        <span class=nx>obj</span><span class=p>[</span><span class=nx>prop</span><span class=p>]</span> <span class=o>=</span> <span class=nx>child</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=nx>createRecursiveProxy</span><span class=p>(</span><span class=nx>fullPath</span><span class=p>,</span> <span class=nx>child</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>      <span class=k>if</span> <span class=p>(</span><span class=k>typeof</span> <span class=nx>value</span> <span class=o>===</span> <span class=s2>&#34;object&#34;</span> <span class=o>&amp;&amp;</span> <span class=nx>value</span> <span class=o>!==</span> <span class=kc>null</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=nx>createRecursiveProxy</span><span class=p>(</span><span class=nx>fullPath</span><span class=p>,</span> <span class=nx>value</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>      <span class=k>if</span> <span class=p>(</span><span class=k>typeof</span> <span class=nx>value</span> <span class=o>===</span> <span class=s2>&#34;function&#34;</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=k>new</span> <span class=nb>Proxy</span><span class=p>(</span><span class=nx>value</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>          <span class=nx>apply</span><span class=p>(</span><span class=nx>fn</span><span class=p>,</span> <span class=nx>thisArg</span><span class=p>,</span> <span class=nx>args</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>            <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=sb>`[CALL] </span><span class=si>${</span><span class=nx>fullPath</span><span class=si>}</span><span class=sb>(</span><span class=si>${</span><span class=nx>args</span><span class=p>.</span><span class=nx>map</span><span class=p>(</span><span class=nb>String</span><span class=p>).</span><span class=nx>slice</span><span class=p>(</span><span class=mi>0</span><span class=p>,</span> <span class=mi>3</span><span class=p>).</span><span class=nx>join</span><span class=p>(</span><span class=s2>&#34;,&#34;</span><span class=p>)</span><span class=si>}</span><span class=sb>)`</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>            <span class=k>return</span> <span class=nx>fn</span><span class=p>.</span><span class=nx>apply</span><span class=p>(</span><span class=nx>thisArg</span><span class=p>,</span> <span class=nx>args</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>          <span class=p>},</span>
+</span></span><span class=line><span class=cl>        <span class=p>});</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>      <span class=k>return</span> <span class=nx>value</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl>  <span class=p>});</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>使用：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span><span class=lnt>9
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=kr>const</span> <span class=nx>env</span> <span class=o>=</span> <span class=nx>createRecursiveProxy</span><span class=p>(</span><span class=s2>&#34;window&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=nx>env</span><span class=p>.</span><span class=nx>navigator</span><span class=p>.</span><span class=nx>userAgent</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=c1>// [GET] window.navigator
+</span></span></span><span class=line><span class=cl><span class=c1>// [GET] window.navigator.userAgent
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nx>env</span><span class=p>.</span><span class=nb>document</span><span class=p>.</span><span class=nx>createElement</span><span class=p>(</span><span class=s2>&#34;div&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=c1>// [GET] window.document
+</span></span></span><span class=line><span class=cl><span class=c1>// [GET] window.document.createElement
+</span></span></span><span class=line><span class=cl><span class=c1>// [CALL] window.document.createElement(div)
+</span></span></span></code></pre></td></tr></table></div></div><p>这就是"吐环境"的基础原理：用递归 Proxy 包裹一个空对象，脚本访问什么就记录什么。</p><h2 id=三吐环境发现脚本访问了什么>三、吐环境：发现脚本访问了什么</h2><p>&ldquo;吐环境"的目标是回答一个问题：<strong>这段混淆/加密的 JS 到底用了浏览器的哪些 API？</strong></p><h3 id=31-被动吐环境proxy-日志>3.1 被动吐环境：Proxy 日志</h3><p>最直接的方式是用递归 Proxy，将所有 <code>get</code> / <code>set</code> / <code>has</code> / <code>call</code> 记录到日志：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=kr>const</span> <span class=nx>accessLog</span> <span class=o>=</span> <span class=p>[];</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kd>function</span> <span class=nx>createEnvSpy</span><span class=p>(</span><span class=nx>label</span><span class=p>,</span> <span class=nx>target</span> <span class=o>=</span> <span class=p>{})</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=k>new</span> <span class=nb>Proxy</span><span class=p>(</span><span class=nx>target</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>get</span><span class=p>(</span><span class=nx>obj</span><span class=p>,</span> <span class=nx>prop</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=kr>const</span> <span class=nx>path</span> <span class=o>=</span> <span class=sb>`</span><span class=si>${</span><span class=nx>label</span><span class=si>}</span><span class=sb>.</span><span class=si>${</span><span class=nb>String</span><span class=p>(</span><span class=nx>prop</span><span class=p>)</span><span class=si>}</span><span class=sb>`</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>      <span class=nx>accessLog</span><span class=p>.</span><span class=nx>push</span><span class=p>({</span> <span class=nx>type</span><span class=o>:</span> <span class=s2>&#34;get&#34;</span><span class=p>,</span> <span class=nx>path</span><span class=p>,</span> <span class=nx>time</span><span class=o>:</span> <span class=nb>Date</span><span class=p>.</span><span class=nx>now</span><span class=p>()</span> <span class=p>});</span>
+</span></span><span class=line><span class=cl>      <span class=kd>let</span> <span class=nx>value</span> <span class=o>=</span> <span class=nx>obj</span><span class=p>[</span><span class=nx>prop</span><span class=p>];</span>
+</span></span><span class=line><span class=cl>      <span class=k>if</span> <span class=p>(</span><span class=nx>value</span> <span class=o>===</span> <span class=kc>undefined</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=nx>value</span> <span class=o>=</span> <span class=p>{};</span>
+</span></span><span class=line><span class=cl>        <span class=nx>obj</span><span class=p>[</span><span class=nx>prop</span><span class=p>]</span> <span class=o>=</span> <span class=nx>value</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>      <span class=k>if</span> <span class=p>(</span><span class=k>typeof</span> <span class=nx>value</span> <span class=o>===</span> <span class=s2>&#34;function&#34;</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=k>new</span> <span class=nb>Proxy</span><span class=p>(</span><span class=nx>value</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>          <span class=nx>apply</span><span class=p>(</span><span class=nx>fn</span><span class=p>,</span> <span class=nx>thisArg</span><span class=p>,</span> <span class=nx>args</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>            <span class=nx>accessLog</span><span class=p>.</span><span class=nx>push</span><span class=p>({</span> <span class=nx>type</span><span class=o>:</span> <span class=s2>&#34;call&#34;</span><span class=p>,</span> <span class=nx>path</span><span class=p>,</span> <span class=nx>args</span><span class=o>:</span> <span class=nx>args</span><span class=p>.</span><span class=nx>map</span><span class=p>(</span><span class=nb>String</span><span class=p>).</span><span class=nx>slice</span><span class=p>(</span><span class=mi>0</span><span class=p>,</span> <span class=mi>3</span><span class=p>)</span> <span class=p>});</span>
+</span></span><span class=line><span class=cl>            <span class=k>return</span> <span class=nx>fn</span><span class=p>.</span><span class=nx>apply</span><span class=p>(</span><span class=nx>thisArg</span><span class=p>,</span> <span class=nx>args</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>          <span class=p>},</span>
+</span></span><span class=line><span class=cl>        <span class=p>});</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>      <span class=k>if</span> <span class=p>(</span><span class=k>typeof</span> <span class=nx>value</span> <span class=o>===</span> <span class=s2>&#34;object&#34;</span> <span class=o>&amp;&amp;</span> <span class=nx>value</span> <span class=o>!==</span> <span class=kc>null</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=nx>createEnvSpy</span><span class=p>(</span><span class=nx>path</span><span class=p>,</span> <span class=nx>value</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>      <span class=k>return</span> <span class=nx>value</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl>    <span class=nx>has</span><span class=p>(</span><span class=nx>obj</span><span class=p>,</span> <span class=nx>prop</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=nx>accessLog</span><span class=p>.</span><span class=nx>push</span><span class=p>({</span> <span class=nx>type</span><span class=o>:</span> <span class=s2>&#34;has&#34;</span><span class=p>,</span> <span class=nx>path</span><span class=o>:</span> <span class=sb>`</span><span class=si>${</span><span class=nx>label</span><span class=si>}</span><span class=sb>.</span><span class=si>${</span><span class=nb>String</span><span class=p>(</span><span class=nx>prop</span><span class=p>)</span><span class=si>}</span><span class=sb>`</span> <span class=p>});</span>
+</span></span><span class=line><span class=cl>      <span class=k>return</span> <span class=nb>String</span><span class=p>(</span><span class=nx>prop</span><span class=p>)</span> <span class=k>in</span> <span class=nx>obj</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl>  <span class=p>});</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>跑完之后去重：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=kr>const</span> <span class=nx>uniquePaths</span> <span class=o>=</span> <span class=p>[...</span><span class=k>new</span> <span class=nx>Set</span><span class=p>(</span><span class=nx>accessLog</span><span class=p>.</span><span class=nx>map</span><span class=p>((</span><span class=nx>e</span><span class=p>)</span> <span class=p>=&gt;</span> <span class=nx>e</span><span class=p>.</span><span class=nx>path</span><span class=p>))].</span><span class=nx>sort</span><span class=p>();</span>
+</span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>uniquePaths</span><span class=p>.</span><span class=nx>join</span><span class=p>(</span><span class=s2>&#34;\n&#34;</span><span class=p>));</span>
+</span></span><span class=line><span class=cl><span class=cm>/*
+</span></span></span><span class=line><span class=cl><span class=cm>可能的输出：
+</span></span></span><span class=line><span class=cl><span class=cm>window.navigator
+</span></span></span><span class=line><span class=cl><span class=cm>window.navigator.userAgent
+</span></span></span><span class=line><span class=cl><span class=cm>window.navigator.webdriver
+</span></span></span><span class=line><span class=cl><span class=cm>window.navigator.plugins
+</span></span></span><span class=line><span class=cl><span class=cm>window.document.cookie
+</span></span></span><span class=line><span class=cl><span class=cm>window.location.href
+</span></span></span><span class=line><span class=cl><span class=cm>window.screen.width
+</span></span></span><span class=line><span class=cl><span class=cm>window.screen.height
+</span></span></span><span class=line><span class=cl><span class=cm>window.CanvasRenderingContext2D
+</span></span></span><span class=line><span class=cl><span class=cm>window.HTMLCanvasElement.prototype.getContext
+</span></span></span><span class=line><span class=cl><span class=cm>window.WebGLRenderingContext.prototype.getParameter
+</span></span></span><span class=line><span class=cl><span class=cm>...
+</span></span></span><span class=line><span class=cl><span class=cm>*/</span>
+</span></span></code></pre></td></tr></table></div></div><p>这份环境清单，就是"该脚本的依赖环境&rdquo;。</p><h3 id=32-主动遍历forin-和-objectkeys-的区别>3.2 主动遍历：for&mldr;in 和 Object.keys 的区别</h3><p>脚本不一定逐个访问属性。它可能用 <code>for...in</code> 或 <code>Object.keys</code> 遍历对象：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// 脚本可能会：
+</span></span></span><span class=line><span class=cl><span class=k>for</span> <span class=p>(</span><span class=kr>const</span> <span class=nx>key</span> <span class=k>in</span> <span class=nx>navigator</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>key</span><span class=p>,</span> <span class=nx>navigator</span><span class=p>[</span><span class=nx>key</span><span class=p>]);</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// 或者：
+</span></span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>keys</span> <span class=o>=</span> <span class=nb>Object</span><span class=p>.</span><span class=nx>keys</span><span class=p>(</span><span class=nx>navigator</span><span class=p>);</span>
+</span></span></code></pre></td></tr></table></div></div><p>这两种方式走的是不同的 Proxy 陷阱：</p><ul><li><code>for...in</code> → 走 <code>ownKeys</code> 陷阱（如果属性在原型上，还会走原型链）。</li><li><code>Object.keys()</code> → 走 <code>ownKeys</code> 陷阱。</li><li><code>Object.getOwnPropertyNames()</code> → 走 <code>ownKeys</code> 陷阱。</li></ul><p>所以补环境时，不能只补值，还要补<strong>属性列表</strong>和<strong>属性枚举性</strong>。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=kr>const</span> <span class=nx>realNavigator</span> <span class=o>=</span> <span class=nx>navigator</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>keysFromForIn</span> <span class=o>=</span> <span class=p>[];</span>
+</span></span><span class=line><span class=cl><span class=k>for</span> <span class=p>(</span><span class=kr>const</span> <span class=nx>key</span> <span class=k>in</span> <span class=nx>realNavigator</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>keysFromForIn</span><span class=p>.</span><span class=nx>push</span><span class=p>(</span><span class=nx>key</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s2>&#34;for...in 可见属性数:&#34;</span><span class=p>,</span> <span class=nx>keysFromForIn</span><span class=p>.</span><span class=nx>length</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>keysFromKeys</span> <span class=o>=</span> <span class=nb>Object</span><span class=p>.</span><span class=nx>keys</span><span class=p>(</span><span class=nx>realNavigator</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s2>&#34;Object.keys 可见属性数:&#34;</span><span class=p>,</span> <span class=nx>keysFromKeys</span><span class=p>.</span><span class=nx>length</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>keysFromNames</span> <span class=o>=</span> <span class=nb>Object</span><span class=p>.</span><span class=nx>getOwnPropertyNames</span><span class=p>(</span><span class=nx>realNavigator</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s2>&#34;getOwnPropertyNames 可见属性数:&#34;</span><span class=p>,</span> <span class=nx>keysFromNames</span><span class=p>.</span><span class=nx>length</span><span class=p>);</span>
+</span></span></code></pre></td></tr></table></div></div><p>在真实 Chrome 中，<code>navigator</code> 的这三个结果差异很大：</p><ul><li><code>for...in</code> 可能只有几个枚举属性。</li><li><code>Object.keys()</code> 列出自有可枚举属性。</li><li><code>Object.getOwnPropertyNames()</code> 列出所有自有属性（含不可枚举）。</li></ul><p>如果补环境时属性列表不对，脚本可以用 <code>"webdriver" in navigator</code> 检测到异常。</p><h3 id=33-属性描述符也要吐>3.3 属性描述符也要吐</h3><p>脚本可能不只是读值，还会检查属性描述符：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// 脚本可能：
+</span></span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>desc</span> <span class=o>=</span> <span class=nb>Object</span><span class=p>.</span><span class=nx>getOwnPropertyDescriptor</span><span class=p>(</span><span class=nx>navigator</span><span class=p>,</span> <span class=s2>&#34;webdriver&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>desc</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=c1>// 真实 Chrome: { value: true, writable: true, enumerable: true, configurable: true }
+</span></span></span><span class=line><span class=cl><span class=c1>// 如果补环境漏了: undefined → 暴露
+</span></span></span></code></pre></td></tr></table></div></div><p>吐环境时需要记录：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=kd>function</span> <span class=nx>dumpPropertyDescriptor</span><span class=p>(</span><span class=nx>label</span><span class=p>,</span> <span class=nx>obj</span><span class=p>,</span> <span class=nx>prop</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>try</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>desc</span> <span class=o>=</span> <span class=nb>Object</span><span class=p>.</span><span class=nx>getOwnPropertyDescriptor</span><span class=p>(</span><span class=nx>obj</span><span class=p>,</span> <span class=nx>prop</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=nx>path</span><span class=o>:</span> <span class=sb>`</span><span class=si>${</span><span class=nx>label</span><span class=si>}</span><span class=sb>.</span><span class=si>${</span><span class=nx>prop</span><span class=si>}</span><span class=sb>`</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=nx>value</span><span class=o>:</span> <span class=nx>desc</span><span class=p>.</span><span class=nx>value</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=nx>writable</span><span class=o>:</span> <span class=nx>desc</span><span class=p>.</span><span class=nx>writable</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=nx>enumerable</span><span class=o>:</span> <span class=nx>desc</span><span class=p>.</span><span class=nx>enumerable</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=nx>configurable</span><span class=o>:</span> <span class=nx>desc</span><span class=p>.</span><span class=nx>configurable</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=nx>hasGetter</span><span class=o>:</span> <span class=o>!!</span><span class=nx>desc</span><span class=p>.</span><span class=nx>get</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=nx>hasSetter</span><span class=o>:</span> <span class=o>!!</span><span class=nx>desc</span><span class=p>.</span><span class=nx>set</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=p>};</span>
+</span></span><span class=line><span class=cl>  <span class=p>}</span> <span class=k>catch</span> <span class=p>(</span><span class=nx>e</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=p>{</span> <span class=nx>path</span><span class=o>:</span> <span class=sb>`</span><span class=si>${</span><span class=nx>label</span><span class=si>}</span><span class=sb>.</span><span class=si>${</span><span class=nx>prop</span><span class=si>}</span><span class=sb>`</span><span class=p>,</span> <span class=nx>error</span><span class=o>:</span> <span class=nx>e</span><span class=p>.</span><span class=nx>message</span> <span class=p>};</span>
+</span></span><span class=line><span class=cl>  <span class=p>}</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><h2 id=四补环境在非浏览器运行时构建最小环境>四、补环境：在非浏览器运行时构建最小环境</h2><p>&ldquo;补环境"回答的问题是：<strong>拿到一份环境清单后，如何在 Node.js/V8 里构造一份让脚本不报错的替代环境？</strong></p><h3 id=41-最基本的补法直接赋值>4.1 最基本的补法：直接赋值</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// Node.js 中没有 window，直接创建一个
+</span></span></span><span class=line><span class=cl><span class=nx>globalThis</span><span class=p>.</span><span class=nb>window</span> <span class=o>=</span> <span class=nx>globalThis</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// 补 navigator
+</span></span></span><span class=line><span class=cl><span class=nx>globalThis</span><span class=p>.</span><span class=nx>navigator</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>userAgent</span><span class=o>:</span> <span class=s2>&#34;Mozilla/5.0 ...&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nx>webdriver</span><span class=o>:</span> <span class=kc>false</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nx>hardwareConcurrency</span><span class=o>:</span> <span class=mi>8</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nx>platform</span><span class=o>:</span> <span class=s2>&#34;Win32&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nx>language</span><span class=o>:</span> <span class=s2>&#34;zh-CN&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nx>languages</span><span class=o>:</span> <span class=p>[</span><span class=s2>&#34;zh-CN&#34;</span><span class=p>,</span> <span class=s2>&#34;zh&#34;</span><span class=p>,</span> <span class=s2>&#34;en&#34;</span><span class=p>],</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span></code></pre></td></tr></table></div></div><p>问题：这是"静态值&rdquo;，脚本如果修改 <code>navigator.userAgent = "hacked"</code>，不会报错但也不会触发任何反应。真实浏览器中某些属性可能是只读的。</p><h3 id=42-为什么需要-objectdefineproperty-补>4.2 为什么需要 Object.defineProperty 补</h3><p>真实浏览器的很多属性有特定描述符。检测脚本可以用 <code>Object.getOwnPropertyDescriptor</code> 验证：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// 真实 Chrome 中：
+</span></span></span><span class=line><span class=cl><span class=nb>Object</span><span class=p>.</span><span class=nx>getOwnPropertyDescriptor</span><span class=p>(</span><span class=nx>navigator</span><span class=p>,</span> <span class=s2>&#34;userAgent&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=c1>// { value: &#34;Mozilla/5.0...&#34;, writable: true, enumerable: false, configurable: true }
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>Object</span><span class=p>.</span><span class=nx>getOwnPropertyDescriptor</span><span class=p>(</span><span class=nx>navigator</span><span class=p>,</span> <span class=s2>&#34;webdriver&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=c1>// { value: true,  writable: true, enumerable: true, configurable: true }
+</span></span></span><span class=line><span class=cl><span class=c1>// 注：某些版本中 webdriver 的 configurable 为 false
+</span></span></span></code></pre></td></tr></table></div></div><p>如果直接用 <code>navigator.webdriver = false</code> 赋值，属性描述符是 <code>{ writable: true, enumerable: true, configurable: true }</code>，可以被脚本检测到差异。</p><p>正确补法：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=nb>Object</span><span class=p>.</span><span class=nx>defineProperty</span><span class=p>(</span><span class=nx>navigator</span><span class=p>,</span> <span class=s2>&#34;webdriver&#34;</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>value</span><span class=o>:</span> <span class=kc>false</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nx>writable</span><span class=o>:</span> <span class=kc>true</span><span class=p>,</span>      <span class=c1>// 要允许脚本赋值
+</span></span></span><span class=line><span class=cl>  <span class=nx>enumerable</span><span class=o>:</span> <span class=kc>true</span><span class=p>,</span>    <span class=c1>// 要在 for...in 中出现
+</span></span></span><span class=line><span class=cl>  <span class=nx>configurable</span><span class=o>:</span> <span class=kc>true</span><span class=p>,</span>  <span class=c1>// 要配合实际浏览器行为
+</span></span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>注意：这里演示的 <code>value: false</code> 是<strong>用于自有测试环境观察脚本行为</strong>，不是建议在生产中修改 this 标志。如果脚本在授权审计中检测到 <code>webdriver</code> 被篡改，应该记录这个检测行为，而不是继续隐藏。</p><h3 id=43-gettersetter-补法>4.3 getter/setter 补法</h3><p>某些属性不是普通数据属性，而是访问器属性（getter/setter）：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// 真实浏览器中 location 是一个 getter
+</span></span></span><span class=line><span class=cl><span class=c1>// 每个 iframe 有独立的 Location 对象
+</span></span></span><span class=line><span class=cl><span class=c1>// location.href 不是普通值，而是访问器
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>fakeLocation</span> <span class=o>=</span> <span class=p>{};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>Object</span><span class=p>.</span><span class=nx>defineProperty</span><span class=p>(</span><span class=nx>fakeLocation</span><span class=p>,</span> <span class=s2>&#34;href&#34;</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>get</span><span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;https://your-test-origin.example&#34;</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl>  <span class=nx>set</span><span class=p>(</span><span class=nx>value</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=sb>`[location.href] set to </span><span class=si>${</span><span class=nx>value</span><span class=si>}</span><span class=sb>`</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl>  <span class=nx>enumerable</span><span class=o>:</span> <span class=kc>true</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nx>configurable</span><span class=o>:</span> <span class=kc>true</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nb>Object</span><span class=p>.</span><span class=nx>defineProperty</span><span class=p>(</span><span class=nx>fakeLocation</span><span class=p>,</span> <span class=s2>&#34;hostname&#34;</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>get</span><span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;your-test-origin.example&#34;</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl>  <span class=nx>enumerable</span><span class=o>:</span> <span class=kc>true</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nx>configurable</span><span class=o>:</span> <span class=kc>true</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>为什么用 getter 而不是直接赋值？</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>1. 检测脚本可能修改 location.href，触发页面跳转。
+</span></span><span class=line><span class=cl>   在 Node.js 中没有跳转概念，setter 可以记录但不应执行。
+</span></span><span class=line><span class=cl>2. 某些 getter 每次返回的计算值不同（如时间戳、随机数），
+</span></span><span class=line><span class=cl>   用 getter 才能模拟动态性。
+</span></span><span class=line><span class=cl>3. 检测脚本可能检查属性描述符中是否有 get/set。
+</span></span></code></pre></td></tr></table></div></div><h3 id=44-方法补法>4.4 方法补法</h3><p>函数也需要补，而且要模拟真实行为：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// atob / btoa
+</span></span></span><span class=line><span class=cl><span class=nx>globalThis</span><span class=p>.</span><span class=nx>atob</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>str</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=nx>Buffer</span><span class=p>.</span><span class=nx>from</span><span class=p>(</span><span class=nx>str</span><span class=p>,</span> <span class=s2>&#34;base64&#34;</span><span class=p>).</span><span class=nx>toString</span><span class=p>(</span><span class=s2>&#34;binary&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nx>globalThis</span><span class=p>.</span><span class=nx>btoa</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>str</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=nx>Buffer</span><span class=p>.</span><span class=nx>from</span><span class=p>(</span><span class=nx>str</span><span class=p>,</span> <span class=s2>&#34;binary&#34;</span><span class=p>).</span><span class=nx>toString</span><span class=p>(</span><span class=s2>&#34;base64&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// setTimeout / setInterval / clearTimeout / clearInterval
+</span></span></span><span class=line><span class=cl><span class=c1>// 这些 Node.js 有，但如果要通过 Proxy 观察调用，需要包装
+</span></span></span></code></pre></td></tr></table></div></div><p>方法的关键不是实现每个细节，而是：</p><ul><li>参数类型和数量要匹配（函数 <code>.length</code> 属性）。</li><li>返回值类型要匹配（如果脚本做 <code>typeof</code> 检查）。</li><li>方法名（<code>Function.prototype.name</code>）要正确。</li></ul><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=kd>function</span> <span class=nx>fakeDecodeURIComponent</span><span class=p>(</span><span class=nx>encodedURI</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=nb>decodeURIComponent</span><span class=p>(</span><span class=nx>encodedURI</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span><span class=line><span class=cl><span class=c1>// 函数名必须正确
+</span></span></span><span class=line><span class=cl><span class=nb>Object</span><span class=p>.</span><span class=nx>defineProperty</span><span class=p>(</span><span class=nx>fakeDecodeURIComponent</span><span class=p>,</span> <span class=s2>&#34;name&#34;</span><span class=p>,</span> <span class=p>{</span> <span class=nx>value</span><span class=o>:</span> <span class=s2>&#34;decodeURIComponent&#34;</span> <span class=p>});</span>
+</span></span><span class=line><span class=cl><span class=c1>// 参数个数必须正确
+</span></span></span><span class=line><span class=cl><span class=nb>Object</span><span class=p>.</span><span class=nx>defineProperty</span><span class=p>(</span><span class=nx>fakeDecodeURIComponent</span><span class=p>,</span> <span class=s2>&#34;length&#34;</span><span class=p>,</span> <span class=p>{</span> <span class=nx>value</span><span class=o>:</span> <span class=mi>1</span> <span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><h3 id=45-为什么层层都需要-proxy>4.5 为什么层层都需要 Proxy</h3><p>直接赋值只能处理"已知属性&rdquo;。但好的检测逻辑会访问<strong>嵌套对象的深层属性</strong>。</p><p>例如 Canvas 指纹检测：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// 脚本:
+</span></span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>canvas</span> <span class=o>=</span> <span class=nb>document</span><span class=p>.</span><span class=nx>createElement</span><span class=p>(</span><span class=s2>&#34;canvas&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>ctx</span> <span class=o>=</span> <span class=nx>canvas</span><span class=p>.</span><span class=nx>getContext</span><span class=p>(</span><span class=s2>&#34;2d&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=nx>ctx</span><span class=p>.</span><span class=nx>fillRect</span><span class=p>(...);</span>
+</span></span><span class=line><span class=cl><span class=nx>canvas</span><span class=p>.</span><span class=nx>toDataURL</span><span class=p>();</span>
+</span></span></code></pre></td></tr></table></div></div><p>这需要补：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>document.createElement()
+</span></span><span class=line><span class=cl>  → 返回一个模拟 HTMLCanvasElement 对象
+</span></span><span class=line><span class=cl>    → .getContext(&#34;2d&#34;) 返回模拟 CanvasRenderingContext2D 对象
+</span></span><span class=line><span class=cl>      → .fillRect()
+</span></span><span class=line><span class=cl>      → .fillText()
+</span></span><span class=line><span class=cl>    → .toDataURL() 返回模拟 Base64 字符串
+</span></span></code></pre></td></tr></table></div></div><p>如果每步都是 Proxy，即使实现不完整，至少不会因为 <code>undefined is not a function</code> 而崩溃。日志中能看到脚本走了哪些方法，再逐一补。</p><h3 id=46-补在哪里原型链位置>4.6 补在哪里：原型链位置</h3><p>这是补环境最关键也最容易错的地方。</p><p>假设脚本检测：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=nx>canvas</span><span class=p>.</span><span class=nx>toString</span><span class=p>();</span>
+</span></span><span class=line><span class=cl><span class=c1>// Chrome 输出: &#34;[object HTMLCanvasElement]&#34;
+</span></span></span></code></pre></td></tr></table></div></div><p>如果直接给 canvas 对象设置 <code>toString</code>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=nx>canvas</span><span class=p>.</span><span class=nx>toString</span> <span class=o>=</span> <span class=p>()</span> <span class=p>=&gt;</span> <span class=s2>&#34;[object HTMLCanvasElement]&#34;</span><span class=p>;</span>
+</span></span></code></pre></td></tr></table></div></div><p>下一行脚本可能做：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=nb>Object</span><span class=p>.</span><span class=nx>getOwnPropertyDescriptor</span><span class=p>(</span><span class=nx>canvas</span><span class=p>,</span> <span class=s2>&#34;toString&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=c1>// 期望: undefined（toString 应该在原型上，不是自有属性）
+</span></span></span><span class=line><span class=cl><span class=c1>// 实际: { value: fn, ... }
+</span></span></span><span class=line><span class=cl><span class=c1>// → 暴露
+</span></span></span></code></pre></td></tr></table></div></div><p>正确做法：补到原型链上。</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// 构造原型链
+</span></span></span><span class=line><span class=cl><span class=kd>function</span> <span class=nx>HTMLCanvasElement</span><span class=p>()</span> <span class=p>{}</span>
+</span></span><span class=line><span class=cl><span class=nx>HTMLCanvasElement</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>toString</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=s2>&#34;[object HTMLCanvasElement]&#34;</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>canvas</span> <span class=o>=</span> <span class=k>new</span> <span class=nx>HTMLCanvasElement</span><span class=p>();</span>
+</span></span><span class=line><span class=cl><span class=nx>canvas</span><span class=p>.</span><span class=nx>toDataURL</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>()</span> <span class=p>{</span> <span class=cm>/* ... */</span> <span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// canvas.toString() 从原型继承
+</span></span></span><span class=line><span class=cl><span class=c1>// Object.getOwnPropertyDescriptor(canvas, &#34;toString&#34;) → undefined ✓
+</span></span></span><span class=line><span class=cl><span class=c1>// canvas.__proto__.toString → 正确 ✓
+</span></span></span></code></pre></td></tr></table></div></div><p><strong>补环境的核心原则</strong>：</p><div class=table-wrapper><table><thead><tr><th>内容</th><th>应该放的位置</th></tr></thead><tbody><tr><td>实例属性值（如 canvas.width）</td><td>实例自身</td></tr><tr><td>实例方法（如 canvas.getContext）</td><td>实例自身（通常覆盖 prototype 方法）</td></tr><tr><td>共有方法（如 canvas.toString）</td><td><code>HTMLCanvasElement.prototype</code></td></tr><tr><td>基类方法（如 canvas.hasOwnProperty）</td><td><code>HTMLElement.prototype</code> → <code>Element.prototype</code> → <code>Node.prototype</code> → <code>EventTarget.prototype</code> → <code>Object.prototype</code></td></tr><tr><td>静态方法（如 <code>Object.getOwnPropertyDescriptor</code>）</td><td>全局命名空间</td></tr><tr><td>静态成员（如 <code>HTMLCanvasElement.prototype</code>）</td><td>构造函数自身的属性</td></tr></tbody></table></div><p><strong>原型链关系</strong>：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span><span class=lnt>8
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>canvas (实例)
+</span></span><span class=line><span class=cl>  __proto__ → HTMLCanvasElement.prototype
+</span></span><span class=line><span class=cl>    __proto__ → HTMLElement.prototype
+</span></span><span class=line><span class=cl>      __proto__ → Element.prototype
+</span></span><span class=line><span class=cl>        __proto__ → Node.prototype
+</span></span><span class=line><span class=cl>          __proto__ → EventTarget.prototype
+</span></span><span class=line><span class=cl>            __proto__ → Object.prototype
+</span></span><span class=line><span class=cl>              __proto__ → null
+</span></span></code></pre></td></tr></table></div></div><p>如果脚本检查：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=nx>canvas</span> <span class=k>instanceof</span> <span class=nx>HTMLCanvasElement</span><span class=p>;</span>  <span class=c1>// 需要原型链
+</span></span></span><span class=line><span class=cl><span class=nx>canvas</span> <span class=k>instanceof</span> <span class=nx>HTMLElement</span><span class=p>;</span>        <span class=c1>// 需要原型链
+</span></span></span><span class=line><span class=cl><span class=nx>canvas</span> <span class=k>instanceof</span> <span class=nx>Element</span><span class=p>;</span>            <span class=c1>// 需要原型链
+</span></span></span></code></pre></td></tr></table></div></div><p>原型链断了，<code>instanceof</code> 全部失败。</p><h2 id=五原型链详解补环境的核心难点>五、原型链详解：补环境的核心难点</h2><h3 id=51-__proto__-和-prototype-的区别>5.1 <code>__proto__</code> 和 <code>prototype</code> 的区别</h3><p>这个概念经常混淆。一句话说明：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>只有函数才有 prototype 属性。
+</span></span><span class=line><span class=cl>所有对象都有 __proto__ 属性（指向构造函数的 prototype）。
+</span></span></code></pre></td></tr></table></div></div><p>示例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=kd>function</span> <span class=nx>Foo</span><span class=p>()</span> <span class=p>{}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>obj</span> <span class=o>=</span> <span class=k>new</span> <span class=nx>Foo</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// Foo 是函数，有 prototype
+</span></span></span><span class=line><span class=cl><span class=nx>Foo</span><span class=p>.</span><span class=nx>prototype</span><span class=p>;</span> <span class=c1>// { constructor: Foo, __proto__: Object.prototype }
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// obj 是对象，没有 prototype
+</span></span></span><span class=line><span class=cl><span class=nx>obj</span><span class=p>.</span><span class=nx>prototype</span><span class=p>;</span> <span class=c1>// undefined
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// obj 的 __proto__ 指向 Foo.prototype
+</span></span></span><span class=line><span class=cl><span class=nx>obj</span><span class=p>.</span><span class=nx>__proto__</span> <span class=o>===</span> <span class=nx>Foo</span><span class=p>.</span><span class=nx>prototype</span><span class=p>;</span> <span class=c1>// true
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// Foo.prototype 的 __proto__ 指向 Object.prototype
+</span></span></span><span class=line><span class=cl><span class=nx>Foo</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>__proto__</span> <span class=o>===</span> <span class=nb>Object</span><span class=p>.</span><span class=nx>prototype</span><span class=p>;</span> <span class=c1>// true
+</span></span></span></code></pre></td></tr></table></div></div><p><strong>补环境时，每创建一个模拟的"类"，就要建立：</strong></p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>1. 构造函数本身
+</span></span><span class=line><span class=cl>2. 构造函数的 prototype（放原型方法）
+</span></span><span class=line><span class=cl>3. prototype.constructor 指回构造函数
+</span></span><span class=line><span class=cl>4. prototype.__proto__ 指向父级 prototype
+</span></span><span class=line><span class=cl>5. 静态方法和属性挂在构造函数上
+</span></span></code></pre></td></tr></table></div></div><h3 id=52-构建完整原型链示例>5.2 构建完整原型链示例</h3><p>以 Canvas 为例：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span><span class=lnt>46
+</span><span class=lnt>47
+</span><span class=lnt>48
+</span><span class=lnt>49
+</span><span class=lnt>50
+</span><span class=lnt>51
+</span><span class=lnt>52
+</span><span class=lnt>53
+</span><span class=lnt>54
+</span><span class=lnt>55
+</span><span class=lnt>56
+</span><span class=lnt>57
+</span><span class=lnt>58
+</span><span class=lnt>59
+</span><span class=lnt>60
+</span><span class=lnt>61
+</span><span class=lnt>62
+</span><span class=lnt>63
+</span><span class=lnt>64
+</span><span class=lnt>65
+</span><span class=lnt>66
+</span><span class=lnt>67
+</span><span class=lnt>68
+</span><span class=lnt>69
+</span><span class=lnt>70
+</span><span class=lnt>71
+</span><span class=lnt>72
+</span><span class=lnt>73
+</span><span class=lnt>74
+</span><span class=lnt>75
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// 1. 创建构造函数
+</span></span></span><span class=line><span class=cl><span class=kd>function</span> <span class=nx>HTMLCanvasElement</span><span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>this</span><span class=p>.</span><span class=nx>width</span> <span class=o>=</span> <span class=mi>300</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=k>this</span><span class=p>.</span><span class=nx>height</span> <span class=o>=</span> <span class=mi>150</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// 2. 设置实例方法
+</span></span></span><span class=line><span class=cl><span class=nx>HTMLCanvasElement</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>getContext</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>contextType</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>if</span> <span class=p>(</span><span class=nx>contextType</span> <span class=o>===</span> <span class=s2>&#34;2d&#34;</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>new</span> <span class=nx>CanvasRenderingContext2D</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>  <span class=p>}</span>
+</span></span><span class=line><span class=cl>  <span class=k>if</span> <span class=p>(</span><span class=nx>contextType</span> <span class=o>===</span> <span class=s2>&#34;webgl&#34;</span> <span class=o>||</span> <span class=nx>contextType</span> <span class=o>===</span> <span class=s2>&#34;webgl2&#34;</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=k>new</span> <span class=nx>WebGLRenderingContext</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>  <span class=p>}</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=kc>null</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nx>HTMLCanvasElement</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>toDataURL</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=c1>// 返回一个最小有效 PNG 的 Base64
+</span></span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=s2>&#34;data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==&#34;</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nx>HTMLCanvasElement</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>toBlob</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>callback</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=c1>// 异步回调
+</span></span></span><span class=line><span class=cl>  <span class=k>if</span> <span class=p>(</span><span class=k>typeof</span> <span class=nx>callback</span> <span class=o>===</span> <span class=s2>&#34;function&#34;</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>setTimeout</span><span class=p>(()</span> <span class=p>=&gt;</span> <span class=nx>callback</span><span class=p>(</span><span class=kc>null</span><span class=p>),</span> <span class=mi>0</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>}</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// 3. 建立原型链
+</span></span></span><span class=line><span class=cl><span class=nx>HTMLCanvasElement</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>constructor</span> <span class=o>=</span> <span class=nx>HTMLCanvasElement</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=nx>HTMLCanvasElement</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>__proto__</span> <span class=o>=</span> <span class=nx>HTMLElement</span><span class=p>.</span><span class=nx>prototype</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// 4. 补 HTMLElement 原型
+</span></span></span><span class=line><span class=cl><span class=kd>function</span> <span class=nx>HTMLElement</span><span class=p>()</span> <span class=p>{}</span>
+</span></span><span class=line><span class=cl><span class=nx>HTMLElement</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>toString</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=sb>`[object </span><span class=si>${</span><span class=k>this</span><span class=p>.</span><span class=nx>constructor</span><span class=p>.</span><span class=nx>name</span> <span class=o>||</span> <span class=s2>&#34;HTMLElement&#34;</span><span class=si>}</span><span class=sb>]`</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=nx>HTMLElement</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>__proto__</span> <span class=o>=</span> <span class=nx>Element</span><span class=p>.</span><span class=nx>prototype</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// 5. 继续上游
+</span></span></span><span class=line><span class=cl><span class=kd>function</span> <span class=nx>Element</span><span class=p>()</span> <span class=p>{}</span>
+</span></span><span class=line><span class=cl><span class=nx>Element</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>__proto__</span> <span class=o>=</span> <span class=nx>Node</span><span class=p>.</span><span class=nx>prototype</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kd>function</span> <span class=nx>Node</span><span class=p>()</span> <span class=p>{}</span>
+</span></span><span class=line><span class=cl><span class=nx>Node</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>__proto__</span> <span class=o>=</span> <span class=nx>EventTarget</span><span class=p>.</span><span class=nx>prototype</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kd>function</span> <span class=nx>EventTarget</span><span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>this</span><span class=p>.</span><span class=nx>_listeners</span> <span class=o>=</span> <span class=p>{};</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span><span class=line><span class=cl><span class=nx>EventTarget</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>addEventListener</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>type</span><span class=p>,</span> <span class=nx>listener</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>this</span><span class=p>.</span><span class=nx>_listeners</span><span class=p>[</span><span class=nx>type</span><span class=p>]</span> <span class=o>=</span> <span class=k>this</span><span class=p>.</span><span class=nx>_listeners</span><span class=p>[</span><span class=nx>type</span><span class=p>]</span> <span class=o>||</span> <span class=p>[];</span>
+</span></span><span class=line><span class=cl>  <span class=k>this</span><span class=p>.</span><span class=nx>_listeners</span><span class=p>[</span><span class=nx>type</span><span class=p>].</span><span class=nx>push</span><span class=p>(</span><span class=nx>listener</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=nx>EventTarget</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>removeEventListener</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>type</span><span class=p>,</span> <span class=nx>listener</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=k>if</span> <span class=p>(</span><span class=k>this</span><span class=p>.</span><span class=nx>_listeners</span><span class=p>[</span><span class=nx>type</span><span class=p>])</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=k>this</span><span class=p>.</span><span class=nx>_listeners</span><span class=p>[</span><span class=nx>type</span><span class=p>]</span> <span class=o>=</span> <span class=k>this</span><span class=p>.</span><span class=nx>_listeners</span><span class=p>[</span><span class=nx>type</span><span class=p>].</span><span class=nx>filter</span><span class=p>((</span><span class=nx>l</span><span class=p>)</span> <span class=p>=&gt;</span> <span class=nx>l</span> <span class=o>!==</span> <span class=nx>listener</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>}</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=nx>EventTarget</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>dispatchEvent</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>event</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>handlers</span> <span class=o>=</span> <span class=k>this</span><span class=p>.</span><span class=nx>_listeners</span><span class=p>[</span><span class=nx>event</span><span class=p>.</span><span class=nx>type</span><span class=p>]</span> <span class=o>||</span> <span class=p>[];</span>
+</span></span><span class=line><span class=cl>  <span class=nx>handlers</span><span class=p>.</span><span class=nx>forEach</span><span class=p>((</span><span class=nx>h</span><span class=p>)</span> <span class=p>=&gt;</span> <span class=nx>h</span><span class=p>(</span><span class=nx>event</span><span class=p>));</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=kc>true</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span><span class=line><span class=cl><span class=nx>EventTarget</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>__proto__</span> <span class=o>=</span> <span class=nb>Object</span><span class=p>.</span><span class=nx>prototype</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// 6. 验证原型链
+</span></span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>canvas</span> <span class=o>=</span> <span class=k>new</span> <span class=nx>HTMLCanvasElement</span><span class=p>();</span>
+</span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>canvas</span> <span class=k>instanceof</span> <span class=nx>HTMLCanvasElement</span><span class=p>);</span> <span class=c1>// true
+</span></span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>canvas</span> <span class=k>instanceof</span> <span class=nx>HTMLElement</span><span class=p>);</span>       <span class=c1>// true
+</span></span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>canvas</span> <span class=k>instanceof</span> <span class=nx>Element</span><span class=p>);</span>            <span class=c1>// true
+</span></span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>canvas</span> <span class=k>instanceof</span> <span class=nx>Node</span><span class=p>);</span>               <span class=c1>// true
+</span></span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>canvas</span> <span class=k>instanceof</span> <span class=nx>EventTarget</span><span class=p>);</span>        <span class=c1>// true
+</span></span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>canvas</span> <span class=k>instanceof</span> <span class=nb>Object</span><span class=p>);</span>             <span class=c1>// true
+</span></span></span><span class=line><span class=cl><span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=nx>canvas</span><span class=p>.</span><span class=nx>toString</span><span class=p>());</span>                    <span class=c1>// [object HTMLCanvasElement]
+</span></span></span></code></pre></td></tr></table></div></div><h3 id=53-为什么-instance-检查失效会暴露>5.3 为什么 instance 检查失效会暴露</h3><p>很多检测代码会做：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=nx>canvas</span> <span class=k>instanceof</span> <span class=nx>HTMLCanvasElement</span><span class=p>;</span> <span class=c1>// 期望 true
+</span></span></span><span class=line><span class=cl><span class=nx>HTMLCanvasElement</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>isPrototypeOf</span><span class=p>(</span><span class=nx>canvas</span><span class=p>);</span> <span class=c1>// 期望 true
+</span></span></span><span class=line><span class=cl><span class=nb>Object</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>toString</span><span class=p>.</span><span class=nx>call</span><span class=p>(</span><span class=nx>canvas</span><span class=p>);</span> <span class=c1>// 期望 &#34;[object HTMLCanvasElement]&#34;
+</span></span></span><span class=line><span class=cl><span class=nx>canvas</span><span class=p>.</span><span class=nx>constructor</span> <span class=o>===</span> <span class=nx>HTMLCanvasElement</span><span class=p>;</span> <span class=c1>// 期望 true
+</span></span></span></code></pre></td></tr></table></div></div><p>如果原型链没有建立，这三项全部失败。</p><h3 id=54-symboltostringtag>5.4 Symbol.toStringTag</h3><p>ES6 引入 <code>Symbol.toStringTag</code> 后，<code>Object.prototype.toString()</code> 不再只看 <code>constructor.name</code>，而是先看对象的 <code>[Symbol.toStringTag]</code> 属性：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// 现代浏览器中：
+</span></span></span><span class=line><span class=cl><span class=nx>HTMLCanvasElement</span><span class=p>.</span><span class=nx>prototype</span><span class=p>[</span><span class=nx>Symbol</span><span class=p>.</span><span class=nx>toStringTag</span><span class=p>]</span> <span class=o>=</span> <span class=s2>&#34;HTMLCanvasElement&#34;</span><span class=p>;</span>
+</span></span></code></pre></td></tr></table></div></div><p>补环境时两种方式都可以，但必须匹配脚本期望：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// 方式一：直接设置 constructor.name
+</span></span></span><span class=line><span class=cl><span class=nx>HTMLCanvasElement</span><span class=p>.</span><span class=nx>prototype</span><span class=p>.</span><span class=nx>constructor</span> <span class=o>=</span> <span class=kd>function</span> <span class=nx>HTMLCanvasElement</span><span class=p>()</span> <span class=p>{};</span>
+</span></span><span class=line><span class=cl><span class=c1>// Object.defineProperty(HTMLCanvasElement.prototype.constructor, &#34;name&#34;, { value: &#34;HTMLCanvasElement&#34; });
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// 方式二：设置 Symbol.toStringTag
+</span></span></span><span class=line><span class=cl><span class=nb>Object</span><span class=p>.</span><span class=nx>defineProperty</span><span class=p>(</span><span class=nx>HTMLCanvasElement</span><span class=p>.</span><span class=nx>prototype</span><span class=p>,</span> <span class=nx>Symbol</span><span class=p>.</span><span class=nx>toStringTag</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>value</span><span class=o>:</span> <span class=s2>&#34;HTMLCanvasElement&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nx>enumerable</span><span class=o>:</span> <span class=kc>false</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nx>configurable</span><span class=o>:</span> <span class=kc>true</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><h2 id=六补环境的高级问题>六、补环境的高级问题</h2><h3 id=61-浏览器特性-vs-js-特性>6.1 浏览器特性 vs JS 特性</h3><p>有些检测利用的是浏览器引擎的实现差异，不是 JS 语言标准：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>1. V8 的排序稳定性：Array.prototype.sort 在不同版本行为可能不同。
+</span></span><span class=line><span class=cl>2. Math.random 的算法：不同浏览器实现不同。
+</span></span><span class=line><span class=cl>3. Date.parse 的容错性：不同浏览器对异常日期格式的处理不同。
+</span></span><span class=line><span class=cl>4. JSON.stringify 的 space 参数行为：某些边界情况有差异。
+</span></span><span class=line><span class=cl>5. RegExp.prototype.toString() 的格式：某些引擎省略空 flags。
+</span></span></code></pre></td></tr></table></div></div><p>全模拟这些成本极高，所以更好的策略是：先跑脚本，观察哪里崩溃或异常，再针对性补。</p><h3 id=62-动态属性每次都不同>6.2 动态属性——每次都不同</h3><p>有些属性不应该固定为常量：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// 错误做法：
+</span></span></span><span class=line><span class=cl><span class=nx>navigator</span><span class=p>.</span><span class=nx>userAgent</span> <span class=o>=</span> <span class=s2>&#34;Mozilla/5.0 (Windows NT 10.0; Win64; x64)...&#34;</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=c1>// 脚本可以读取 100 次，都是一样的字符串。
+</span></span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// 更好做法（用于测试观察）：
+</span></span></span><span class=line><span class=cl><span class=nb>Object</span><span class=p>.</span><span class=nx>defineProperty</span><span class=p>(</span><span class=nx>navigator</span><span class=p>,</span> <span class=s2>&#34;userAgent&#34;</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>get</span><span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=s2>&#34;Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36&#34;</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl>  <span class=nx>enumerable</span><span class=o>:</span> <span class=kc>false</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=nx>configurable</span><span class=o>:</span> <span class=kc>true</span><span class=p>,</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>用 getter 模拟的数据：</p><div class=table-wrapper><table><thead><tr><th>属性</th><th>动态性</th></tr></thead><tbody><tr><td><code>Date.now()</code></td><td>每次调用不同</td></tr><tr><td><code>Math.random()</code></td><td>每次调用不同</td></tr><tr><td><code>performance.now()</code></td><td>高精度持续增长</td></tr><tr><td><code>screen.width/height</code></td><td>理论上固定，但可以模拟动态</td></tr><tr><td><code>navigator.hardwareConcurrency</code></td><td>固定</td></tr><tr><td><code>navigator.plugins</code></td><td>每次读取可能不同？不，它是固定列表</td></tr></tbody></table></div><h3 id=63-原型链遍历陷阱>6.3 原型链遍历陷阱</h3><p>脚本可以用 <code>while</code> 循环遍历整个原型链：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=kd>let</span> <span class=nx>proto</span> <span class=o>=</span> <span class=nx>canvas</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>chain</span> <span class=o>=</span> <span class=p>[];</span>
+</span></span><span class=line><span class=cl><span class=k>while</span> <span class=p>(</span><span class=nx>proto</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>chain</span><span class=p>.</span><span class=nx>push</span><span class=p>({</span>
+</span></span><span class=line><span class=cl>    <span class=nx>constructor</span><span class=o>:</span> <span class=nx>proto</span><span class=p>.</span><span class=nx>constructor</span><span class=o>?</span><span class=p>.</span><span class=nx>name</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=nx>ownKeys</span><span class=o>:</span> <span class=nb>Object</span><span class=p>.</span><span class=nx>getOwnPropertyNames</span><span class=p>(</span><span class=nx>proto</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=nx>proto</span><span class=o>:</span> <span class=nx>proto</span><span class=p>.</span><span class=nx>__proto__</span><span class=o>?</span><span class=p>.</span><span class=nx>constructor</span><span class=o>?</span><span class=p>.</span><span class=nx>name</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=p>});</span>
+</span></span><span class=line><span class=cl>  <span class=nx>proto</span> <span class=o>=</span> <span class=nb>Object</span><span class=p>.</span><span class=nx>getPrototypeOf</span><span class=p>(</span><span class=nx>proto</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>如果补环境时中间某层 <code>__proto__</code> 断了，整个链就异常。</p><h3 id=64-navigatorplugins-的特殊性>6.4 navigator.plugins 的特殊性</h3><p><code>navigator.plugins</code> 不是一个普通数组。它是一个 <code>PluginArray</code>，有两个特殊行为：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>1. plugins[0] 用数字索引可以访问。
+</span></span><span class=line><span class=cl>2. plugins[&#34;Chrome PDF Plugin&#34;] 用名字索引也可以访问（NamedItem）。
+</span></span><span class=line><span class=cl>3. plugins.item(0) 和 plugins.namedItem(&#34;Chrome PDF Plugin&#34;) 是方法访问。
+</span></span><span class=line><span class=cl>4. plugins.length 是插件数量。
+</span></span><span class=line><span class=cl>5. 每个 Plugin 又有 name/description/filename/length/item/namedItem 等。
+</span></span></code></pre></td></tr></table></div></div><p>补法：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=kd>function</span> <span class=nx>createPluginArray</span><span class=p>()</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>plugins</span> <span class=o>=</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=nx>createPlugin</span><span class=p>(</span><span class=s2>&#34;Chrome PDF Plugin&#34;</span><span class=p>,</span> <span class=s2>&#34;Portable Document Format&#34;</span><span class=p>,</span> <span class=s2>&#34;internal-pdf-viewer&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=nx>createPlugin</span><span class=p>(</span><span class=s2>&#34;Chrome PDF Viewer&#34;</span><span class=p>,</span> <span class=s2>&#34;&#34;</span><span class=p>,</span> <span class=s2>&#34;mhjfbmdgcfjbbpaeojofohoefgiehjai&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>    <span class=nx>createPlugin</span><span class=p>(</span><span class=s2>&#34;Native Client&#34;</span><span class=p>,</span> <span class=s2>&#34;&#34;</span><span class=p>,</span> <span class=s2>&#34;internal-nacl-plugin&#34;</span><span class=p>),</span>
+</span></span><span class=line><span class=cl>  <span class=p>];</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>handler</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>get</span><span class=p>(</span><span class=nx>target</span><span class=p>,</span> <span class=nx>prop</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=k>if</span> <span class=p>(</span><span class=k>typeof</span> <span class=nx>prop</span> <span class=o>===</span> <span class=s2>&#34;string&#34;</span> <span class=o>&amp;&amp;</span> <span class=o>!</span><span class=nb>isNaN</span><span class=p>(</span><span class=nb>Number</span><span class=p>(</span><span class=nx>prop</span><span class=p>)))</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=nx>plugins</span><span class=p>[</span><span class=nb>Number</span><span class=p>(</span><span class=nx>prop</span><span class=p>)];</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>      <span class=k>if</span> <span class=p>(</span><span class=k>typeof</span> <span class=nx>prop</span> <span class=o>===</span> <span class=s2>&#34;string&#34;</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=kr>const</span> <span class=nx>found</span> <span class=o>=</span> <span class=nx>plugins</span><span class=p>.</span><span class=nx>find</span><span class=p>((</span><span class=nx>p</span><span class=p>)</span> <span class=p>=&gt;</span> <span class=nx>p</span><span class=p>.</span><span class=nx>name</span> <span class=o>===</span> <span class=nx>prop</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>        <span class=k>if</span> <span class=p>(</span><span class=nx>found</span><span class=p>)</span> <span class=k>return</span> <span class=nx>found</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>      <span class=k>if</span> <span class=p>(</span><span class=nx>prop</span> <span class=o>===</span> <span class=s2>&#34;length&#34;</span><span class=p>)</span> <span class=k>return</span> <span class=nx>plugins</span><span class=p>.</span><span class=nx>length</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>      <span class=k>if</span> <span class=p>(</span><span class=nx>prop</span> <span class=o>===</span> <span class=s2>&#34;item&#34;</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>(</span><span class=nx>i</span><span class=p>)</span> <span class=p>=&gt;</span> <span class=nx>plugins</span><span class=p>[</span><span class=nx>i</span><span class=p>]</span> <span class=o>||</span> <span class=kc>null</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>      <span class=k>if</span> <span class=p>(</span><span class=nx>prop</span> <span class=o>===</span> <span class=s2>&#34;namedItem&#34;</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=p>(</span><span class=nx>name</span><span class=p>)</span> <span class=p>=&gt;</span> <span class=nx>plugins</span><span class=p>.</span><span class=nx>find</span><span class=p>((</span><span class=nx>p</span><span class=p>)</span> <span class=p>=&gt;</span> <span class=nx>p</span><span class=p>.</span><span class=nx>name</span> <span class=o>===</span> <span class=nx>name</span><span class=p>)</span> <span class=o>||</span> <span class=kc>null</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>      <span class=k>if</span> <span class=p>(</span><span class=nx>prop</span> <span class=o>===</span> <span class=nx>Symbol</span><span class=p>.</span><span class=nx>iterator</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>        <span class=k>return</span> <span class=nx>plugins</span><span class=p>[</span><span class=nx>Symbol</span><span class=p>.</span><span class=nx>iterator</span><span class=p>].</span><span class=nx>bind</span><span class=p>(</span><span class=nx>plugins</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>      <span class=p>}</span>
+</span></span><span class=line><span class=cl>      <span class=k>return</span> <span class=nx>Reflect</span><span class=p>.</span><span class=nx>get</span><span class=p>(</span><span class=nx>target</span><span class=p>,</span> <span class=nx>prop</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=p>},</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=c1>// 让 Proxy 表现得像 PluginArray 原型
+</span></span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>proxy</span> <span class=o>=</span> <span class=k>new</span> <span class=nb>Proxy</span><span class=p>({},</span> <span class=nx>handler</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=nb>Object</span><span class=p>.</span><span class=nx>setPrototypeOf</span><span class=p>(</span><span class=nx>proxy</span><span class=p>,</span> <span class=nx>PluginArray</span><span class=p>.</span><span class=nx>prototype</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=nx>proxy</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>这里的关键：用 Proxy 拦截数字索引和字符串索引，模拟 DOM 集合的 NamedItem 和数字索引双重访问模式。</p><h3 id=65-canvaswebgl-指纹的补法思路>6.5 Canvas/WebGL 指纹的补法思路</h3><p>Canvas 补法：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>document.createElement(&#34;canvas&#34;)
+</span></span><span class=line><span class=cl>  → 返回 HTMLCanvasElement 实例
+</span></span><span class=line><span class=cl>    → width/height 属性
+</span></span><span class=line><span class=cl>    → getContext(&#34;2d&#34;)
+</span></span><span class=line><span class=cl>      → 返回 CanvasRenderingContext2D 实例
+</span></span><span class=line><span class=cl>        → fillRect()
+</span></span><span class=line><span class=cl>        → fillText()
+</span></span><span class=line><span class=cl>        → fillStyle (getter/setter)
+</span></span><span class=line><span class=cl>        → font (getter/setter)
+</span></span><span class=line><span class=cl>        → textBaseline (getter/setter)
+</span></span><span class=line><span class=cl>    → toDataURL()
+</span></span><span class=line><span class=cl>      → 返回 Base64 字符串
+</span></span></code></pre></td></tr></table></div></div><p>WebGL 补法更复杂，因为调用链深且参数多：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=kd>function</span> <span class=nx>createWebGLRenderingContext</span><span class=p>(</span><span class=nx>canvas</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>ctx</span> <span class=o>=</span> <span class=p>{};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>ctx</span><span class=p>.</span><span class=nx>getParameter</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>pname</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>params</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=p>[</span><span class=mh>0x1F02</span><span class=p>]</span><span class=o>:</span> <span class=s2>&#34;WebGL 1.0&#34;</span><span class=p>,</span>              <span class=c1>// VERSION
+</span></span></span><span class=line><span class=cl>      <span class=p>[</span><span class=mh>0x1F01</span><span class=p>]</span><span class=o>:</span> <span class=s2>&#34;WebGL GLSL ES 1.0&#34;</span><span class=p>,</span>      <span class=c1>// SHADING_LANGUAGE_VERSION
+</span></span></span><span class=line><span class=cl>      <span class=p>[</span><span class=mh>0x1F00</span><span class=p>]</span><span class=o>:</span> <span class=s2>&#34;Google Inc.&#34;</span><span class=p>,</span>             <span class=c1>// VENDOR
+</span></span></span><span class=line><span class=cl>      <span class=p>[</span><span class=mh>0x1F03</span><span class=p>]</span><span class=o>:</span> <span class=s2>&#34;ANGLE (NVIDIA GeForce RTX 3060)&#34;</span><span class=p>,</span>  <span class=c1>// RENDERER
+</span></span></span><span class=line><span class=cl>      <span class=p>[</span><span class=mh>0x8B4C</span><span class=p>]</span><span class=o>:</span> <span class=mi>16384</span><span class=p>,</span>                     <span class=c1>// MAX_TEXTURE_SIZE
+</span></span></span><span class=line><span class=cl>      <span class=p>[</span><span class=mh>0x8869</span><span class=p>]</span><span class=o>:</span> <span class=mi>16</span><span class=p>,</span>                        <span class=c1>// MAX_VERTEX_ATTRIBS
+</span></span></span><span class=line><span class=cl>      <span class=c1>// ... 数百个参数
+</span></span></span><span class=line><span class=cl>    <span class=p>};</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=nx>params</span><span class=p>[</span><span class=nx>pname</span><span class=p>]</span> <span class=o>||</span> <span class=kc>null</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=nx>ctx</span><span class=p>.</span><span class=nx>getExtension</span> <span class=o>=</span> <span class=kd>function</span> <span class=p>(</span><span class=nx>name</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>supported</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;EXT_texture_filter_anisotropic&#34;</span><span class=o>:</span> <span class=p>{},</span>
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;WEBGL_debug_renderer_info&#34;</span><span class=o>:</span> <span class=p>{</span> <span class=nx>UNMASKED_VENDOR_WEBGL</span><span class=o>:</span> <span class=mh>0x9245</span><span class=p>,</span> <span class=nx>UNMASKED_RENDERER_WEBGL</span><span class=o>:</span> <span class=mh>0x9246</span> <span class=p>},</span>
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;WEBGL_compressed_texture_s3tc&#34;</span><span class=o>:</span> <span class=p>{},</span>
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;OES_texture_float&#34;</span><span class=o>:</span> <span class=p>{},</span>
+</span></span><span class=line><span class=cl>    <span class=p>};</span>
+</span></span><span class=line><span class=cl>    <span class=k>return</span> <span class=nx>supported</span><span class=p>[</span><span class=nx>name</span><span class=p>]</span> <span class=o>||</span> <span class=kc>null</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>  <span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=nx>ctx</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>注意：本文不提供完整的 Canvas/WebGL 指纹伪造代码。上面的代码只展示<strong>骨架结构</strong>——告诉你补环境的粒度应该到方法级别，而不是值级别。真正的每个 <code>getParameter</code> 返回值应该来自实际采集的真实环境数据，用于自有系统测试和审计。</p><h2 id=七如何发现脚本访问了哪些环境属性>七、如何发现脚本访问了哪些环境属性</h2><h3 id=71-低温运行只记录不执行>7.1 低温运行：只记录不执行</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=kd>function</span> <span class=nx>coldRun</span><span class=p>(</span><span class=nx>scriptCode</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>accessLog</span> <span class=o>=</span> <span class=p>[];</span>
+</span></span><span class=line><span class=cl>  <span class=kr>const</span> <span class=nx>env</span> <span class=o>=</span> <span class=nx>createRecursiveEnvLogger</span><span class=p>(</span><span class=s2>&#34;window&#34;</span><span class=p>,</span> <span class=nx>accessLog</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=k>try</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=c1>// 在沙箱中执行脚本，给它 logger 作为 window
+</span></span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>fn</span> <span class=o>=</span> <span class=k>new</span> <span class=nb>Function</span><span class=p>(</span><span class=s2>&#34;window&#34;</span><span class=p>,</span> <span class=s2>&#34;document&#34;</span><span class=p>,</span> <span class=s2>&#34;navigator&#34;</span><span class=p>,</span> <span class=nx>scriptCode</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=nx>fn</span><span class=p>(</span><span class=nx>env</span><span class=p>,</span> <span class=nx>env</span><span class=p>,</span> <span class=nx>env</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>}</span> <span class=k>catch</span> <span class=p>(</span><span class=nx>e</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=nx>console</span><span class=p>.</span><span class=nx>log</span><span class=p>(</span><span class=s2>&#34;冷运行异常:&#34;</span><span class=p>,</span> <span class=nx>e</span><span class=p>.</span><span class=nx>message</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>  <span class=p>}</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl>  <span class=k>return</span> <span class=nx>accessLog</span><span class=p>;</span>
+</span></span><span class=line><span class=cl><span class=p>}</span>
+</span></span></code></pre></td></tr></table></div></div><p>冷运行的结果不是正确执行结果，但能拿到<strong>脚本访问了什么属性</strong>。</p><h3 id=72-分类整理>7.2 分类整理</h3><p>拿到日志后，按类别分组：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>一类（必需）：不补就崩溃/报错 → navigator、document、window 等。
+</span></span><span class=line><span class=cl>二类（计算依赖）：脚本执行结果依赖这些值 → userAgent、plugins.length 等。
+</span></span><span class=line><span class=cl>三类（验证链）：脚本用 instanceof/原型链/属性描述符检查 → toString、prototype 等。
+</span></span><span class=line><span class=cl>四类（行为监控）：脚本检查时间戳、随机数分布、调用频率 → Date.now、Math.random 等。
+</span></span></code></pre></td></tr></table></div></div><h3 id=73-从-js-代码中提取检测点>7.3 从 JS 代码中提取检测点</h3><p>用 AST 工具（Babel/acorn/esprima）解析脚本，找到所有成员表达式：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// babel 示例
+</span></span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>parser</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=s2>&#34;@babel/parser&#34;</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>traverse</span> <span class=o>=</span> <span class=nx>require</span><span class=p>(</span><span class=s2>&#34;@babel/traverse&#34;</span><span class=p>).</span><span class=k>default</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>ast</span> <span class=o>=</span> <span class=nx>parser</span><span class=p>.</span><span class=nx>parse</span><span class=p>(</span><span class=nx>scriptCode</span><span class=p>);</span>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>accessed</span> <span class=o>=</span> <span class=k>new</span> <span class=nx>Set</span><span class=p>();</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=nx>traverse</span><span class=p>(</span><span class=nx>ast</span><span class=p>,</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=nx>MemberExpression</span><span class=p>(</span><span class=nx>path</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>    <span class=kr>const</span> <span class=nx>property</span> <span class=o>=</span> <span class=nx>path</span><span class=p>.</span><span class=nx>node</span><span class=p>.</span><span class=nx>property</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>    <span class=k>if</span> <span class=p>(</span><span class=nx>property</span><span class=p>.</span><span class=nx>type</span> <span class=o>===</span> <span class=s2>&#34;Identifier&#34;</span><span class=p>)</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>      <span class=c1>// 静态属性访问: navigator.userAgent
+</span></span></span><span class=line><span class=cl>      <span class=kr>const</span> <span class=nx>objName</span> <span class=o>=</span> <span class=nx>path</span><span class=p>.</span><span class=nx>node</span><span class=p>.</span><span class=nx>object</span><span class=p>.</span><span class=nx>name</span><span class=p>;</span>
+</span></span><span class=line><span class=cl>      <span class=nx>accessed</span><span class=p>.</span><span class=nx>add</span><span class=p>(</span><span class=sb>`</span><span class=si>${</span><span class=nx>objName</span><span class=si>}</span><span class=sb>.</span><span class=si>${</span><span class=nx>property</span><span class=p>.</span><span class=nx>name</span><span class=si>}</span><span class=sb>`</span><span class=p>);</span>
+</span></span><span class=line><span class=cl>    <span class=p>}</span>
+</span></span><span class=line><span class=cl>    <span class=c1>// 动态属性访问: navigator[key]
+</span></span></span><span class=line><span class=cl>    <span class=c1>// 需要分析 key 的来源，成本更高
+</span></span></span><span class=line><span class=cl>  <span class=p>},</span>
+</span></span><span class=line><span class=cl><span class=p>});</span>
+</span></span></code></pre></td></tr></table></div></div><p>这是在代码原地发现"哪些环境属性被硬编码引用了"。</p><h2 id=八工程化思路把补环境从手写变成框架>八、工程化思路：把补环境从手写变成框架</h2><p>长期来看，手写每个补丁既慢又容易出错。工程化的方向是：</p><h3 id=81-分层设计>8.1 分层设计</h3><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>┌─────────────────────────┐
+</span></span><span class=line><span class=cl>│  业务脚本               │  ← 被执行的 JS
+</span></span><span class=line><span class=cl>├─────────────────────────┤
+</span></span><span class=line><span class=cl>│  动态 Proxy 层           │  ← 记录所有访问 + 拦截报错
+</span></span><span class=line><span class=cl>├─────────────────────────┤
+</span></span><span class=line><span class=cl>│  静态补丁层              │  ← 预先配置好的环境属性/方法
+</span></span><span class=line><span class=cl>│  - navigator 补丁        │
+</span></span><span class=line><span class=cl>│  - document 补丁         │
+</span></span><span class=line><span class=cl>│  - Canvas 补丁           │
+</span></span><span class=line><span class=cl>│  - WebGL 补丁            │
+</span></span><span class=line><span class=cl>├─────────────────────────┤
+</span></span><span class=line><span class=cl>│  自动回退层              │  ← 对未补属性自动创建空对象
+</span></span><span class=line><span class=cl>├─────────────────────────┤
+</span></span><span class=line><span class=cl>│  V8 / Node.js 运行时      │
+</span></span><span class=line><span class=cl>└─────────────────────────┘
+</span></span></code></pre></td></tr></table></div></div><h3 id=82-配置文件而非硬编码>8.2 配置文件而非硬编码</h3><p>把环境属性写成可配置的 JSON/YAML：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-yaml data-lang=yaml><span class=line><span class=cl><span class=nt>navigator</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span><span class=nt>userAgent</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>value</span><span class=p>:</span><span class=w> </span><span class=s2>&#34;Mozilla/5.0...&#34;</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>enumerable</span><span class=p>:</span><span class=w> </span><span class=kc>false</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>configurable</span><span class=p>:</span><span class=w> </span><span class=kc>true</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>type</span><span class=p>:</span><span class=w> </span><span class=l>string</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span><span class=nt>webdriver</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>value</span><span class=p>:</span><span class=w> </span><span class=kc>false</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>enumerable</span><span class=p>:</span><span class=w> </span><span class=kc>true</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>configurable</span><span class=p>:</span><span class=w> </span><span class=kc>true</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>type</span><span class=p>:</span><span class=w> </span><span class=l>boolean</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span><span class=nt>hardwareConcurrency</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>value</span><span class=p>:</span><span class=w> </span><span class=m>8</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>enumerable</span><span class=p>:</span><span class=w> </span><span class=kc>false</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>  </span><span class=nt>plugins</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>type</span><span class=p>:</span><span class=w> </span><span class=l>plugin_array</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>    </span><span class=nt>items</span><span class=p>:</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>      </span>- <span class=nt>name</span><span class=p>:</span><span class=w> </span><span class=s2>&#34;Chrome PDF Plugin&#34;</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>        </span><span class=nt>description</span><span class=p>:</span><span class=w> </span><span class=s2>&#34;Portable Document Format&#34;</span><span class=w>
+</span></span></span><span class=line><span class=cl><span class=w>        </span><span class=nt>filename</span><span class=p>:</span><span class=w> </span><span class=s2>&#34;internal-pdf-viewer&#34;</span><span class=w>
+</span></span></span></code></pre></td></tr></table></div></div><p>这样做的好处：</p><ul><li>环境配置和补环境框架解耦。</li><li>不同测试场景可以切换不同配置。</li><li>配置可以版本控制和 diff。</li><li>新发现的环境属性只需追加配置，不需要改代码。</li></ul><h3 id=83-自动差异检测>8.3 自动差异检测</h3><p>在自有 Chrome 和有头/无头模式之间对比环境：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// 在真实浏览器中收集一次环境快照
+</span></span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>snapshot</span> <span class=o>=</span> <span class=p>{</span>
+</span></span><span class=line><span class=cl>  <span class=s2>&#34;navigator.userAgent&#34;</span><span class=o>:</span> <span class=nx>navigator</span><span class=p>.</span><span class=nx>userAgent</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=s2>&#34;navigator.webdriver&#34;</span><span class=o>:</span> <span class=nx>navigator</span><span class=p>.</span><span class=nx>webdriver</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=s2>&#34;navigator.hardwareConcurrency&#34;</span><span class=o>:</span> <span class=nx>navigator</span><span class=p>.</span><span class=nx>hardwareConcurrency</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=s2>&#34;screen.width&#34;</span><span class=o>:</span> <span class=nx>screen</span><span class=p>.</span><span class=nx>width</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=s2>&#34;screen.colorDepth&#34;</span><span class=o>:</span> <span class=nx>screen</span><span class=p>.</span><span class=nx>colorDepth</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=c1>// ... 全部环境属性
+</span></span></span><span class=line><span class=cl><span class=p>};</span>
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=c1>// 在补环境后收集同样的快照
+</span></span></span><span class=line><span class=cl><span class=c1>// 差异对比：
+</span></span></span><span class=line><span class=cl><span class=c1>// 1. 缺少的属性 → 需要补充
+</span></span></span><span class=line><span class=cl><span class=c1>// 2. 值不一致的属性 → 需要修改
+</span></span></span><span class=line><span class=cl><span class=c1>// 3. 类型不一致的属性 → 需要修改
+</span></span></span><span class=line><span class=cl><span class=c1>// 4. 描述符不一致的属性 → 需要修正
+</span></span></span></code></pre></td></tr></table></div></div><h3 id=84-持续更新>8.4 持续更新</h3><p>环境配置不是一劳永逸的。Chrome 每个版本可能：</p><ul><li>新增 API（如 <code>navigator.userAgentData</code>）。</li><li>废弃 API（如 <code>navigator.plugins</code> 的行为变化）。</li><li>修改属性描述符（如 <code>webdriver</code> 从 <code>configurable: true</code> 变为 <code>configurable: false</code>）。</li></ul><p>建议做法：</p><ul><li>每次 Chrome 大版本更新后重新采集环境快照。</li><li>对比差异并更新配置文件。</li><li>将配置文件纳入版本管理。</li></ul><h2 id=九常见问题>九、常见问题</h2><h3 id=q1补环境和-js-逆向-是什么关系>Q1：补环境和 &ldquo;JS 逆向&rdquo; 是什么关系？</h3><p>补环境是 JS 逆向工程的一种方法。当一段 JS 代码被混淆/加密后，直接在 Node.js 里执行会因为没有浏览器 API 而崩溃。补环境允许代码在一个"看起来像浏览器"的环境里运行，从而可以调试、观察和分析它的逻辑。但顺序是：<strong>先分析 → 理解检测逻辑 → 才考虑是否补</strong>，而不是上来就补一个完整环境。</p><h3 id=q2proxy-会不会被检测到>Q2：Proxy 会不会被检测到？</h3><p>会。JS 可以检测某个对象是否是 Proxy：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-js data-lang=js><span class=line><span class=cl><span class=c1>// 间接检测：Proxy 的某些行为与原对象不同
+</span></span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>obj</span> <span class=o>=</span> <span class=p>{};</span>
+</span></span><span class=line><span class=cl><span class=kr>const</span> <span class=nx>proxy</span> <span class=o>=</span> <span class=k>new</span> <span class=nb>Proxy</span><span class=p>(</span><span class=nx>obj</span><span class=p>,</span> <span class=p>{});</span>
+</span></span><span class=line><span class=cl><span class=nx>obj</span> <span class=o>!==</span> <span class=nx>proxy</span><span class=p>;</span> <span class=c1>// Proxy 和原对象不相等
+</span></span></span><span class=line><span class=cl><span class=nx>proxy</span><span class=p>.</span><span class=nx>constructor</span> <span class=o>===</span> <span class=nb>Object</span><span class=p>;</span> <span class=c1>// 可能成立，但不一定
+</span></span></span></code></pre></td></tr></table></div></div><p>但更重要的是：<strong>补环境的目标不是让脚本以为没有 Proxy，而是提供正确的属性值</strong>。如果属性值、原型链、描述符都正确，是不是 Proxy 不重要。</p><h3 id=q3可以补一个-万能环境-吗>Q3：可以补一个 &ldquo;万能环境&rdquo; 吗？</h3><p>理论上可以，但成本极高。浏览器环境有数千个 API、数万个属性，每个都有特定的原型链、描述符和行为。全量模拟是一个巨大的工程，而且 Chrome 每个版本都在变化。更务实的做法是针对具体脚本的具体访问路径做最小补环境。</p><h3 id=q4为什么要区分自有属性和原型属性>Q4：为什么要区分自有属性和原型属性？</h3><p>因为脚本可以用 <code>hasOwnProperty</code> 或 <code>Object.getOwnPropertyDescriptor</code> 来检查属性是挂在实例上还是原型上。如果补错了位置，检查会失败。</p><h3 id=q5nodejs-和-v8-独立运行环境有什么区别>Q5：Node.js 和 V8 独立运行环境有什么区别？</h3><p>Node.js 自带一些浏览器没有的模块（<code>fs</code>、<code>http</code>、<code>process</code>），也缺少一些浏览器独有 API（<code>document</code>、<code>navigator</code>、<code>Canvas</code>）。V8 独立运行环境更干净，只包含 ECMAScript 标准库，是最接近"空白画布"的选择。补环境时通常选 Node.js 作为宿主，在 <code>globalThis</code> 上逐步构建浏览器对象树。</p><h2 id=十面试表达>十、面试表达</h2><p>如果面试官问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你怎么理解 &#34;补环境&#34;？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>补环境是在非浏览器 JS 运行时（如 Node.js）中构建一组最小但足够真实的浏览器对象和 API，使依赖于浏览器环境的 JS 脚本能够正常运行。核心工具是 Proxy、Object.defineProperty 和原型链。目标不是构建完整浏览器，而是构建脚本实际访问的那部分子树。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>为什么需要关注原型链？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>浏览器 API 之间有严格的继承关系，例如 HTMLCanvasElement → HTMLElement → Element → Node → EventTarget → Object。如果补环境时只给对象赋值而不断开原型链，脚本里的 instanceof、Object.prototype.toString、Object.getPrototypeOf 等检查会全部失败，暴露模拟环境。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>Proxy 在补环境里起什么作用？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>Proxy 做两件事：第一是吐环境，用 get/set/has/apply/ownKeys 陷阱记录脚本访问了哪些属性；第二是动态补环境，对未补的属性自动创建子代理，避免 undefined 崩溃，从而支持"先让脚本跑起来，再看缺什么"的迭代流程。</p></blockquote><p>如果问：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>你怎么确保补的环境不被检测出来？
+</span></span></code></pre></td></tr></table></div></div><p>可以这样回答：</p><blockquote><p>我关注的是环境能否正常运行和观察脚本逻辑，而不是是否"被检测到"。在自有测试和授权审计中，补环境的目的是诊断和理解，不是伪装和绕过。如果脚本检测到了异常环境，那恰好说明它的检测逻辑生效了——这正是我们要分析的目标。</p></blockquote><h2 id=十一总结>十一、总结</h2><p>这篇文章从 JS 语言机制出发，深入讨论了补环境和吐环境的技术原理：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span><span class=lnt>4
+</span><span class=lnt>5
+</span><span class=lnt>6
+</span><span class=lnt>7
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>浏览器 JS 环境的构成：一棵巨大的对象树。
+</span></span><span class=line><span class=cl>Proxy 的 13 个陷阱：get、set、has、construct、apply、ownKeys 等。
+</span></span><span class=line><span class=cl>吐环境：被动 Proxy 日志 + 主动 for...in/Object.keys/描述符采集。
+</span></span><span class=line><span class=cl>补环境：Object.defineProperty + getter/setter + 原型链。
+</span></span><span class=line><span class=cl>原型链：__proto__ 和 prototype 的关系，多层继承的构建方法。
+</span></span><span class=line><span class=cl>Canvas/WebGL/navigator.plugins 等复杂对象的补法骨架。
+</span></span><span class=line><span class=cl>工程化：分层设计、配置文件、差异检测、版本管理。
+</span></span></code></pre></td></tr></table></div></div><p>核心结论：</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt>1
+</span><span class=lnt>2
+</span><span class=lnt>3
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-text data-lang=text><span class=line><span class=cl>补环境是观察工具，不是绕过工具。
+</span></span><span class=line><span class=cl>真正的能力不是&#34;补得多全&#34;，而是&#34;精确知道每一行代码需要什么环境属性&#34;。
+</span></span><span class=line><span class=cl>环境配置应该从真实浏览器采集，经过脱敏和审计，用于自有系统的测试和分析。
+</span></span></code></pre></td></tr></table></div></div><p>如果后续继续在这个方向深入，可以写"环境差异自动化对比平台设计"——把真实浏览器的环境快照、补环境快照、不同版本快照做自动对比，用 Agent 做差异分析和补丁建议。</p><p>到这里，JS 逆向中的环境问题就有了比较完整的技术基础。</p><h2 id=参考资料>参考资料</h2><ul><li><a class=link href=https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy target=_blank rel=noopener>MDN Proxy</a></li><li><a class=link href=https://tc39.es/ecma262/#sec-proxy-objects target=_blank rel=noopener>ECMAScript Proxy Specification</a></li><li><a class=link href=https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/defineProperty target=_blank rel=noopener>MDN Object.defineProperty</a></li><li><a class=link href=https://developer.mozilla.org/en-US/docs/Web/JavaScript/Inheritance_and_the_prototype_chain target=_blank rel=noopener>MDN Inheritance and the prototype chain</a></li><li><a class=link href=https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/toStringTag target=_blank rel=noopener>MDN Symbol.toStringTag</a></li><li><a class=link href=https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/modules/plugins/navigator_plugins.idl target=_blank rel=noopener>Chromium Source: Navigator IDL</a></li></ul></section><footer class=article-footer><section class=article-tags><a href=/tags/javascript/>JavaScript</a>
+<a href=/tags/proxy/>Proxy</a>
+<a href=/tags/%E5%8E%9F%E5%9E%8B%E9%93%BE/>原型链</a>
+<a href=/tags/%E8%A1%A5%E7%8E%AF%E5%A2%83/>补环境</a>
+<a href=/tags/%E5%90%90%E7%8E%AF%E5%A2%83/>吐环境</a>
+<a href=/tags/%E7%8E%AF%E5%A2%83%E6%A3%80%E6%B5%8B/>环境检测</a>
+<a href=/tags/%E7%88%AC%E8%99%AB/>爬虫</a>
+<a href=/tags/%E5%90%88%E8%A7%84/>合规</a></section><section class=article-copyright><svg class="icon icon-tabler icon-tabler-copyright" width="24" height="24" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z"/><circle cx="12" cy="12" r="9"/><path d="M14.5 9a3.5 4 0 100 6"/></svg>
+<span>Licensed under CC BY-NC-SA 4.0</span></section></footer><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css integrity=sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV crossorigin=anonymous><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js integrity=sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8 crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js integrity=sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05 crossorigin=anonymous defer></script><script>window.addEventListener("DOMContentLoaded",()=>{const e=[".main-article",".widget--toc"];e.forEach(e=>{const t=document.querySelector(e);t&&renderMathInElement(t,{delimiters:[{left:"$$",right:"$$",display:!0},{left:"$",right:"$",display:!1},{left:"\\(",right:"\\)",display:!1},{left:"\\[",right:"\\]",display:!0}],ignoredClasses:["gist"]})})})</script></article><aside class=related-content--wrapper><h2 class=section-title>相关文章</h2><div class=related-content><div class="flex article-list--tile"><article><a href=/p/slider-captcha-mechanism-analysis-compliance/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 40：滑块验证码机制分析与合规应对</h2></div></a></article><article><a href=/p/captcha-mechanism-analysis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 19：验证码机制分析</h2></div></a></article><article><a href=/p/ast-javascript-obfuscation-analysis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 17：AST 在 JavaScript 混淆分析中的应用</h2></div></a></article><article><a href=/p/webpack-module-mechanism-analysis/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 16：Webpack 模块机制分析</h2></div></a></article><article><a href=/p/js-reverse-engineering-signature-basics/><div class=article-details><h2 class=article-title>大模型时代的数据采集工程 15：JS 逆向入门与参数签名认知</h2></div></a></article></div></div></aside><div class=disqus-container><div id=disqus_thread></div><script>window.disqus_config=function(){},function(){if(["localhost","127.0.0.1"].indexOf(window.location.hostname)!=-1){document.getElementById("disqus_thread").innerHTML="Disqus comments not available by default when the website is previewed locally.";return}var t=document,e=t.createElement("script");e.async=!0,e.src="//hugo-theme-stack.disqus.com/embed.js",e.setAttribute("data-timestamp",+new Date),(t.head||t.body).appendChild(e)}()</script><noscript>Please enable JavaScript to view the <a href=https://disqus.com/?ref_noscript>comments powered by Disqus.</a></noscript><a href=https://disqus.com class=dsq-brlink>comments powered by <span class=logo-disqus>Disqus</span></a></div><style>.disqus-container{background-color:var(--card-background);border-radius:var(--card-border-radius);box-shadow:var(--shadow-l1);padding:var(--card-padding)}</style><script>window.addEventListener("onColorSchemeChange",e=>{typeof DISQUS=="object"&&DISQUS.reset({reload:!0})})</script><footer class=site-footer><section class=copyright>&copy;
+2025 -
+2026 阿彪</section><section class=powerby>使用 <a href=https://gohugo.io/ target=_blank rel=noopener>Hugo</a> 构建<br>主题 <b><a href=https://github.com/CaiJimmy/hugo-theme-stack target=_blank rel=noopener data-version=3.34.2>Stack</a></b> 由 <a href=https://jimmycai.com target=_blank rel=noopener>Jimmy</a> 设计</section></footer><div class=pswp tabindex=-1 role=dialog aria-hidden=true><div class=pswp__bg></div><div class=pswp__scroll-wrap><div class=pswp__container><div class=pswp__item></div><div class=pswp__item></div><div class=pswp__item></div></div><div class="pswp__ui pswp__ui--hidden"><div class=pswp__top-bar><div class=pswp__counter></div><button class="pswp__button pswp__button--close" title="Close (Esc)"></button>
+<button class="pswp__button pswp__button--share" title=Share></button>
+<button class="pswp__button pswp__button--fs" title="Toggle fullscreen"></button>
+<button class="pswp__button pswp__button--zoom" title="Zoom in/out"></button><div class=pswp__preloader><div class=pswp__preloader__icn><div class=pswp__preloader__cut><div class=pswp__preloader__donut></div></div></div></div></div><div class="pswp__share-modal pswp__share-modal--hidden pswp__single-tap"><div class=pswp__share-tooltip></div></div><button class="pswp__button pswp__button--arrow--left" title="Previous (arrow left)">
+</button>
+<button class="pswp__button pswp__button--arrow--right" title="Next (arrow right)"></button><div class=pswp__caption><div class=pswp__caption__center></div></div></div></div></div><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.js integrity="sha256-ePwmChbbvXbsO02lbM3HoHbSHTHFAeChekF1xKJdleo=" crossorigin=anonymous defer></script><script src=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe-ui-default.min.js integrity="sha256-UKkzOn/w1mBxRmLLGrSeyB4e1xbrp4xylgAWb3M42pU=" crossorigin=anonymous defer></script><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/default-skin/default-skin.min.css crossorigin=anonymous><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/photoswipe@4.1.3/dist/photoswipe.min.css crossorigin=anonymous></main></div><script src=https://cdn.jsdelivr.net/npm/node-vibrant@3.1.6/dist/vibrant.min.js integrity="sha256-awcR2jno4kI5X0zL8ex0vi2z+KMkF24hUW8WePSA9HM=" crossorigin=anonymous></script><script type=text/javascript src=/ts/main.c922af694cc257bf1ecc41c0dd7b0430f9114ec280ccf67cd2c6ad55f5316c4e.js defer></script><script>(function(){const e=document.createElement("link");e.href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&display=swap",e.type="text/css",e.rel="stylesheet",document.head.appendChild(e)})()</script></body></html>
